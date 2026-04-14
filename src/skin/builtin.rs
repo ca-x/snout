@@ -1,6 +1,15 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
+/// map! 宏简化 HashMap 创建
+macro_rules! map {
+    ($($k:expr => $v:expr),* $(,)?) => {{
+        let mut m = HashMap::new();
+        $(m.insert($k, $v);)*
+        m
+    }};
+}
+
 /// 内置主题定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkinPreset {
@@ -73,7 +82,6 @@ pub fn builtin_skins() -> Vec<SkinPreset> {
                 "name".into() => "Mac 白".into(),
                 "text_color".into() => "0x000000".into(),
                 "back_color".into() => "0xffffff".into(),
-                "hilited_candidate_back_color".into() => serde_yaml::Value::Number(16740656.into()),
             ],
         },
         SkinPreset {
@@ -96,12 +104,10 @@ pub fn find_skin(key: &str) -> Option<SkinPreset> {
     builtin_skins().into_iter().find(|s| s.key == key)
 }
 
-/// map! 宏简化 HashMap 创建
-macro_rules! map {
-    ($($k:expr => $v:expr),* $(,)?) => {{
-        let mut m = HashMap::new();
-        $(m.insert($k, $v);)*
-        m
-    }};
+/// 列出所有可用的内置主题
+pub fn list_available_skins() -> Vec<(String, String)> {
+    builtin_skins()
+        .into_iter()
+        .map(|s| (s.key, s.display_name))
+        .collect()
 }
-use map;

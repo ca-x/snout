@@ -1,6 +1,6 @@
 use crate::types::*;
 use anyhow::{Context, Result};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap};
 use reqwest::Proxy;
 
 pub struct Client {

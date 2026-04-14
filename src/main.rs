@@ -51,9 +51,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if cli.init {
-        ui::run_init_wizard().await?;
+        ui::wizard::run_init_wizard().await?;
     } else if cli.update || cli.scheme || cli.dict || cli.model {
-        let mut manager = config::Manager::new()?;
+        let manager = config::Manager::new()?;
         let schema = manager.config.schema;
         let cache_dir = manager.cache_dir.clone();
         let rime_dir = manager.rime_dir.clone();
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         // 默认启动 TUI
-        ui::run_tui().await?;
+        ui::app::run_tui().await?;
     }
 
     Ok(())
