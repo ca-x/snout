@@ -1,0 +1,24 @@
+[package]
+name = "rime-init"
+version = "0.1.0"
+edition = "2021"
+description = "Rime 输入法初始化与更新工具 - 支持万象/薄雾/白霜方案"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", features = ["json", "socks5", "stream"] }
+tokio = { version = "1", features = ["full"] }
+zip = "4"
+sha2 = "0.10"
+hex = "0.4"
+indicatif = "0.17"
+anyhow = "1"
+dirs = "5"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
