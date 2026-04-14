@@ -18,7 +18,7 @@ struct Cli {
     init: bool,
 
     /// 更新所有组件
-    #[arg(long)]
+    #[arg(long, short)]
     update: bool,
 
     /// 仅更新方案
@@ -51,11 +51,52 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     if cli.init {
-        println!("🚀 rime-init 首次初始化");
         ui::run_init_wizard().await?;
     } else if cli.update || cli.scheme || cli.dict || cli.model {
-        println!("🔄 更新模式");
-        // TODO: 启动更新流程
+        let mut manager = config::Manager::new()?;
+        let schema = manager.config.schema;
+        let cache_dir = manager.cache_dir.clone();
+        let rime_dir = manager.rime_dir.clone();
+
+        if cli.update {
+            updater::update_all(&schema, &manager.config, cache_dir, rime_dir, |msg, pct| {
+                print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }).await?;
+            println!();
+        } else if cli.scheme {
+            let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir)?;
+            let scheme_updater = updater::SchemeUpdater { base };
+            scheme_updater.run(&schema, &manager.config, |msg, pct| {
+                print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }).await?;
+            println!();
+        } else if cli.dict {
+            if schema.dict_zip().is_some() {
+                let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir)?;
+                let dict = updater::DictUpdater { base };
+                dict.run(&schema, &manager.config, |msg, pct| {
+                    print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                }).await?;
+                println!();
+            } else {
+                eprintln!("此方案无独立词库");
+            }
+        } else if cli.model {
+            let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir.clone())?;
+            let model = updater::ModelUpdater { base };
+            model.run(&manager.config, |msg, pct| {
+                print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }).await?;
+
+            if cli.patch_model && schema.supports_model_patch() {
+                updater::model_patch::patch_model(&rime_dir, &schema)?;
+            }
+            println!();
+        }
     } else {
         // 默认启动 TUI
         ui::run_tui().await?;
