@@ -154,7 +154,15 @@ impl SchemeUpdater {
         let record_path = self.base.cache_dir.join("scheme_record.json");
         let local = BaseUpdater::load_record(&record_path);
 
-        if !BaseUpdater::needs_update(local.as_ref(), &info) {
+        // 关键文件检测: lua/wanxiang.lua 不存在则强制更新
+        let key_file_missing = schema.is_wanxiang() && !self.base.rime_dir.join("lua/wanxiang.lua").exists();
+
+        // 方案切换检测: record name 不匹配则需要重新下载
+        let scheme_switched = local.as_ref()
+            .map(|r| r.name != schema.scheme_zip())
+            .unwrap_or(false);
+
+        if !key_file_missing && !scheme_switched && !BaseUpdater::needs_update(local.as_ref(), &info) {
             progress("方案已是最新", 1.0);
             return Ok(UpdateResult {
                 component: "方案".into(),
@@ -165,17 +173,25 @@ impl SchemeUpdater {
             });
         }
 
-        progress("下载方案...", 0.15);
-        let zip_path = self.base.cache_dir.join(&info.name);
+        if key_file_missing {
+            progress("关键文件缺失，强制更新...", 0.05);
+        } else if scheme_switched {
+            progress("检测到方案切换，重新下载...", 0.05);
+        }
 
-        let dl_client = Client::new_download_client(config)?;
-        let url = info.url.clone();
-        dl_client.download_file(&url, &zip_path, |downloaded, total| {
-            if let Some(t) = total {
-                let pct = 0.15 + (downloaded as f64 / t as f64) * 0.60;
-                progress(&format!("下载中... {:.0}%", (downloaded as f64 / t as f64) * 100.0), pct);
+        // 缓存复用: 本地文件 SHA 匹配则跳过下载
+        let zip_path = self.base.cache_dir.join(&info.name);
+        if zip_path.exists() && !info.sha256.is_empty() {
+            progress("校验本地缓存...", 0.10);
+            if self.base.hash_matches(&info.sha256, &zip_path) {
+                progress("缓存有效，跳过下载", 0.70);
+            } else {
+                // 缓存无效，下载
+                self.do_download(&info, config, &zip_path, &mut progress).await?;
             }
-        }).await?;
+        } else {
+            self.do_download(&info, config, &zip_path, &mut progress).await?;
+        }
 
         // SHA256 校验
         if !info.sha256.is_empty() {
@@ -220,6 +236,23 @@ impl SchemeUpdater {
             success: true,
             message: "更新成功".into(),
         })
+    }
+
+    async fn do_download(
+        &self,
+        info: &UpdateInfo,
+        config: &Config,
+        zip_path: &std::path::Path,
+        progress: &mut impl FnMut(&str, f64),
+    ) -> Result<()> {
+        progress("下载方案...", 0.15);
+        let dl_client = Client::new_download_client(config)?;
+        dl_client.download_file(&info.url, zip_path, |downloaded, total| {
+            if let Some(t) = total {
+                let pct = 0.15 + (downloaded as f64 / t as f64) * 0.55;
+                progress(&format!("下载中... {:.0}%", (downloaded as f64 / t as f64) * 100.0), pct);
+            }
+        }).await
     }
 }
 

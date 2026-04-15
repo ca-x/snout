@@ -102,6 +102,62 @@ pub fn engine_data_dir(engine: &str) -> Option<PathBuf> {
     }
 }
 
+/// 同步 Rime 目录到所有已安装引擎的数据目录
+pub fn sync_to_engines(src_dir: &Path, exclude_files: &[String]) -> Result<()> {
+    let engines = detect_engines();
+    if engines.len() <= 1 {
+        return Ok(());
+    }
+
+    let primary = engines.first().cloned().unwrap_or_default();
+    let mut errors = Vec::new();
+
+    for engine in &engines {
+        if *engine == primary {
+            continue;
+        }
+        if let Some(target) = engine_data_dir(engine) {
+            std::fs::create_dir_all(&target)?;
+            if let Err(e) = sync_dir_filtered(src_dir, &target, exclude_files) {
+                errors.push(format!("{engine}: {e}"));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        eprintln!("⚠️ 部分引擎同步失败: {}", errors.join("; "));
+    }
+    Ok(())
+}
+
+fn sync_dir_filtered(src: &Path, dst: &Path, exclude_files: &[String]) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // 跳过排除的文件
+        if exclude_files.iter().any(|e| name_str == *e) {
+            continue;
+        }
+        // 跳过 build 目录
+        if name_str == "build" {
+            continue;
+        }
+
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+
+        if src_path.is_dir() {
+            sync_dir_filtered(&src_path, &dst_path, exclude_files)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// 同步 Rime 目录到其他引擎 (Fcitx 兼容模式)
 pub fn sync_to_fcitx(rime_dir: &Path, use_link: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
