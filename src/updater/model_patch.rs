@@ -24,7 +24,8 @@ pub fn patch_model(rime_dir: &Path, schema: &Schema) -> Result<()> {
     };
 
     // 获取或创建 patch section
-    let patch = doc.entry("patch".into())
+    let patch = doc
+        .entry("patch".into())
         .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
 
     if let serde_yaml::Value::Mapping(ref mut m) = patch {
@@ -60,7 +61,8 @@ pub fn unpatch_model(rime_dir: &Path, schema: &Schema) -> Result<()> {
     };
 
     if let Some(serde_yaml::Value::Mapping(ref mut m)) = doc.get_mut("patch") {
-        m.remove(&serde_yaml::Value::String("grammar/language_model".into()));
+        let key = serde_yaml::Value::String("grammar/language_model".to_string());
+        m.remove(&key);
     }
 
     let yaml = serde_yaml::to_string(&doc)?;
@@ -80,11 +82,10 @@ pub fn is_model_patched(rime_dir: &Path, schema: &Schema) -> bool {
     }
 
     let data = std::fs::read_to_string(&patch_file).unwrap_or_default();
-    let doc: HashMap<String, serde_yaml::Value> =
-        serde_yaml::from_str(&data).unwrap_or_default();
+    let doc: HashMap<String, serde_yaml::Value> = serde_yaml::from_str(&data).unwrap_or_default();
 
     if let Some(serde_yaml::Value::Mapping(m)) = doc.get("patch") {
-        m.contains_key(&serde_yaml::Value::String("grammar/language_model".into()))
+        m.contains_key(serde_yaml::Value::String("grammar/language_model".into()))
     } else {
         false
     }

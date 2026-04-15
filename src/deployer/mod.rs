@@ -28,14 +28,18 @@ pub fn deploy_to(engine: &str) -> Result<()> {
         #[cfg(target_os = "linux")]
         "ibus" => {
             let bin = find_binary("ibus")?;
-            std::process::Command::new(bin).args(["engine", "Rime"]).spawn()?;
+            std::process::Command::new(bin)
+                .args(["engine", "Rime"])
+                .spawn()?;
             println!("  ✅ IBus 已重载");
         }
         #[cfg(target_os = "macos")]
         "squirrel" => {
             let squirrel = "/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel";
             if Path::new(squirrel).exists() {
-                std::process::Command::new(squirrel).arg("--reload").spawn()?;
+                std::process::Command::new(squirrel)
+                    .arg("--reload")
+                    .spawn()?;
                 println!("  ✅ 鼠须管已重载");
             }
         }
@@ -84,6 +88,7 @@ pub fn detect_engines() -> Vec<String> {
 }
 
 /// 获取主引擎数据目录
+#[allow(dead_code)]
 pub fn engine_data_dir(engine: &str) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     match engine {
@@ -103,6 +108,7 @@ pub fn engine_data_dir(engine: &str) -> Option<PathBuf> {
 }
 
 /// 同步 Rime 目录到所有已安装引擎的数据目录
+#[allow(dead_code)]
 pub fn sync_to_engines(src_dir: &Path, exclude_files: &[String]) -> Result<()> {
     let engines = detect_engines();
     if engines.len() <= 1 {
@@ -130,6 +136,7 @@ pub fn sync_to_engines(src_dir: &Path, exclude_files: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn sync_dir_filtered(src: &Path, dst: &Path, exclude_files: &[String]) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -188,7 +195,11 @@ pub fn sync_to_fcitx(rime_dir: &Path, use_link: bool) -> Result<()> {
             }
             #[cfg(unix)]
             std::os::unix::fs::symlink(rime_dir, &fcitx_rime)?;
-            println!("  ✅ 已创建软链接: {} -> {}", fcitx_rime.display(), rime_dir.display());
+            println!(
+                "  ✅ 已创建软链接: {} -> {}",
+                fcitx_rime.display(),
+                rime_dir.display()
+            );
         } else {
             // 复制模式
             copy_dir_recursive(rime_dir, &fcitx_rime)?;

@@ -1,4 +1,8 @@
-# rime-init
+# snout
+
+> **snout** /snaʊt/ — 象鼻虫的长吻。如同象鼻虫用细长的吻精准触达目标，snout 帮你精准触达 Rime 输入法的每个组件：方案、词库、模型、皮肤。
+>
+> The snout of a weevil — long, precise, reaching exactly where it needs to go. Just like that, snout reaches into every component of your Rime setup.
 
 Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](https://github.com/ca-x/rime-wanxiang-updater)，支持 **万象**、**雾凇**、**白霜** 三大方案。
 
@@ -21,17 +25,17 @@ Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](
 ### 从源码编译
 
 ```bash
-git clone https://github.com/ca-x/rime-init.git
-cd rime-init
+git clone https://github.com/ca-x/snout.git
+cd snout
 cargo build --release
-# 二进制在 target/release/rime-init
+# 二进制在 target/release/snout
 ```
 
 ### Arch Linux (AUR)
 
 ```bash
 # 待发布
-yay -S rime-init
+yay -S snout
 ```
 
 ## 使用
@@ -39,7 +43,7 @@ yay -S rime-init
 ### TUI 模式 (默认)
 
 ```bash
-rime-init
+snout
 ```
 
 启动交互式终端界面，使用 `↑↓/jk` 导航，`Enter` 确认，`q/Esc` 退出。
@@ -47,7 +51,7 @@ rime-init
 ### 首次初始化
 
 ```bash
-rime-init --init
+snout --init
 ```
 
 引导选择方案、词库，自动下载并部署。
@@ -56,32 +60,32 @@ rime-init --init
 
 ```bash
 # 一键更新所有
-rime-init --update
+snout --update
 
 # 仅更新方案
-rime-init --scheme
+snout --scheme
 
 # 仅更新词库
-rime-init --dict
+snout --dict
 
 # 仅更新模型
-rime-init --model
+snout --model
 
 # 更新模型并启用 patch
-rime-init --model --patch-model
+snout --model --patch-model
 ```
 
 ### 其他选项
 
 ```bash
 # 使用 CNB 镜像 (国内加速)
-rime-init --update --mirror
+snout --update --mirror
 
 # 设置代理
-rime-init --update --proxy socks5://127.0.0.1:1080
+snout --update --proxy socks5://127.0.0.1:1080
 
 # 英文界面
-rime-init --lang en --update
+snout --lang en --update
 ```
 
 ## 支持的方案
@@ -101,7 +105,7 @@ rime-init --lang en --update
 
 ```
 ╔══════════════════════════════════════╗
-║  rime-init v0.1.0  万象拼音 (标准版)  ║
+║  snout v0.1.0  万象拼音 (标准版)  ║
 ╚══════════════════════════════════════╝
 
   1. 一键更新
@@ -129,9 +133,9 @@ rime-init --lang en --update
 
 配置文件位置:
 
-- **Linux**: `~/.config/rime-init/config.json`
-- **macOS**: `~/Library/Application Support/rime-init/config.json`
-- **Windows**: `%APPDATA%\rime-init\config.json`
+- **Linux**: `~/.config/snout/config.json`
+- **macOS**: `~/Library/Application Support/snout/config.json`
+- **Windows**: `%APPDATA%\snout\config.json`
 
 ```json
 {
@@ -198,3 +202,48 @@ MIT
 - [RIME-LMDG](https://github.com/amzxyz/RIME-LMDG) - 语法模型
 - [ratatui](https://github.com/ratatui/ratatui) - TUI 框架
 - [reqwest](https://github.com/seanmonstar/reqwest) - HTTP 客户端
+
+---
+
+# English
+
+> **snout** /snaʊt/ — the elongated rostrum of a weevil. Like a weevil reaching precisely into a seed, snout reaches into every component of your Rime input method: schemas, dictionaries, models, and skins.
+
+A Rime input method initialization & update tool. Rust rewrite of [rime-wanxiang-updater](https://github.com/ca-x/rime-wanxiang-updater), supporting **Wanxiang**, **Rime Ice**, and **Rime Frost** schemas.
+
+## Features
+
+- 🔄 **One-click update**: Schemas, dictionaries, and language models in one command
+- 🎨 **TUI**: Interactive terminal UI powered by ratatui
+- 🌐 **Multi-schema**: Wanxiang (10 variants) + Rime Ice + Rime Frost
+- 🧠 **Model patch**: Auto-download and enable Wanxiang grammar model
+- 🎭 **Skin patch**: 6 built-in themes, one-click apply
+- 🌍 **i18n**: Chinese and English (`--lang en`)
+- 🪞 **CNB mirror**: Faster downloads in China
+- 🔐 **SHA256 verification**: File integrity guaranteed
+- 💾 **Cache reuse**: Skip re-downloading unchanged files
+- 🔌 **Proxy**: SOCKS5 / HTTP support
+- ⚡ **Cross-platform**: Windows / macOS / Linux
+
+## Install
+
+```bash
+git clone https://github.com/ca-x/snout.git
+cd snout
+cargo build --release
+```
+
+## Usage
+
+```bash
+snout                  # Launch TUI
+snout --init           # First-time setup wizard
+snout --update         # Update everything
+snout --update --mirror  # Use CNB mirror (China)
+snout --update --proxy socks5://127.0.0.1:1080  # With proxy
+snout --lang en --update  # English interface
+```
+
+## License
+
+MIT

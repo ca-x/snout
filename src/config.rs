@@ -38,26 +38,31 @@ impl Manager {
     }
 
     /// 方案记录路径
+    #[allow(dead_code)]
     pub fn scheme_record_path(&self) -> PathBuf {
         self.cache_dir.join("scheme_record.json")
     }
 
     /// 词库记录路径
+    #[allow(dead_code)]
     pub fn dict_record_path(&self) -> PathBuf {
         self.cache_dir.join("dict_record.json")
     }
 
     /// 模型记录路径
+    #[allow(dead_code)]
     pub fn model_record_path(&self) -> PathBuf {
         self.cache_dir.join("model_record.json")
     }
 
     /// 方案解压路径 (就是 Rime 用户目录)
+    #[allow(dead_code)]
     pub fn extract_path(&self) -> &Path {
         &self.rime_dir
     }
 
     /// 词库解压路径
+    #[allow(dead_code)]
     pub fn dict_extract_path(&self) -> PathBuf {
         self.rime_dir.join("dicts")
     }
@@ -74,7 +79,7 @@ fn get_config_path() -> Result<PathBuf> {
     } else {
         dirs::config_dir().context("无法获取 config 目录")?
     };
-    Ok(dir.join("rime-init/config.json"))
+    Ok(dir.join("snout/config.json"))
 }
 
 fn load_or_create_config(path: &Path) -> Result<Config> {
@@ -95,14 +100,10 @@ fn detect_rime_dir() -> PathBuf {
         let appdata = std::env::var("APPDATA").unwrap_or_default();
         PathBuf::from(appdata).join("Rime")
     } else if cfg!(target_os = "macos") {
-        dirs::home_dir()
-            .unwrap_or_default()
-            .join("Library/Rime")
+        dirs::home_dir().unwrap_or_default().join("Library/Rime")
     } else {
         // Linux: 优先 Fcitx5, 然后 IBus
-        let fcitx5 = dirs::data_dir()
-            .unwrap_or_default()
-            .join("fcitx5/rime");
+        let fcitx5 = dirs::data_dir().unwrap_or_default().join("fcitx5/rime");
         if fcitx5.parent().map(|p| p.exists()).unwrap_or(false) {
             fcitx5
         } else {
@@ -116,15 +117,13 @@ fn detect_rime_dir() -> PathBuf {
 fn get_cache_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
         let appdata = std::env::var("APPDATA").unwrap_or_default();
-        PathBuf::from(appdata).join("rime-init/cache")
+        PathBuf::from(appdata).join("snout/cache")
     } else if cfg!(target_os = "macos") {
         dirs::home_dir()
             .unwrap_or_default()
-            .join("Library/Caches/rime-init")
+            .join("Library/Caches/snout")
     } else {
-        dirs::cache_dir()
-            .unwrap_or_default()
-            .join("rime-init")
+        dirs::cache_dir().unwrap_or_default().join("snout")
     }
 }
 

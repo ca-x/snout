@@ -30,8 +30,8 @@ impl L10n {
         let mut en = HashMap::new();
 
         // ── 通用 ──
-        zh.insert("app.name", "rime-init");
-        en.insert("app.name", "rime-init");
+        zh.insert("app.name", "snout");
+        en.insert("app.name", "snout");
         zh.insert("app.desc", "Rime 输入法初始化与更新工具");
         en.insert("app.desc", "Rime Input Method Init & Update Tool");
 
@@ -111,7 +111,10 @@ impl L10n {
         zh.insert("patch.model.disabled", "模型 patch 已移除");
         en.insert("patch.model.disabled", "Model patch removed");
         zh.insert("patch.model.not_supported", "此方案不支持模型 patch");
-        en.insert("patch.model.not_supported", "This scheme does not support model patch");
+        en.insert(
+            "patch.model.not_supported",
+            "This scheme does not support model patch",
+        );
 
         // ── 皮肤 ──
         zh.insert("skin.select", "选择皮肤");
@@ -168,7 +171,7 @@ impl L10n {
         Self { lang, zh, en }
     }
 
-    pub fn t<'a>(&'a self, key: &'a str) -> &str {
+    pub fn t<'a>(&'a self, key: &'a str) -> &'a str {
         let map = match self.lang {
             Lang::Zh => &self.zh,
             Lang::En => &self.en,
@@ -176,6 +179,7 @@ impl L10n {
         map.get(key).copied().unwrap_or(key)
     }
 
+    #[allow(dead_code)]
     pub fn lang(&self) -> Lang {
         self.lang
     }

@@ -1,6 +1,6 @@
 use crate::types::*;
 use anyhow::{Context, Result};
-use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap};
+use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION};
 use reqwest::Proxy;
 
 pub struct Client {
@@ -13,20 +13,16 @@ impl Client {
     pub fn new(config: &Config) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .user_agent("rime-init/0.1");
+            .user_agent("snout/0.1");
 
         // 代理
         if config.proxy_enabled {
             let proxy = match config.proxy_type.as_str() {
-                "http" | "https" => {
-                    Proxy::all(format!("http://{}", config.proxy_address))?
-                }
-                "socks5" => {
-                    Proxy::all(format!("socks5://{}", config.proxy_address))?
-                }
+                "http" | "https" => Proxy::all(format!("http://{}", config.proxy_address))?,
+                "socks5" => Proxy::all(format!("socks5://{}", config.proxy_address))?,
                 _ => {
                     eprintln!("⚠️ 未知代理类型: {}", config.proxy_type);
-                    return Err(anyhow::anyhow!("未知代理类型").into());
+                    return Err(anyhow::anyhow!("未知代理类型"));
                 }
             };
             builder = builder.proxy(proxy);
@@ -41,14 +37,13 @@ impl Client {
 
     /// 无超时的 client (用于大文件下载)
     pub fn new_download_client(config: &Config) -> Result<Self> {
-        let mut builder = reqwest::Client::builder()
-            .user_agent("rime-init/0.1");
+        let mut builder = reqwest::Client::builder().user_agent("snout/0.1");
 
         if config.proxy_enabled {
             let proxy = match config.proxy_type.as_str() {
                 "http" | "https" => Proxy::all(format!("http://{}", config.proxy_address))?,
                 "socks5" => Proxy::all(format!("socks5://{}", config.proxy_address))?,
-                _ => return Err(anyhow::anyhow!("未知代理类型").into()),
+                _ => return Err(anyhow::anyhow!("未知代理类型")),
             };
             builder = builder.proxy(proxy);
         }
@@ -73,10 +68,7 @@ impl Client {
 
     fn cnb_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            ACCEPT,
-            "application/vnd.cnb.web+json".parse().unwrap(),
-        );
+        headers.insert(ACCEPT, "application/vnd.cnb.web+json".parse().unwrap());
         if !self.github_token.is_empty() {
             headers.insert(
                 AUTHORIZATION,
@@ -149,11 +141,8 @@ impl Client {
     }
 
     /// 获取 CNB 最新 tag
-    pub async fn fetch_cnb_latest_tag(
-        &self,
-        owner: &str,
-        repo: &str,
-    ) -> Result<String> {
+    #[allow(dead_code)]
+    pub async fn fetch_cnb_latest_tag(&self, owner: &str, repo: &str) -> Result<String> {
         let url = format!("{CNB_BASE}/{owner}/{repo}/-/releases?page=1&per_page=1");
         let resp = self
             .http

@@ -38,8 +38,8 @@ pub enum Schema {
     WanxiangShouyou,
     WanxiangShyplus,
     WanxiangWx,
-    Ice,     // 雾凇
-    Frost,   // 白霜
+    Ice,   // 雾凇
+    Frost, // 白霜
 }
 
 impl Schema {
@@ -170,6 +170,7 @@ impl Schema {
     }
 
     /// 方案 zip 内含的主目录 (用于 CNB 镜像嵌套目录处理)
+    #[allow(dead_code)]
     pub fn extract_subdir(&self) -> Option<&'static str> {
         match self {
             Schema::Frost => None,
@@ -207,15 +208,17 @@ impl std::str::FromStr for Schema {
 }
 
 // ── 引擎类型 ──
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Engine {
-    Weasel,  // 小狼毫 (Windows)
+    Weasel,   // 小狼毫 (Windows)
     Squirrel, // 鼠须管 (macOS)
-    Fcitx5,  // Linux Fcitx5
-    IBus,    // Linux IBus
+    Fcitx5,   // Linux Fcitx5
+    IBus,     // Linux IBus
 }
 
 impl Engine {
+    #[allow(dead_code)]
     pub fn display_name(&self) -> &'static str {
         match self {
             Engine::Weasel => "小狼毫 (Weasel)",
@@ -233,18 +236,18 @@ pub struct Config {
     pub use_mirror: bool,
     pub github_token: String,
     pub proxy_enabled: bool,
-    pub proxy_type: String,       // "socks5" | "http"
-    pub proxy_address: String,    // "127.0.0.1:1080"
+    pub proxy_type: String,    // "socks5" | "http"
+    pub proxy_address: String, // "127.0.0.1:1080"
     pub exclude_files: Vec<String>,
     pub auto_update: bool,
     pub auto_update_countdown: i32,
     pub pre_update_hook: String,
     pub post_update_hook: String,
-    pub language: String,         // "zh" | "en"
-    pub fcitx_compat: bool,       // Linux: 同步到 ~/.config/fcitx/rime/
-    pub fcitx_use_link: bool,     // 使用软链接还是复制
+    pub language: String,          // "zh" | "en"
+    pub fcitx_compat: bool,        // Linux: 同步到 ~/.config/fcitx/rime/
+    pub fcitx_use_link: bool,      // 使用软链接还是复制
     pub model_patch_enabled: bool, // 是否自动 patch 模型
-    pub skin_patch_key: String,   // 内置皮肤 key, 为空表示不 patch
+    pub skin_patch_key: String,    // 内置皮肤 key, 为空表示不 patch
 }
 
 impl Default for Config {
@@ -297,6 +300,7 @@ pub struct GitHubRelease {
     pub tag_name: String,
     pub body: String,
     pub assets: Vec<GitHubAsset>,
+    #[allow(dead_code)]
     pub published_at: Option<String>,
 }
 
@@ -310,6 +314,7 @@ pub struct GitHubAsset {
 }
 
 // ── 更新状态 ──
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct UpdateStatus {
     pub local_version: String,

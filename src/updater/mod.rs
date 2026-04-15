@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// 更新结果
+#[allow(dead_code)]
 pub struct UpdateResult {
     pub component: String,
     pub old_version: String,
@@ -58,6 +59,7 @@ impl BaseUpdater {
     }
 
     /// 从 GitHub releases 中查找匹配的 asset
+    #[allow(dead_code)]
     pub fn find_asset<'a>(
         releases: &'a [GitHubRelease],
         filename: &str,
@@ -124,18 +126,21 @@ pub struct SchemeUpdater {
 impl SchemeUpdater {
     pub async fn check_update(&self, schema: &Schema) -> Result<UpdateInfo> {
         let releases = if self.base.client.use_mirror() && schema.is_wanxiang() {
-            let release = self.base.client.fetch_cnb_release(
-                WX_OWNER,
-                WX_CNB_REPO,
-                &format!("latest/{}", schema.scheme_zip()),
-            ).await?;
+            let release = self
+                .base
+                .client
+                .fetch_cnb_release(
+                    WX_OWNER,
+                    WX_CNB_REPO,
+                    &format!("latest/{}", schema.scheme_zip()),
+                )
+                .await?;
             vec![release]
         } else {
-            self.base.client.fetch_github_releases(
-                schema.owner(),
-                schema.repo(),
-                "",
-            ).await?
+            self.base
+                .client
+                .fetch_github_releases(schema.owner(), schema.repo(), "")
+                .await?
         };
 
         BaseUpdater::find_update_info(&releases, schema.scheme_zip(), None)
@@ -155,14 +160,19 @@ impl SchemeUpdater {
         let local = BaseUpdater::load_record(&record_path);
 
         // 关键文件检测: lua/wanxiang.lua 不存在则强制更新
-        let key_file_missing = schema.is_wanxiang() && !self.base.rime_dir.join("lua/wanxiang.lua").exists();
+        let key_file_missing =
+            schema.is_wanxiang() && !self.base.rime_dir.join("lua/wanxiang.lua").exists();
 
         // 方案切换检测: record name 不匹配则需要重新下载
-        let scheme_switched = local.as_ref()
+        let scheme_switched = local
+            .as_ref()
             .map(|r| r.name != schema.scheme_zip())
             .unwrap_or(false);
 
-        if !key_file_missing && !scheme_switched && !BaseUpdater::needs_update(local.as_ref(), &info) {
+        if !key_file_missing
+            && !scheme_switched
+            && !BaseUpdater::needs_update(local.as_ref(), &info)
+        {
             progress("方案已是最新", 1.0);
             return Ok(UpdateResult {
                 component: "方案".into(),
@@ -187,10 +197,12 @@ impl SchemeUpdater {
                 progress("缓存有效，跳过下载", 0.70);
             } else {
                 // 缓存无效，下载
-                self.do_download(&info, config, &zip_path, &mut progress).await?;
+                self.do_download(&info, config, &zip_path, &mut progress)
+                    .await?;
             }
         } else {
-            self.do_download(&info, config, &zip_path, &mut progress).await?;
+            self.do_download(&info, config, &zip_path, &mut progress)
+                .await?;
         }
 
         // SHA256 校验
@@ -206,10 +218,7 @@ impl SchemeUpdater {
 
         // 处理 CNB 嵌套目录
         if self.base.client.use_mirror() {
-            let _ = fileutil::extract::handle_nested_dir(
-                &self.base.rime_dir,
-                &info.name,
-            );
+            let _ = fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name);
         }
 
         progress("保存记录...", 0.95);
@@ -247,12 +256,17 @@ impl SchemeUpdater {
     ) -> Result<()> {
         progress("下载方案...", 0.15);
         let dl_client = Client::new_download_client(config)?;
-        dl_client.download_file(&info.url, zip_path, |downloaded, total| {
-            if let Some(t) = total {
-                let pct = 0.15 + (downloaded as f64 / t as f64) * 0.55;
-                progress(&format!("下载中... {:.0}%", (downloaded as f64 / t as f64) * 100.0), pct);
-            }
-        }).await
+        dl_client
+            .download_file(&info.url, zip_path, |downloaded, total| {
+                if let Some(t) = total {
+                    let pct = 0.15 + (downloaded as f64 / t as f64) * 0.55;
+                    progress(
+                        &format!("下载中... {:.0}%", (downloaded as f64 / t as f64) * 100.0),
+                        pct,
+                    );
+                }
+            })
+            .await
     }
 }
 
@@ -263,8 +277,7 @@ pub struct DictUpdater {
 
 impl DictUpdater {
     pub async fn check_update(&self, schema: &Schema) -> Result<UpdateInfo> {
-        let dict_zip = schema.dict_zip()
-            .context("此方案无独立词库")?;
+        let dict_zip = schema.dict_zip().context("此方案无独立词库")?;
 
         if self.base.client.use_mirror() && schema.is_wanxiang() {
             let tag = if dict_zip.starts_with("base") {
@@ -272,18 +285,21 @@ impl DictUpdater {
             } else {
                 "latest"
             };
-            let release = self.base.client.fetch_cnb_release(
-                WX_OWNER, WX_CNB_REPO, tag,
-            ).await?;
+            let release = self
+                .base
+                .client
+                .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, tag)
+                .await?;
             BaseUpdater::find_update_info(&[release], dict_zip, None)
         } else {
-            let releases = self.base.client.fetch_github_releases(
-                schema.owner(),
-                schema.repo(),
-                schema.dict_tag(),
-            ).await?;
+            let releases = self
+                .base
+                .client
+                .fetch_github_releases(schema.owner(), schema.repo(), schema.dict_tag())
+                .await?;
             BaseUpdater::find_update_info(&releases, dict_zip, None)
-        }.context(format!("未找到词库: {dict_zip}"))
+        }
+        .context(format!("未找到词库: {dict_zip}"))
     }
 
     pub async fn run(
@@ -312,12 +328,17 @@ impl DictUpdater {
         progress("下载词库...", 0.15);
         let zip_path = self.base.cache_dir.join(&info.name);
         let dl_client = Client::new_download_client(config)?;
-        dl_client.download_file(&info.url, &zip_path, |dl, total| {
-            if let Some(t) = total {
-                let pct = 0.15 + (dl as f64 / t as f64) * 0.60;
-                progress(&format!("下载中... {:.0}%", (dl as f64 / t as f64) * 100.0), pct);
-            }
-        }).await?;
+        dl_client
+            .download_file(&info.url, &zip_path, |dl, total| {
+                if let Some(t) = total {
+                    let pct = 0.15 + (dl as f64 / t as f64) * 0.60;
+                    progress(
+                        &format!("下载中... {:.0}%", (dl as f64 / t as f64) * 100.0),
+                        pct,
+                    );
+                }
+            })
+            .await?;
 
         if !info.sha256.is_empty() {
             progress("校验文件...", 0.80);
@@ -363,9 +384,11 @@ pub struct ModelUpdater {
 
 impl ModelUpdater {
     pub async fn check_update(&self) -> Result<UpdateInfo> {
-        let releases = self.base.client.fetch_github_releases(
-            WX_OWNER, MODEL_REPO, MODEL_TAG,
-        ).await?;
+        let releases = self
+            .base
+            .client
+            .fetch_github_releases(WX_OWNER, MODEL_REPO, MODEL_TAG)
+            .await?;
 
         BaseUpdater::find_update_info(&releases, MODEL_FILE, None)
             .context(format!("未找到模型: {MODEL_FILE}"))
@@ -387,29 +410,35 @@ impl ModelUpdater {
         // 已有相同文件则跳过
         if target.exists() {
             if let Some(ref rec) = local {
-                if rec.name == MODEL_FILE && !info.sha256.is_empty() {
-                    if self.base.hash_matches(&info.sha256, &target) {
-                        progress("模型已是最新", 1.0);
-                        return Ok(UpdateResult {
-                            component: "模型".into(),
-                            old_version: rec.tag.clone(),
-                            new_version: info.tag.clone(),
-                            success: true,
-                            message: "已是最新版本".into(),
-                        });
-                    }
+                if rec.name == MODEL_FILE
+                    && !info.sha256.is_empty()
+                    && self.base.hash_matches(&info.sha256, &target)
+                {
+                    progress("模型已是最新", 1.0);
+                    return Ok(UpdateResult {
+                        component: "模型".into(),
+                        old_version: rec.tag.clone(),
+                        new_version: info.tag.clone(),
+                        success: true,
+                        message: "已是最新版本".into(),
+                    });
                 }
             }
         }
 
         progress("下载模型...", 0.15);
         let dl_client = Client::new_download_client(config)?;
-        dl_client.download_file(&info.url, &target, |dl, total| {
-            if let Some(t) = total {
-                let pct = 0.15 + (dl as f64 / t as f64) * 0.75;
-                progress(&format!("下载中... {:.0}%", (dl as f64 / t as f64) * 100.0), pct);
-            }
-        }).await?;
+        dl_client
+            .download_file(&info.url, &target, |dl, total| {
+                if let Some(t) = total {
+                    let pct = 0.15 + (dl as f64 / t as f64) * 0.75;
+                    progress(
+                        &format!("下载中... {:.0}%", (dl as f64 / t as f64) * 100.0),
+                        pct,
+                    );
+                }
+            })
+            .await?;
 
         if !info.sha256.is_empty() {
             progress("校验模型...", 0.92);
@@ -467,10 +496,13 @@ pub async fn update_all(
 
     // 1. 方案
     progress("更新方案...", 0.05);
-    match (SchemeUpdater { base: BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone())? })
-        .run(schema, config, |msg, pct| {
-            progress(msg, 0.05 + pct * 0.35);
-        }).await
+    match (SchemeUpdater {
+        base: BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone())?,
+    })
+    .run(schema, config, |msg, pct| {
+        progress(msg, 0.05 + pct * 0.35);
+    })
+    .await
     {
         Ok(r) => results.push(r),
         Err(e) => results.push(UpdateResult {
@@ -485,10 +517,13 @@ pub async fn update_all(
     // 2. 词库 (如果有独立词库)
     if schema.dict_zip().is_some() {
         progress("更新词库...", 0.40);
-        match (DictUpdater { base: BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone())? })
-            .run(schema, config, |msg, pct| {
-                progress(msg, 0.40 + pct * 0.30);
-            }).await
+        match (DictUpdater {
+            base: BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone())?,
+        })
+        .run(schema, config, |msg, pct| {
+            progress(msg, 0.40 + pct * 0.30);
+        })
+        .await
         {
             Ok(r) => results.push(r),
             Err(e) => results.push(UpdateResult {
@@ -504,10 +539,13 @@ pub async fn update_all(
     // 3. 模型 (仅万象，且启用)
     if schema.supports_model_patch() && config.model_patch_enabled {
         progress("更新模型...", 0.70);
-        match (ModelUpdater { base: BaseUpdater::new(config, cache_dir, rime_dir.clone())? })
-            .run(config, |msg, pct| {
-                progress(msg, 0.70 + pct * 0.20);
-            }).await
+        match (ModelUpdater {
+            base: BaseUpdater::new(config, cache_dir, rime_dir.clone())?,
+        })
+        .run(config, |msg, pct| {
+            progress(msg, 0.70 + pct * 0.20);
+        })
+        .await
         {
             Ok(r) => results.push(r),
             Err(e) => results.push(UpdateResult {

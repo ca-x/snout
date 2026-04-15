@@ -1,17 +1,17 @@
-mod config;
-mod types;
 mod api;
-mod updater;
-mod fileutil;
+mod config;
 mod deployer;
-mod skin;
-mod ui;
+mod fileutil;
 mod i18n;
+mod skin;
+mod types;
+mod ui;
+mod updater;
 
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "rime-init", version, about = "Rime 输入法初始化与更新工具")]
+#[command(name = "snout", version, about = "Rime 输入法初始化与更新工具")]
 struct Cli {
     /// 首次初始化模式
     #[arg(long)]
@@ -87,15 +87,18 @@ async fn main() -> anyhow::Result<()> {
             updater::update_all(&schema, &manager.config, cache_dir, rime_dir, |msg, pct| {
                 print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
                 std::io::Write::flush(&mut std::io::stdout()).ok();
-            }).await?;
+            })
+            .await?;
             println!();
         } else if cli.scheme {
             let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir)?;
             let scheme_updater = updater::SchemeUpdater { base };
-            scheme_updater.run(&schema, &manager.config, |msg, pct| {
-                print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
-            }).await?;
+            scheme_updater
+                .run(&schema, &manager.config, |msg, pct| {
+                    print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                })
+                .await?;
             println!();
         } else if cli.dict {
             if schema.dict_zip().is_some() {
@@ -104,7 +107,8 @@ async fn main() -> anyhow::Result<()> {
                 dict.run(&schema, &manager.config, |msg, pct| {
                     print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
                     std::io::Write::flush(&mut std::io::stdout()).ok();
-                }).await?;
+                })
+                .await?;
                 println!();
             } else {
                 eprintln!("此方案无独立词库");
@@ -112,10 +116,12 @@ async fn main() -> anyhow::Result<()> {
         } else if cli.model {
             let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir.clone())?;
             let model = updater::ModelUpdater { base };
-            model.run(&manager.config, |msg, pct| {
-                print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
-                std::io::Write::flush(&mut std::io::stdout()).ok();
-            }).await?;
+            model
+                .run(&manager.config, |msg, pct| {
+                    print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                })
+                .await?;
 
             if cli.patch_model && schema.supports_model_patch() {
                 updater::model_patch::patch_model(&rime_dir, &schema)?;

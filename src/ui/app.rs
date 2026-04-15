@@ -9,10 +9,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Alignment, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Gauge, Wrap, Clear},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -223,7 +223,7 @@ fn handle_result_key(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_scheme_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<()> {
+fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()> {
     let schemas = Schema::all();
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -254,7 +254,7 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<(
     Ok(())
 }
 
-fn handle_skin_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<()> {
+fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()> {
     let skins = crate::skin::list_available_skins();
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -327,18 +327,22 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
 
     // 使用 channel 报告进度 (简化版：直接在终端显示)
     // 实际更新在后台执行，这里用 tokio::spawn
-    
+
     let results = match mode {
         UpdateMode::All => {
-            updater::update_all(&schema, &config, cache_dir, rime_dir, |msg, pct| {
+            updater::update_all(&schema, &config, cache_dir, rime_dir, |_msg, _pct| {
                 // 注意: 在真实 TUI 中这里应该用 channel 更新 app 状态
                 // 简化版直接打印到 stdout (会被 TUI 覆盖)
-            }).await
+            })
+            .await
         }
         UpdateMode::Scheme => {
             let base = updater::BaseUpdater::new(&config, cache_dir, rime_dir).unwrap();
             let scheme = updater::SchemeUpdater { base };
-            scheme.run(&schema, &config, |_, _| {}).await.map(|r| vec![r])
+            scheme
+                .run(&schema, &config, |_, _| {})
+                .await
+                .map(|r| vec![r])
         }
         UpdateMode::Dict => {
             let base = updater::BaseUpdater::new(&config, cache_dir, rime_dir).unwrap();
@@ -377,10 +381,8 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
         Ok(rs) => {
             for r in &rs {
                 let icon = if r.success { "✅" } else { "❌" };
-                app.update_results.push(format!(
-                    "{icon} {} - {}",
-                    r.component, r.message
-                ));
+                app.update_results
+                    .push(format!("{icon} {} - {}", r.component, r.message));
             }
             app.update_msg = "更新完成".into();
         }
@@ -405,7 +407,7 @@ fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(5),  // header
+            Constraint::Length(5), // header
             Constraint::Min(8),    // body
             Constraint::Length(3), // footer
         ])
@@ -413,19 +415,29 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Header
     let header_text = vec![
-        Line::from(vec![
-            Span::styled("╔══════════════════════════════════════╗", Style::default().fg(Color::Cyan)),
-        ]),
+        Line::from(vec![Span::styled(
+            "╔══════════════════════════════════════╗",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(vec![
             Span::styled("║  ", Style::default().fg(Color::Cyan)),
-            Span::styled("rime-init", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "snout",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" v0.1.0  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!(" {}", app.schema.display_name()), Style::default().fg(Color::Green)),
+            Span::styled(
+                format!(" {}", app.schema.display_name()),
+                Style::default().fg(Color::Green),
+            ),
             Span::styled("  ║", Style::default().fg(Color::Cyan)),
         ]),
-        Line::from(vec![
-            Span::styled("╚══════════════════════════════════════╝", Style::default().fg(Color::Cyan)),
-        ]),
+        Line::from(vec![Span::styled(
+            "╚══════════════════════════════════════╝",
+            Style::default().fg(Color::Cyan),
+        )]),
     ];
     let header = Paragraph::new(header_text).alignment(Alignment::Center);
     f.render_widget(header, chunks[0]);
@@ -442,7 +454,10 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Footer / 通知
     let footer_text = if let Some((msg, _)) = &app.notification {
-        vec![Span::styled(format!(" 💡 {msg}"), Style::default().fg(Color::Yellow))]
+        vec![Span::styled(
+            format!(" 💡 {msg}"),
+            Style::default().fg(Color::Yellow),
+        )]
     } else {
         vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::DarkGray)),
@@ -453,8 +468,8 @@ fn ui(f: &mut Frame, app: &App) {
             Span::styled(" 返回/退出", Style::default().fg(Color::White)),
         ]
     };
-    let footer = Paragraph::new(Line::from(footer_text))
-        .block(Block::default().borders(Borders::TOP));
+    let footer =
+        Paragraph::new(Line::from(footer_text)).block(Block::default().borders(Borders::TOP));
     f.render_widget(footer, chunks[2]);
 }
 
@@ -480,7 +495,12 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray))
-                .title(Span::styled(" 主菜单 ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
+                .title(Span::styled(
+                    " 主菜单 ",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
         )
         .highlight_style(
             Style::default()
@@ -504,10 +524,11 @@ fn render_updating(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("  ⏳ ", Style::default().fg(Color::Yellow)),
         Span::styled(&app.update_msg, Style::default().fg(Color::White)),
     ]))
-    .block(Block::default().borders(Borders::ALL).title(Span::styled(
-        " 更新中 ",
-        Style::default().fg(Color::Yellow),
-    )));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(Span::styled(" 更新中 ", Style::default().fg(Color::Yellow))),
+    );
     f.render_widget(msg, chunks[0]);
 
     let gauge = Gauge::default()
@@ -528,7 +549,12 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(&app.update_msg, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &app.update_msg,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
     ];
@@ -541,9 +567,10 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  按 Enter 返回主菜单", Style::default().fg(Color::DarkGray)),
-    ]));
+    lines.push(Line::from(vec![Span::styled(
+        "  按 Enter 返回主菜单",
+        Style::default().fg(Color::DarkGray),
+    )]));
 
     let p = Paragraph::new(lines)
         .block(
@@ -560,8 +587,7 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
     let schemas = Schema::all();
     let items: Vec<ListItem> = schemas
         .iter()
-        .enumerate()
-        .map(|(i, s)| {
+        .map(|s| {
             let prefix = if *s == app.schema { " ● " } else { " ○ " };
             let style = if s.is_wanxiang() {
                 Style::default().fg(Color::Cyan)
@@ -582,10 +608,16 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(Span::styled(
                     " 选择方案 (Enter确认/Esc返回) ",
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 )),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -597,11 +629,10 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
     let skins = crate::skin::list_available_skins();
     let items: Vec<ListItem> = skins
         .iter()
-        .enumerate()
-        .map(|(i, (key, name))| {
+        .map(|(key, name)| {
             ListItem::new(Line::from(vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(format!("{name}"), Style::default().fg(Color::White)),
+                Span::styled(name.as_str(), Style::default().fg(Color::White)),
                 Span::styled(format!(" ({key})"), Style::default().fg(Color::DarkGray)),
             ]))
         })
@@ -614,10 +645,16 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
                 .border_style(Style::default().fg(Color::Magenta))
                 .title(Span::styled(
                     " 选择皮肤 (Enter确认/Esc返回) ",
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 )),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -640,33 +677,41 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(&app.config_path, Style::default().fg(Color::White)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  支持方案:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled("  • 万象拼音: amzxyz/rime_wanxiang", Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled("  • 雾凇拼音: iDvel/rime-ice", Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled("  • 白霜拼音: gaboolic/rime-frost", Style::default().fg(Color::White)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  支持方案:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            "  • 万象拼音: amzxyz/rime_wanxiang",
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(vec![Span::styled(
+            "  • 雾凇拼音: iDvel/rime-ice",
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(vec![Span::styled(
+            "  • 白霜拼音: gaboolic/rime-frost",
+            Style::default().fg(Color::White),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  按 Esc 返回", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  按 Esc 返回",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
-    let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Blue))
-                .title(Span::styled(
-                    " 配置信息 ",
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-                )),
-        );
+    let p = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Blue))
+            .title(Span::styled(
+                " 配置信息 ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
     f.render_widget(p, area);
 }

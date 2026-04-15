@@ -1,4 +1,4 @@
-# rime-init 实现进度
+# snout 实现进度
 
 ## ✅ 已完成
 
@@ -44,7 +44,7 @@
 
 ## 文件结构
 ```
-rime-init/src/
+snout/src/
 ├── main.rs           (CLI 入口)
 ├── types.rs          (核心类型定义)
 ├── config.rs         (配置管理)

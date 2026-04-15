@@ -60,8 +60,8 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: rime-init-linux-x86_64
-          path: target/release/rime-init
+          name: snout-linux-x86_64
+          path: target/release/snout
 
   build-linux-arm64:
     name: Build Linux aarch64
@@ -79,8 +79,8 @@ jobs:
       - run: cargo build --release --target aarch64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
-          name: rime-init-linux-aarch64
-          path: target/aarch64-unknown-linux-musl/release/rime-init
+          name: snout-linux-aarch64
+          path: target/aarch64-unknown-linux-musl/release/snout
 
   build-macos:
     name: Build macOS
@@ -98,8 +98,8 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
-          name: rime-init-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/rime-init
+          name: snout-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/snout
 
   build-windows:
     name: Build Windows
@@ -112,5 +112,5 @@ jobs:
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
-          name: rime-init-windows-x86_64
-          path: target/release/rime-init.exe
+          name: snout-windows-x86_64
+          path: target/release/snout.exe

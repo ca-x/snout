@@ -37,74 +37,6 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Write;
-
-    fn create_test_zip(dir: &std::path::Path, files: &[(&str, &[u8])]) -> std::path::PathBuf {
-        let zip_path = dir.join("test.zip");
-        let file = std::fs::File::create(&zip_path).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
-
-        for (name, content) in files {
-            zip.start_file(*name, options).unwrap();
-            zip.write_all(content).unwrap();
-        }
-        zip.finish().unwrap();
-        zip_path
-    }
-
-    #[test]
-    fn test_extract_simple_zip() {
-        let tmp = std::env::temp_dir().join("rime-init-test-extract");
-        if tmp.exists() {
-            std::fs::remove_dir_all(&tmp).unwrap();
-        }
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        let zip_path = create_test_zip(&tmp, &[
-            ("hello.txt", b"hello world"),
-            ("subdir/nested.txt", b"nested content"),
-        ]);
-
-        let dest = tmp.join("output");
-        extract_zip(&zip_path, &dest).unwrap();
-
-        let hello = std::fs::read_to_string(dest.join("hello.txt")).unwrap();
-        assert_eq!(hello, "hello world");
-
-        let nested = std::fs::read_to_string(dest.join("subdir/nested.txt")).unwrap();
-        assert_eq!(nested, "nested content");
-
-        std::fs::remove_dir_all(&tmp).ok();
-    }
-
-    #[test]
-    fn test_handle_nested_dir() {
-        let tmp = std::env::temp_dir().join("rime-init-test-nested");
-        if tmp.exists() {
-            std::fs::remove_dir_all(&tmp).unwrap();
-        }
-        std::fs::create_dir_all(&tmp).unwrap();
-
-        let wrapper = tmp.join("wrapper");
-        std::fs::create_dir_all(wrapper.join("lua")).unwrap();
-        std::fs::write(wrapper.join("lua/test.lua"), "test").unwrap();
-        std::fs::write(wrapper.join("schema.yaml"), "schema").unwrap();
-
-        handle_nested_dir(&tmp, "test.zip").unwrap();
-
-        assert!(tmp.join("lua/test.lua").exists());
-        assert!(tmp.join("schema.yaml").exists());
-        assert!(!wrapper.exists());
-
-        std::fs::remove_dir_all(&tmp).ok();
-    }
-}
-
 /// 处理 CNB 镜像的嵌套目录 (解压后可能多一层目录)
 pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
     let entries: Vec<_> = std::fs::read_dir(base)?
@@ -140,4 +72,75 @@ pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn create_test_zip(dir: &std::path::Path, files: &[(&str, &[u8])]) -> std::path::PathBuf {
+        let zip_path = dir.join("test.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        for (name, content) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(content).unwrap();
+        }
+        zip.finish().unwrap();
+        zip_path
+    }
+
+    #[test]
+    fn test_extract_simple_zip() {
+        let tmp = std::env::temp_dir().join("snout-test-extract");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = create_test_zip(
+            &tmp,
+            &[
+                ("hello.txt", b"hello world"),
+                ("subdir/nested.txt", b"nested content"),
+            ],
+        );
+
+        let dest = tmp.join("output");
+        extract_zip(&zip_path, &dest).unwrap();
+
+        let hello = std::fs::read_to_string(dest.join("hello.txt")).unwrap();
+        assert_eq!(hello, "hello world");
+
+        let nested = std::fs::read_to_string(dest.join("subdir/nested.txt")).unwrap();
+        assert_eq!(nested, "nested content");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_handle_nested_dir() {
+        let tmp = std::env::temp_dir().join("snout-test-nested");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let wrapper = tmp.join("wrapper");
+        std::fs::create_dir_all(wrapper.join("lua")).unwrap();
+        std::fs::write(wrapper.join("lua/test.lua"), "test").unwrap();
+        std::fs::write(wrapper.join("schema.yaml"), "schema").unwrap();
+
+        handle_nested_dir(&tmp, "test.zip").unwrap();
+
+        assert!(tmp.join("lua/test.lua").exists());
+        assert!(tmp.join("schema.yaml").exists());
+        assert!(!wrapper.exists());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 }

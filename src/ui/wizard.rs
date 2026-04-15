@@ -10,7 +10,7 @@ pub async fn run_init_wizard() -> Result<()> {
     let lang = Lang::from_str(&manager.config.language);
     let t = L10n::new(lang);
 
-    println!("\n🚀 rime-init {}\n", t.t("wizard.title"));
+    println!("\n🚀 snout {}\n", t.t("wizard.title"));
 
     // 1. 检测引擎
     let engines = config::detect_installed_engines();
@@ -29,7 +29,11 @@ pub async fn run_init_wizard() -> Result<()> {
         }
         return Ok(());
     }
-    println!("✅ {}: {}\n", t.t("wizard.engine_found"), engines.join(", "));
+    println!(
+        "✅ {}: {}\n",
+        t.t("wizard.engine_found"),
+        engines.join(", ")
+    );
 
     // 2. 选择方案
     println!("{}:", t.t("wizard.select_scheme"));
@@ -43,7 +47,7 @@ pub async fn run_init_wizard() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_line(&mut input)?;
     let idx: usize = input.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
-    let schema = schemas.get(idx).unwrap_or(&schemas[0]).clone();
+    let schema = *schemas.get(idx).unwrap_or(&schemas[0]);
 
     println!("✅ {}\n", schema.display_name());
 
@@ -77,13 +81,14 @@ pub async fn run_init_wizard() -> Result<()> {
             print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
             std::io::Write::flush(&mut std::io::stdout()).ok();
         },
-    ).await?;
+    )
+    .await?;
 
     println!("\n✅ {}!\n", t.t("wizard.complete"));
     if lang == Lang::Zh {
-        println!("运行 `rime-init` 打开 TUI");
+        println!("运行 `snout` 打开 TUI");
     } else {
-        println!("Run `rime-init` to open TUI");
+        println!("Run `snout` to open TUI");
     }
 
     Ok(())

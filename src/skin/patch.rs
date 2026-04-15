@@ -1,4 +1,4 @@
-use crate::skin::builtin::{find_skin, builtin_skins};
+use crate::skin::builtin::{builtin_skins, find_skin};
 use anyhow::Result;
 use serde_yaml;
 use std::collections::HashMap;
@@ -44,7 +44,10 @@ fn get_patch(doc: &mut HashMap<String, serde_yaml::Value>) -> HashMap<String, se
 }
 
 /// 设置 patch section
-fn set_patch(doc: &mut HashMap<String, serde_yaml::Value>, patch: HashMap<String, serde_yaml::Value>) {
+fn set_patch(
+    doc: &mut HashMap<String, serde_yaml::Value>,
+    patch: HashMap<String, serde_yaml::Value>,
+) {
     let mut mapping = serde_yaml::Mapping::new();
     for (k, v) in patch {
         mapping.insert(serde_yaml::Value::String(k), v);
@@ -85,6 +88,7 @@ pub fn set_default_skin(path: &Path, theme_key: &str) -> Result<()> {
 }
 
 /// 列出所有可用的内置主题
+#[allow(dead_code)]
 pub fn list_available_skins() -> Vec<(String, String)> {
     builtin_skins()
         .into_iter()
