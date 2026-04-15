@@ -25,6 +25,12 @@ pub const ICE_REPO: &str = "rime-ice";
 pub const FROST_OWNER: &str = "gaboolic";
 pub const FROST_REPO: &str = "rime-frost";
 
+// 薄荷
+pub const MINT_OWNER: &str = "Mintimate";
+pub const MINT_REPO: &str = "oh-my-rime";
+pub const MINT_BRANCH: &str = "main";
+pub const MINT_ARCHIVE: &str = "oh-my-rime.zip";
+
 // ── 方案类型 ──
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum Schema {
@@ -40,6 +46,7 @@ pub enum Schema {
     WanxiangWx,
     Ice,   // 雾凇
     Frost, // 白霜
+    Mint,  // 薄荷
 }
 
 impl Schema {
@@ -57,6 +64,7 @@ impl Schema {
             Schema::WanxiangWx,
             Schema::Ice,
             Schema::Frost,
+            Schema::Mint,
         ]
     }
 
@@ -75,6 +83,7 @@ impl Schema {
             Schema::WanxiangWx => "万象拼音 Pro (万象辅助)",
             Schema::Ice => "雾凇拼音",
             Schema::Frost => "白霜拼音",
+            Schema::Mint => "Mint Input",
         }
     }
 
@@ -83,6 +92,7 @@ impl Schema {
         match self {
             Schema::Ice => ICE_OWNER,
             Schema::Frost => FROST_OWNER,
+            Schema::Mint => MINT_OWNER,
             _ => WX_OWNER,
         }
     }
@@ -92,6 +102,7 @@ impl Schema {
         match self {
             Schema::Ice => ICE_REPO,
             Schema::Frost => FROST_REPO,
+            Schema::Mint => MINT_REPO,
             _ => WX_REPO,
         }
     }
@@ -111,6 +122,7 @@ impl Schema {
             Schema::WanxiangWx => "rime-wanxiang-wx-fuzhu.zip",
             Schema::Ice => "full.zip",
             Schema::Frost => "rime-frost-schemas.zip",
+            Schema::Mint => MINT_ARCHIVE,
         }
     }
 
@@ -129,6 +141,7 @@ impl Schema {
             Schema::WanxiangWx => Some("pro-wx-fuzhu-dicts.zip"),
             Schema::Ice => Some("all_dicts.zip"),
             Schema::Frost => None, // 白霜词库内嵌在方案 zip 中
+            Schema::Mint => None,  // 薄荷随方案仓库一起分发
         }
     }
 
@@ -137,13 +150,14 @@ impl Schema {
         match self {
             Schema::Ice => "", // 雾凇用最新 tag，和方案一起
             Schema::Frost => "1.0.0",
+            Schema::Mint => "",
             _ => WX_DICT_TAG,
         }
     }
 
     /// 是否为万象系方案
     pub fn is_wanxiang(&self) -> bool {
-        !matches!(self, Schema::Ice | Schema::Frost)
+        !matches!(self, Schema::Ice | Schema::Frost | Schema::Mint)
     }
 
     /// 是否支持将万象模型 patch 到当前方案
@@ -166,6 +180,7 @@ impl Schema {
             | Schema::WanxiangWx => "wanxiang_pro",
             Schema::Ice => "rime_ice",
             Schema::Frost => "rime_frost",
+            Schema::Mint => "rime_mint",
         }
     }
 
@@ -202,6 +217,7 @@ impl std::str::FromStr for Schema {
             "wx" => Ok(Schema::WanxiangWx),
             "ice" | "wusong" | "雾凇" => Ok(Schema::Ice),
             "frost" | "baishuang" | "白霜" => Ok(Schema::Frost),
+            "mint" | "bohe" | "薄荷" => Ok(Schema::Mint),
             _ => anyhow::bail!("未知方案: {}", s),
         }
     }
@@ -332,6 +348,7 @@ mod tests {
         assert_eq!(Schema::WanxiangBase.display_name(), "万象拼音 (标准版)");
         assert_eq!(Schema::Ice.display_name(), "雾凇拼音");
         assert_eq!(Schema::Frost.display_name(), "白霜拼音");
+        assert_eq!(Schema::Mint.display_name(), "Mint Input");
     }
 
     #[test]
@@ -340,6 +357,7 @@ mod tests {
         assert!(Schema::WanxiangMoqi.is_wanxiang());
         assert!(!Schema::Ice.is_wanxiang());
         assert!(!Schema::Frost.is_wanxiang());
+        assert!(!Schema::Mint.is_wanxiang());
     }
 
     #[test]
@@ -347,6 +365,7 @@ mod tests {
         assert!(Schema::WanxiangBase.supports_model_patch());
         assert!(Schema::Ice.supports_model_patch());
         assert!(Schema::Frost.supports_model_patch());
+        assert!(Schema::Mint.supports_model_patch());
     }
 
     #[test]
@@ -356,6 +375,8 @@ mod tests {
         assert_eq!("雾凇".parse::<Schema>().unwrap(), Schema::Ice);
         assert_eq!("frost".parse::<Schema>().unwrap(), Schema::Frost);
         assert_eq!("白霜".parse::<Schema>().unwrap(), Schema::Frost);
+        assert_eq!("mint".parse::<Schema>().unwrap(), Schema::Mint);
+        assert_eq!("薄荷".parse::<Schema>().unwrap(), Schema::Mint);
         assert!("unknown".parse::<Schema>().is_err());
     }
 
@@ -364,6 +385,7 @@ mod tests {
         assert_eq!(Schema::WanxiangBase.scheme_zip(), "rime-wanxiang-base.zip");
         assert_eq!(Schema::Ice.scheme_zip(), "full.zip");
         assert_eq!(Schema::Frost.scheme_zip(), "rime-frost-schemas.zip");
+        assert_eq!(Schema::Mint.scheme_zip(), "oh-my-rime.zip");
     }
 
     #[test]
@@ -407,6 +429,7 @@ mod tests {
         );
         assert_eq!(Schema::Ice.dict_zip(), Some("all_dicts.zip"));
         assert_eq!(Schema::Frost.dict_zip(), None);
+        assert_eq!(Schema::Mint.dict_zip(), None);
     }
 
     #[test]
@@ -417,6 +440,8 @@ mod tests {
         assert_eq!(Schema::Ice.repo(), "rime-ice");
         assert_eq!(Schema::Frost.owner(), "gaboolic");
         assert_eq!(Schema::Frost.repo(), "rime-frost");
+        assert_eq!(Schema::Mint.owner(), "Mintimate");
+        assert_eq!(Schema::Mint.repo(), "oh-my-rime");
     }
 
     #[test]
@@ -425,6 +450,7 @@ mod tests {
         assert_eq!(Schema::WanxiangMoqi.schema_id(), "wanxiang_pro");
         assert_eq!(Schema::Ice.schema_id(), "rime_ice");
         assert_eq!(Schema::Frost.schema_id(), "rime_frost");
+        assert_eq!(Schema::Mint.schema_id(), "rime_mint");
     }
 
     #[test]

@@ -80,6 +80,45 @@ impl Client {
 
     // ── GitHub Releases ──
 
+    /// 获取 GitHub 分支头信息并构造归档下载信息
+    pub async fn fetch_github_branch_archive(
+        &self,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+        archive_name: &str,
+    ) -> Result<UpdateInfo> {
+        let url = format!("{GITHUB_API}/repos/{owner}/{repo}/branches/{branch}");
+
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.github_headers())
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            anyhow::bail!("GitHub Branch API 返回 {}", resp.status());
+        }
+
+        let branch_info: serde_json::Value = resp.json().await?;
+        let sha = branch_info
+            .get("commit")
+            .and_then(|v| v.get("sha"))
+            .and_then(|v| v.as_str())
+            .context("GitHub Branch API 缺少 commit.sha")?;
+
+        Ok(UpdateInfo {
+            name: archive_name.into(),
+            url: format!("https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"),
+            update_time: String::new(),
+            tag: sha.into(),
+            description: format!("{owner}/{repo}@{branch}"),
+            sha256: String::new(),
+            size: 0,
+        })
+    }
+
     /// 获取 GitHub Releases (可选 tag 过滤)
     pub async fn fetch_github_releases(
         &self,

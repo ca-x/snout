@@ -143,6 +143,13 @@ impl L10n {
         en.insert("update.download_progress", "Downloading...");
         zh.insert("update.scheme_done", "方案更新完成");
         en.insert("update.scheme_done", "Scheme update complete");
+        zh.insert("update.mint_scheme_checking", "检查薄荷方案更新...");
+        en.insert(
+            "update.mint_scheme_checking",
+            "Checking Mint scheme updates...",
+        );
+        zh.insert("update.mint_scheme_done", "薄荷方案更新完成");
+        en.insert("update.mint_scheme_done", "Mint scheme update complete");
         zh.insert("update.dict_done", "词库更新完成");
         en.insert("update.dict_done", "Dict update complete");
         zh.insert("update.model_done", "模型更新完成");

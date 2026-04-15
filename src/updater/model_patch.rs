@@ -109,7 +109,7 @@ fn has_model_patch(doc: &PatchDoc, schema: &Schema) -> bool {
 
 fn patch_spec_for_schema(schema: &Schema) -> Vec<(&'static str, serde_yaml::Value)> {
     match schema {
-        Schema::Ice | Schema::Frost => vec![
+        Schema::Ice | Schema::Frost | Schema::Mint => vec![
             (
                 "grammar/language",
                 serde_yaml::Value::String(MODEL_VALUE.into()),
@@ -291,6 +291,39 @@ mod tests {
         assert_eq!(
             patch.get(serde_yaml::Value::String(
                 "translator/max_homographs".into()
+            )),
+            Some(&serde_yaml::Value::Number(7.into()))
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn mint_patch_matches_documented_shape() {
+        let dir = temp_rime_dir("model-patch-mint-shape");
+
+        patch_model(&dir, &Schema::Mint).expect("patch mint model");
+
+        let patch_file = patch_file_path(&dir, &Schema::Mint);
+        let doc = load_patch_doc(&patch_file).expect("load patch doc");
+        let patch = match doc.get(PATCH_KEY) {
+            Some(serde_yaml::Value::Mapping(mapping)) => mapping,
+            other => panic!("unexpected patch mapping: {other:?}"),
+        };
+
+        assert_eq!(
+            patch.get(serde_yaml::Value::String("grammar/language".into())),
+            Some(&serde_yaml::Value::String(MODEL_VALUE.into()))
+        );
+        assert_eq!(
+            patch.get(serde_yaml::Value::String(
+                "translator/contextual_suggestions".into()
+            )),
+            Some(&serde_yaml::Value::Bool(true))
+        );
+        assert_eq!(
+            patch.get(serde_yaml::Value::String(
+                "translator/max_homophones".into()
             )),
             Some(&serde_yaml::Value::Number(7.into()))
         );

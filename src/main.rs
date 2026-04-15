@@ -107,8 +107,15 @@ async fn main() -> anyhow::Result<()> {
                         std::io::Write::flush(&mut std::io::stdout()).ok();
                     })
                     .await?;
-            } else {
+            } else if schema == Schema::Frost {
                 updater::frost::FrostUpdater { base }
+                    .update_scheme(&manager.config, |msg, pct| {
+                        print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
+                        std::io::Write::flush(&mut std::io::stdout()).ok();
+                    })
+                    .await?;
+            } else {
+                updater::mint::MintUpdater { base }
                     .update_scheme(&manager.config, |msg, pct| {
                         print!("\r  [{:3.0}%] {}", pct * 100.0, msg);
                         std::io::Write::flush(&mut std::io::stdout()).ok();

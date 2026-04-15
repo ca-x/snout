@@ -102,8 +102,6 @@ fn skin_patch_target(rime_dir: &std::path::Path) -> anyhow::Result<std::path::Pa
         Ok(rime_dir.join("weasel.custom.yaml"))
     } else if cfg!(target_os = "macos") {
         Ok(rime_dir.join("squirrel.custom.yaml"))
-    } else if cfg!(target_os = "linux") {
-        Ok(rime_dir.join("default.custom.yaml"))
     } else {
         anyhow::bail!("当前平台不支持皮肤 Patch")
     }
@@ -856,15 +854,19 @@ mod tests {
     #[test]
     fn skin_patch_target_matches_platform_convention() {
         let base = std::path::Path::new("/tmp/rime");
-        let target = skin_patch_target(base).unwrap();
-
         #[cfg(target_os = "windows")]
-        assert_eq!(target, base.join("weasel.custom.yaml"));
+        assert_eq!(
+            skin_patch_target(base).unwrap(),
+            base.join("weasel.custom.yaml")
+        );
 
         #[cfg(target_os = "macos")]
-        assert_eq!(target, base.join("squirrel.custom.yaml"));
+        assert_eq!(
+            skin_patch_target(base).unwrap(),
+            base.join("squirrel.custom.yaml")
+        );
 
         #[cfg(target_os = "linux")]
-        assert_eq!(target, base.join("default.custom.yaml"));
+        assert!(skin_patch_target(base).is_err());
     }
 }

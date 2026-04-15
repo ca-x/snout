@@ -1,12 +1,14 @@
 pub mod base;
 pub mod frost;
 pub mod ice;
+pub mod mint;
 pub mod model_patch;
 pub mod wanxiang;
 
 pub use self::base::{BaseUpdater, UpdateResult};
 use self::frost::FrostUpdater;
 use self::ice::IceUpdater;
+use self::mint::MintUpdater;
 use self::wanxiang::WanxiangUpdater;
 use crate::types::*;
 use anyhow::Result;
@@ -114,10 +116,21 @@ pub async fn update_all(
             Ok(r) => results.push(r),
             Err(e) => results.push(BaseUpdater::fail_result("词库", &e)),
         }
-    } else {
+    } else if *schema == Schema::Frost {
         // 白霜
         let frost = FrostUpdater { base };
         match frost
+            .update_scheme(config, |msg, pct| {
+                progress(msg, 0.05 + pct * 0.65);
+            })
+            .await
+        {
+            Ok(r) => results.push(r),
+            Err(e) => results.push(BaseUpdater::fail_result("方案", &e)),
+        }
+    } else {
+        let mint = MintUpdater { base };
+        match mint
             .update_scheme(config, |msg, pct| {
                 progress(msg, 0.05 + pct * 0.65);
             })
