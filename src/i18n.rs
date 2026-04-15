@@ -105,6 +105,52 @@ impl L10n {
         zh.insert("deploy.failed", "部署失败");
         en.insert("deploy.failed", "Deploy failed");
 
+        // ── 更新进度 ──
+        zh.insert("update.scheme.checking", "检查方案更新...");
+        en.insert("update.scheme.checking", "Checking scheme updates...");
+        zh.insert("update.dict.checking", "检查词库更新...");
+        en.insert("update.dict.checking", "Checking dict updates...");
+        zh.insert("update.model.checking", "检查模型更新...");
+        en.insert("update.model.checking", "Checking model updates...");
+        zh.insert("update.cache.verify", "校验本地缓存...");
+        en.insert("update.cache.verify", "Verifying local cache...");
+        zh.insert("update.cache.valid", "缓存有效，跳过下载");
+        en.insert("update.cache.valid", "Cache valid, skipping download");
+        zh.insert("update.key_file_missing", "关键文件缺失，强制更新...");
+        en.insert(
+            "update.key_file_missing",
+            "Key file missing, forcing update...",
+        );
+        zh.insert("update.scheme_switched", "检测到方案切换，重新下载...");
+        en.insert(
+            "update.scheme_switched",
+            "Scheme switched, re-downloading...",
+        );
+        zh.insert("update.saving", "保存记录...");
+        en.insert("update.saving", "Saving record...");
+        zh.insert("update.download_scheme", "下载方案...");
+        en.insert("update.download_scheme", "Downloading scheme...");
+        zh.insert("update.download_dict", "下载词库...");
+        en.insert("update.download_dict", "Downloading dict...");
+        zh.insert("update.download_model", "下载模型...");
+        en.insert("update.download_model", "Downloading model...");
+        zh.insert("update.download_progress", "下载中...");
+        en.insert("update.download_progress", "Downloading...");
+        zh.insert("update.scheme_done", "方案更新完成");
+        en.insert("update.scheme_done", "Scheme update complete");
+        zh.insert("update.dict_done", "词库更新完成");
+        en.insert("update.dict_done", "Dict update complete");
+        zh.insert("update.model_done", "模型更新完成");
+        en.insert("update.model_done", "Model update complete");
+        zh.insert("update.no_dict", "此方案无独立词库");
+        en.insert("update.no_dict", "This scheme has no separate dict");
+        zh.insert("update.progress", "进度");
+        en.insert("update.progress", "Progress");
+        zh.insert("update.deploying", "部署...");
+        en.insert("update.deploying", "Deploying...");
+
+        // ── 部署 ──
+
         // ── Model Patch ──
         zh.insert("patch.model.enabled", "模型 patch 已启用");
         en.insert("patch.model.enabled", "Model patch enabled");

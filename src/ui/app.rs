@@ -1,4 +1,5 @@
 use crate::config::Manager;
+use crate::i18n::{L10n, Lang};
 use crate::types::Schema;
 use crate::updater;
 use anyhow::Result;
@@ -18,19 +19,6 @@ use ratatui::{
 use std::io;
 use std::time::{Duration, Instant};
 
-// ── 菜单项 ──
-const MENU_ITEMS: &[(&str, &str)] = &[
-    ("1", "一键更新"),
-    ("2", "更新方案"),
-    ("3", "更新词库"),
-    ("4", "更新模型"),
-    ("5", "模型 Patch"),
-    ("6", "皮肤 Patch"),
-    ("7", "切换方案"),
-    ("8", "配置"),
-    ("Q", "退出"),
-];
-
 // ── 应用状态 ──
 pub enum AppScreen {
     Menu,
@@ -48,6 +36,7 @@ pub struct App {
     pub schema: Schema,
     pub rime_dir: String,
     pub config_path: String,
+    pub t: L10n,
     // 更新状态
     pub update_msg: String,
     pub update_pct: f64,
@@ -59,6 +48,7 @@ pub struct App {
 
 impl App {
     pub fn new(manager: &Manager) -> Self {
+        let lang = Lang::from_str(&manager.config.language);
         Self {
             should_quit: false,
             screen: AppScreen::Menu,
@@ -66,12 +56,28 @@ impl App {
             schema: manager.config.schema,
             rime_dir: manager.rime_dir.display().to_string(),
             config_path: manager.config_path.display().to_string(),
+            t: L10n::new(lang),
             update_msg: String::new(),
             update_pct: 0.0,
             update_done: false,
             update_results: Vec::new(),
             notification: None,
         }
+    }
+
+    /// 动态菜单项 (i18n)
+    pub fn menu_items(&self) -> Vec<(&str, &str)> {
+        vec![
+            ("1", self.t.t("menu.update_all")),
+            ("2", self.t.t("menu.update_scheme")),
+            ("3", self.t.t("menu.update_dict")),
+            ("4", self.t.t("menu.update_model")),
+            ("5", self.t.t("menu.model_patch")),
+            ("6", self.t.t("menu.skin_patch")),
+            ("7", self.t.t("menu.switch_scheme")),
+            ("8", self.t.t("menu.config")),
+            ("Q", self.t.t("menu.quit")),
+        ]
     }
 
     pub fn notify(&mut self, msg: impl Into<String>) {
@@ -150,7 +156,7 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
             app.selected = app.selected.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if app.selected < MENU_ITEMS.len() - 1 {
+            if app.selected < app.menu_items().len() - 1 {
                 app.selected += 1;
             }
         }
@@ -180,7 +186,8 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
                             ) {
                                 app.update_results.push(format!("❌ {e}"));
                             } else {
-                                app.update_results.push("✅ 模型 patch 已移除".into());
+                                app.update_results
+                                    .push(format!("✅ {}", app.t.t("patch.model.disabled")));
                             }
                         } else {
                             if let Err(e) = updater::model_patch::patch_model(
@@ -189,13 +196,15 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
                             ) {
                                 app.update_results.push(format!("❌ {e}"));
                             } else {
-                                app.update_results.push("✅ 模型 patch 已启用".into());
+                                app.update_results
+                                    .push(format!("✅ {}", app.t.t("patch.model.enabled")));
                             }
                         }
                     } else {
-                        app.update_results.push("此方案不支持模型 patch".into());
+                        app.update_results
+                            .push(app.t.t("patch.model.not_supported").into());
                     }
-                    app.update_msg = "模型 Patch".into();
+                    app.update_msg = app.t.t("menu.model_patch").into();
                     app.update_done = true;
                 }
                 6 => app.screen = AppScreen::SkinSelector,
@@ -240,7 +249,11 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
                 let mut m = Manager::new()?;
                 m.config.schema = *s;
                 m.save()?;
-                app.notify(format!("方案已切换: {}", s.display_name()));
+                app.notify(format!(
+                    "{}: {}",
+                    app.t.t("scheme.switched"),
+                    s.display_name()
+                ));
             }
             app.screen = AppScreen::Menu;
             app.selected = 0;
@@ -280,7 +293,7 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
                 } else if let Err(e) = crate::skin::patch::set_default_skin(&patch, key) {
                     app.notify(format!("❌ {e}"));
                 } else {
-                    app.notify(format!("✅ 皮肤已设置: {name}"));
+                    app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
                 }
             }
             app.screen = AppScreen::Menu;
@@ -315,7 +328,7 @@ enum UpdateMode {
 
 async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Result<()> {
     app.screen = AppScreen::Updating;
-    app.update_msg = "准备中...".into();
+    app.update_msg = app.t.t("update.checking").into();
     app.update_pct = 0.0;
     app.update_done = false;
     app.update_results.clear();
@@ -359,7 +372,7 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
                     old_version: "-".into(),
                     new_version: "-".into(),
                     success: false,
-                    message: "此方案无独立词库".into(),
+                    message: app.t.t("update.no_dict").into(),
                 }])
             } else {
                 let base = updater::BaseUpdater::new(&config, cache_dir, rime_dir).unwrap();
@@ -394,9 +407,9 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
                     v.push(updater::UpdateResult {
                         component: "模型patch".into(),
                         old_version: "-".into(),
-                        new_version: "已启用".into(),
+                        new_version: app.t.t("patch.model.enabled").into(),
                         success: true,
-                        message: "patch 成功".into(),
+                        message: app.t.t("patch.model.enabled").into(),
                     });
                 }
             }
@@ -411,11 +424,11 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
                 app.update_results
                     .push(format!("{icon} {} - {}", r.component, r.message));
             }
-            app.update_msg = "更新完成".into();
+            app.update_msg = app.t.t("update.complete").into();
         }
         Err(e) => {
             app.update_results.push(format!("❌ 错误: {e}"));
-            app.update_msg = "更新失败".into();
+            app.update_msg = app.t.t("update.failed").into();
         }
     }
 
@@ -488,11 +501,20 @@ fn ui(f: &mut Frame, app: &App) {
     } else {
         vec![
             Span::styled(" ↑↓/jk", Style::default().fg(Color::DarkGray)),
-            Span::styled(" 导航", Style::default().fg(Color::White)),
+            Span::styled(
+                format!(" {}", app.t.t("hint.navigate")),
+                Style::default().fg(Color::White),
+            ),
             Span::styled("  Enter", Style::default().fg(Color::DarkGray)),
-            Span::styled(" 确认", Style::default().fg(Color::White)),
+            Span::styled(
+                format!(" {}", app.t.t("hint.confirm")),
+                Style::default().fg(Color::White),
+            ),
             Span::styled("  q/Esc", Style::default().fg(Color::DarkGray)),
-            Span::styled(" 返回/退出", Style::default().fg(Color::White)),
+            Span::styled(
+                format!(" {}", app.t.t("hint.back")),
+                Style::default().fg(Color::White),
+            ),
         ]
     };
     let footer =
@@ -501,7 +523,8 @@ fn ui(f: &mut Frame, app: &App) {
 }
 
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {
-    let items: Vec<ListItem> = MENU_ITEMS
+    let menu_items = app.menu_items();
+    let items: Vec<ListItem> = menu_items
         .iter()
         .enumerate()
         .map(|(i, (key, label))| {
@@ -551,15 +574,18 @@ fn render_updating(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("  ⏳ ", Style::default().fg(Color::Yellow)),
         Span::styled(&app.update_msg, Style::default().fg(Color::White)),
     ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(" 更新中 ", Style::default().fg(Color::Yellow))),
-    );
+    .block(Block::default().borders(Borders::ALL).title(Span::styled(
+        format!(" {} ", app.t.t("update.checking")),
+        Style::default().fg(Color::Yellow),
+    )));
     f.render_widget(msg, chunks[0]);
 
     let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(" 进度 "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", app.t.t("update.progress"))),
+        )
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .ratio(app.update_pct)
         .label(format!("{:.0}%", app.update_pct * 100.0));
