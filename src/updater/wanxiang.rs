@@ -80,7 +80,9 @@ impl WanxiangUpdater {
 
         // 处理 CNB 嵌套目录
         if self.base.client.use_mirror() {
-            if let Err(e) = crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name) {
+            if let Err(e) =
+                crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name)
+            {
                 eprintln!("⚠️ 嵌套目录处理失败: {e}");
             }
         }

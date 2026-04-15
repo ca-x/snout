@@ -146,12 +146,7 @@ impl Client {
                 tokio::time::sleep(delay).await;
             }
 
-            let resp = self
-                .http
-                .get(&url)
-                .headers(self.cnb_headers())
-                .send()
-                .await;
+            let resp = self.http.get(&url).headers(self.cnb_headers()).send().await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {
