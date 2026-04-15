@@ -185,37 +185,71 @@ impl Client {
 
     // ── 通用下载 ──
 
-    /// 流式下载到文件，支持进度回调
+    /// 流式下载到文件，支持进度回调和重试
     pub async fn download_file(
         &self,
         url: &str,
         dest: &std::path::Path,
         mut progress: impl FnMut(u64, Option<u64>),
     ) -> Result<()> {
-        let resp = self.http.get(url).send().await?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!("下载失败: HTTP {}", resp.status());
-        }
-
-        let total = resp.content_length();
-
-        let mut file = tokio::fs::File::create(dest).await?;
-        let mut stream = resp.bytes_stream();
-        let mut downloaded: u64 = 0;
-
         use futures_util::StreamExt;
         use tokio::io::AsyncWriteExt;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.context("下载中断")?;
-            file.write_all(&chunk).await?;
-            downloaded += chunk.len() as u64;
-            progress(downloaded, total);
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let delay = std::time::Duration::from_secs(1 << attempt);
+                eprintln!("⚠️ 下载失败，{}s 后重试 ({}/3)...", delay.as_secs(), attempt + 1);
+                tokio::time::sleep(delay).await;
+            }
+
+            // 每次重试重新创建文件 (截断)
+            let resp = match self.http.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(anyhow::anyhow!("下载请求失败: {e}"));
+                    continue;
+                }
+            };
+
+            if !resp.status().is_success() {
+                last_err = Some(anyhow::anyhow!("下载失败: HTTP {}", resp.status()));
+                continue;
+            }
+
+            let total = resp.content_length();
+            let mut file = tokio::fs::File::create(dest).await?;
+            let mut stream = resp.bytes_stream();
+            let mut downloaded: u64 = 0;
+            let mut stream_err = None;
+
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(c) => {
+                        if let Err(e) = file.write_all(&c).await {
+                            stream_err = Some(e);
+                            break;
+                        }
+                        downloaded += c.len() as u64;
+                        progress(downloaded, total);
+                    }
+                    Err(e) => {
+                        stream_err = Some(std::io::Error::other(e));
+                        break;
+                    }
+                }
+            }
+
+            if let Some(e) = stream_err {
+                last_err = Some(anyhow::anyhow!("下载中断: {e}"));
+                continue;
+            }
+
+            file.flush().await?;
+            return Ok(());
         }
 
-        file.flush().await?;
-        Ok(())
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("下载失败")))
     }
 
     pub fn use_mirror(&self) -> bool {

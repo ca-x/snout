@@ -105,12 +105,15 @@ impl BaseUpdater {
         extract_dest: &Path,
         progress: &mut impl FnMut(&str, f64),
     ) -> Result<()> {
-        // 缓存复用
         let zip_path = self.cache_dir.join(&info.name);
+        let mut already_verified = false;
+
+        // 缓存复用
         if zip_path.exists() && !info.sha256.is_empty() {
             progress("校验本地缓存...", 0.10);
             if self.hash_matches(&info.sha256, &zip_path) {
                 progress("缓存有效，跳过下载", 0.70);
+                already_verified = true;
             } else {
                 self.do_download(info, config, &zip_path, progress).await?;
             }
@@ -118,8 +121,8 @@ impl BaseUpdater {
             self.do_download(info, config, &zip_path, progress).await?;
         }
 
-        // SHA256 校验
-        if !info.sha256.is_empty() {
+        // SHA256 校验 (仅当未在缓存阶段验证过)
+        if !already_verified && !info.sha256.is_empty() {
             progress("校验文件...", 0.80);
             if !fileutil::hash::verify_sha256(&zip_path, &info.sha256) {
                 anyhow::bail!("SHA256 校验失败");

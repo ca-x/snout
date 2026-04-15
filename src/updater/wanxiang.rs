@@ -79,11 +79,14 @@ impl WanxiangUpdater {
             .await?;
 
         // 处理 CNB 嵌套目录
+        let mut warnings = Vec::new();
         if self.base.client.use_mirror() {
             if let Err(e) =
                 crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name)
             {
-                eprintln!("⚠️ 嵌套目录处理失败: {e}");
+                let msg = format!("嵌套目录处理失败: {e}");
+                eprintln!("⚠️ {msg}");
+                warnings.push(msg);
             }
         }
 
@@ -105,12 +108,17 @@ impl WanxiangUpdater {
         }
 
         progress("方案更新完成", 1.0);
+        let msg = if warnings.is_empty() {
+            "更新成功".into()
+        } else {
+            format!("更新成功 (警告: {})", warnings.join("; "))
+        };
         Ok(UpdateResult {
             component: "方案".into(),
             old_version: local.map(|r| r.tag).unwrap_or_else(|| "未安装".into()),
             new_version: info.tag,
             success: true,
-            message: "更新成功".into(),
+            message: msg,
         })
     }
 
@@ -170,9 +178,12 @@ impl WanxiangUpdater {
             .download_and_extract(&info, config, &dict_dir, &mut progress)
             .await?;
 
+        let mut warnings = Vec::new();
         if self.base.client.use_mirror() {
             if let Err(e) = crate::fileutil::extract::handle_nested_dir(&dict_dir, &info.name) {
-                eprintln!("⚠️ 嵌套目录处理失败: {e}");
+                let msg = format!("嵌套目录处理失败: {e}");
+                eprintln!("⚠️ {msg}");
+                warnings.push(msg);
             }
         }
 
@@ -188,12 +199,17 @@ impl WanxiangUpdater {
         BaseUpdater::save_record(&record_path, &record)?;
 
         progress("词库更新完成", 1.0);
+        let msg = if warnings.is_empty() {
+            "更新成功".into()
+        } else {
+            format!("更新成功 (警告: {})", warnings.join("; "))
+        };
         Ok(UpdateResult {
             component: "词库".into(),
             old_version: local.map(|r| r.tag).unwrap_or_else(|| "未安装".into()),
             new_version: info.tag,
             success: true,
-            message: "更新成功".into(),
+            message: msg,
         })
     }
 

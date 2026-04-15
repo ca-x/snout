@@ -141,6 +141,7 @@ async fn main() -> anyhow::Result<()> {
         } else if cli.model {
             if !schema.supports_model_patch() {
                 eprintln!("此方案不支持模型更新");
+                std::process::exit(1);
             } else {
                 let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir.clone())?;
                 updater::wanxiang::WanxiangUpdater { base }
