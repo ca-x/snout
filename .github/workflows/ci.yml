@@ -63,7 +63,7 @@ jobs:
           sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target x86_64-unknown-linux-musl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: snout-linux-x86_64
           path: target/x86_64-unknown-linux-musl/release/snout
@@ -82,7 +82,7 @@ jobs:
           sudo apt-get install -y musl-tools gcc-aarch64-linux-gnu
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target aarch64-unknown-linux-musl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: snout-linux-aarch64
           path: target/aarch64-unknown-linux-musl/release/snout
@@ -101,7 +101,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: snout-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/snout
@@ -115,7 +115,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: snout-windows-x86_64
           path: target/release/snout.exe
