@@ -9,12 +9,21 @@ const PATCH_KEY: &str = "patch";
 const MODEL_KEY: &str = "grammar/language_model";
 const MODEL_VALUE: &str = "wanxiang-lts-zh-hans";
 
-/// 为万象方案 patch 模型配置
+/// 为当前方案写入万象模型 patch 配置
 ///
 /// 写入 `<schema_id>.custom.yaml`:
 /// ```yaml
 /// patch:
+///   # Wanxiang:
 ///   grammar/language_model: wanxiang-lts-zh-hans
+///
+///   # Ice / Frost / Mint:
+///   grammar/language: wanxiang-lts-zh-hans
+///   grammar/collocation_max_length: 5
+///   grammar/collocation_min_length: 2
+///   translator/contextual_suggestions: true
+///   translator/max_homophones: 7
+///   translator/max_homographs: 7
 /// ```
 pub fn patch_model(rime_dir: &Path, schema: &Schema) -> Result<()> {
     let patch_file = patch_file_path(rime_dir, schema);
