@@ -178,6 +178,7 @@ mod tests {
     fn filter_mint_distribution_keeps_rime_assets_only() {
         let dir = temp_dir("mint-filter");
         std::fs::write(dir.join("default.yaml"), "").expect("write default");
+        std::fs::write(dir.join("rime_mint.dict.yaml"), "").expect("write dict");
         std::fs::write(dir.join("rime_mint.schema.yaml"), "").expect("write schema");
         std::fs::write(dir.join("weasel.yaml"), "").expect("write weasel");
         std::fs::write(dir.join("squirrel.yaml"), "").expect("write squirrel");
@@ -191,6 +192,7 @@ mod tests {
         filter_mint_distribution(&dir).expect("filter mint distribution");
 
         assert!(dir.join("default.yaml").exists());
+        assert!(dir.join("rime_mint.dict.yaml").exists());
         assert!(dir.join("rime_mint.schema.yaml").exists());
         assert!(dir.join("dicts").exists());
         assert!(dir.join("lua").exists());

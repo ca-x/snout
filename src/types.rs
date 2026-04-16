@@ -383,6 +383,10 @@ mod tests {
             Schema::WanxiangBase.display_name_lang(Lang::En),
             "Wanxiang (Base)"
         );
+        assert_eq!(
+            Schema::WanxiangMoqi.display_name_lang(Lang::En),
+            "Wanxiang Pro (Moqi)"
+        );
         assert_eq!(Schema::Ice.display_name_lang(Lang::En), "Rime Ice");
         assert_eq!(Schema::Frost.display_name_lang(Lang::En), "Rime Frost");
         assert_eq!(Schema::Mint.display_name_lang(Lang::En), "Mint Input");
