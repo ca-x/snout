@@ -1,5 +1,5 @@
 use crate::i18n::{L10n, Lang};
-use crate::types::Config;
+use crate::types::{Config, Schema, UpdateRecord};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ pub struct Manager {
 impl Manager {
     pub fn new() -> Result<Self> {
         let config_path = get_config_path()?;
-        let config = load_or_create_config(&config_path)?;
+        let mut config = load_or_create_config(&config_path)?;
         let rime_dir = detect_rime_dir();
         let cache_dir = get_cache_dir();
 
@@ -24,12 +24,24 @@ impl Manager {
         }
         fs::create_dir_all(&cache_dir)?;
 
-        Ok(Self {
+        let authoritative_schema = detect_authoritative_schema(&config, &cache_dir, &rime_dir);
+        let schema_changed = authoritative_schema.is_some_and(|schema| schema != config.schema);
+        if let Some(schema) = authoritative_schema {
+            config.schema = schema;
+        }
+
+        let manager = Self {
             config_path,
             config,
             rime_dir,
             cache_dir,
-        })
+        };
+
+        if schema_changed {
+            manager.save()?;
+        }
+
+        Ok(manager)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -67,6 +79,21 @@ impl Manager {
     pub fn dict_extract_path(&self) -> PathBuf {
         self.rime_dir.join("dicts")
     }
+}
+
+pub fn persist_installed_schema(schema: Schema) -> Result<()> {
+    let config_path = get_config_path()?;
+    let mut config = load_or_create_config(&config_path)?;
+    if config.schema == schema {
+        return Ok(());
+    }
+
+    config.schema = schema;
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
+    Ok(())
 }
 
 pub fn rime_installation_message(lang: Lang) -> String {
@@ -139,6 +166,63 @@ fn load_or_create_config(path: &Path) -> Result<Config> {
         }
     }
     Ok(Config::default())
+}
+
+fn detect_authoritative_schema(
+    config: &Config,
+    cache_dir: &Path,
+    rime_dir: &Path,
+) -> Option<Schema> {
+    detect_schema_from_record(cache_dir, rime_dir)
+        .or_else(|| detect_schema_from_files(config, rime_dir))
+}
+
+fn detect_schema_from_record(cache_dir: &Path, rime_dir: &Path) -> Option<Schema> {
+    let record_path = cache_dir.join("scheme_record.json");
+    let data = fs::read_to_string(record_path).ok()?;
+    let record = serde_json::from_str::<UpdateRecord>(&data).ok()?;
+    let schema = Schema::from_scheme_archive_name(&record.name)?;
+    schema_record_matches_files(schema, rime_dir).then_some(schema)
+}
+
+fn detect_schema_from_files(config: &Config, rime_dir: &Path) -> Option<Schema> {
+    for schema in [
+        Schema::Ice,
+        Schema::Frost,
+        Schema::Mint,
+        Schema::WanxiangBase,
+    ] {
+        if schema_record_matches_files(schema, rime_dir) {
+            return Some(schema);
+        }
+    }
+
+    if config.schema.is_wanxiang()
+        && config.schema != Schema::WanxiangBase
+        && schema_record_matches_files(config.schema, rime_dir)
+    {
+        return Some(config.schema);
+    }
+
+    None
+}
+
+fn schema_record_matches_files(schema: Schema, rime_dir: &Path) -> bool {
+    match schema {
+        Schema::WanxiangBase => rime_dir.join("wanxiang.schema.yaml").exists(),
+        Schema::WanxiangMoqi
+        | Schema::WanxiangFlypy
+        | Schema::WanxiangZrm
+        | Schema::WanxiangTiger
+        | Schema::WanxiangWubi
+        | Schema::WanxiangHanxin
+        | Schema::WanxiangShouyou
+        | Schema::WanxiangShyplus
+        | Schema::WanxiangWx => rime_dir.join("wanxiang_pro.schema.yaml").exists(),
+        Schema::Ice => rime_dir.join("rime_ice.schema.yaml").exists(),
+        Schema::Frost => rime_dir.join("rime_frost.schema.yaml").exists(),
+        Schema::Mint => rime_dir.join("rime_mint.schema.yaml").exists(),
+    }
 }
 
 fn detect_rime_dir() -> PathBuf {
@@ -443,4 +527,59 @@ fn windows_registry_query(key: &str, value: &str) -> Option<String> {
 #[allow(dead_code)]
 fn windows_registry_query(_key: &str, _value: &str) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("snout-config-{name}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn authoritative_schema_prefers_successful_scheme_record() {
+        let cache_dir = temp_dir("record-cache");
+        let rime_dir = temp_dir("record-rime");
+        std::fs::write(rime_dir.join("rime_ice.schema.yaml"), "").expect("write ice schema");
+        std::fs::write(rime_dir.join("wanxiang.schema.yaml"), "").expect("write wanxiang schema");
+        std::fs::write(
+            cache_dir.join("scheme_record.json"),
+            serde_json::to_string(&UpdateRecord {
+                name: "full.zip".into(),
+                update_time: String::new(),
+                tag: "v1".into(),
+                apply_time: String::new(),
+                sha256: String::new(),
+            })
+            .expect("serialize record"),
+        )
+        .expect("write record");
+
+        let schema = detect_authoritative_schema(&Config::default(), &cache_dir, &rime_dir);
+
+        assert_eq!(schema, Some(Schema::Ice));
+        std::fs::remove_dir_all(cache_dir).ok();
+        std::fs::remove_dir_all(rime_dir).ok();
+    }
+
+    #[test]
+    fn authoritative_schema_falls_back_to_existing_files() {
+        let cache_dir = temp_dir("files-cache");
+        let rime_dir = temp_dir("files-rime");
+        std::fs::write(rime_dir.join("rime_frost.schema.yaml"), "").expect("write frost schema");
+
+        let schema = detect_authoritative_schema(&Config::default(), &cache_dir, &rime_dir);
+
+        assert_eq!(schema, Some(Schema::Frost));
+        std::fs::remove_dir_all(cache_dir).ok();
+        std::fs::remove_dir_all(rime_dir).ok();
+    }
 }

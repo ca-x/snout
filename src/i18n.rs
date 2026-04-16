@@ -351,6 +351,22 @@ impl L10n {
         en.insert("skin.installed_marker", "Installed");
         zh.insert("skin.current_marker", "当前");
         en.insert("skin.current_marker", "Current");
+        zh.insert("skin.round_prompt_title", "圆角设置");
+        en.insert("skin.round_prompt_title", "Rounded corners");
+        zh.insert("skin.round_prompt_theme", "主题");
+        en.insert("skin.round_prompt_theme", "Theme");
+        zh.insert(
+            "skin.round_prompt_body",
+            "该 Catppuccin 主题支持切换圆角面板，是否启用圆角？",
+        );
+        en.insert(
+            "skin.round_prompt_body",
+            "This Catppuccin theme supports a rounded panel variant. Enable rounded corners?",
+        );
+        zh.insert("skin.round_on", "启用圆角");
+        en.insert("skin.round_on", "Rounded on");
+        zh.insert("skin.round_off", "关闭圆角");
+        en.insert("skin.round_off", "Rounded off");
 
         // ── 方案 ──
         zh.insert("scheme.select", "选择方案");
@@ -511,8 +527,20 @@ impl L10n {
             "config.input_hint",
             "Enter a new value and press Enter to save",
         );
+        zh.insert("config.input_hint_page_size", "输入 1-9，留空表示恢复默认");
+        en.insert(
+            "config.input_hint_page_size",
+            "Enter 1-9, or leave empty to restore the default",
+        );
+        zh.insert("config.invalid_page_size", "候选词数量必须在 1-9 之间");
+        en.insert(
+            "config.invalid_page_size",
+            "Candidate count must be between 1 and 9",
+        );
         zh.insert("config.model_patch_label", "自动模型 Patch");
         en.insert("config.model_patch_label", "Auto model patch");
+        zh.insert("config.candidate_page_size_label", "候选词数量");
+        en.insert("config.candidate_page_size_label", "Candidate count");
         zh.insert("config.engine_sync_label", "多引擎同步");
         en.insert("config.engine_sync_label", "Multi-engine sync");
         zh.insert("config.sync_strategy_label", "同步方式");
@@ -545,6 +573,8 @@ impl L10n {
         en.insert("config.sync_link", "Symlink");
         zh.insert("config.sync_copy", "复制");
         en.insert("config.sync_copy", "Copy");
+        zh.insert("config.default_value", "默认");
+        en.insert("config.default_value", "Default");
         zh.insert("config.latest", "最新");
         en.insert("config.latest", "Latest");
         zh.insert("config.unknown", "未知");
@@ -563,6 +593,10 @@ impl L10n {
         en.insert("config.config_file", "Config file");
         zh.insert("config.supported_schemes", "支持方案");
         en.insert("config.supported_schemes", "Supported schemes");
+        zh.insert("menu.installed_versions", "已安装版本");
+        en.insert("menu.installed_versions", "Installed versions");
+        zh.insert("menu.current_settings", "当前设置");
+        en.insert("menu.current_settings", "Current settings");
         zh.insert("config.scheme.wanxiang", "万象拼音: amzxyz/rime_wanxiang");
         en.insert("config.scheme.wanxiang", "Wanxiang: amzxyz/rime_wanxiang");
         zh.insert("config.scheme.ice", "雾凇拼音: iDvel/rime-ice");

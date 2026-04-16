@@ -17,30 +17,45 @@ impl WanxiangUpdater {
         cancel: Option<&CancelSignal>,
     ) -> Result<UpdateInfo> {
         let t = L10n::new(self.base.lang);
-        let info =
-            if self.base.client.use_mirror() {
-                self.base
-                    .client
-                    .find_latest_cnb_asset_info(
-                        WX_OWNER,
-                        WX_CNB_REPO,
-                        |name| name == schema.scheme_zip(),
-                        Some(WX_CNB_DICT_TAG),
-                        cancel,
-                    )
-                    .await
-            } else {
-                let releases = self
-                    .base
-                    .client
-                    .fetch_github_releases(schema.owner(), schema.repo(), "", cancel)
-                    .await?;
-                BaseUpdater::find_update_info(&releases, schema.scheme_zip(), None).context(
-                    format!("{}: {}", t.t("err.no_scheme_file"), schema.scheme_zip()),
+        let info = if self.base.client.use_mirror() {
+            match self
+                .base
+                .client
+                .find_latest_cnb_asset_info(
+                    WX_OWNER,
+                    WX_CNB_REPO,
+                    |name| name == schema.scheme_zip(),
+                    Some(WX_CNB_DICT_TAG),
+                    cancel,
                 )
-            };
+                .await
+            {
+                Ok(info) => Ok(info),
+                Err(_) => self.fetch_github_scheme_info(schema, cancel).await,
+            }
+        } else {
+            self.fetch_github_scheme_info(schema, cancel).await
+        };
 
         info.context(format!(
+            "{}: {}",
+            t.t("err.no_scheme_file"),
+            schema.scheme_zip()
+        ))
+    }
+
+    async fn fetch_github_scheme_info(
+        &self,
+        schema: &Schema,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<UpdateInfo> {
+        let t = L10n::new(self.base.lang);
+        let releases = self
+            .base
+            .client
+            .fetch_github_releases(schema.owner(), schema.repo(), "", cancel)
+            .await?;
+        BaseUpdater::find_update_info(&releases, schema.scheme_zip(), None).context(format!(
             "{}: {}",
             t.t("err.no_scheme_file"),
             schema.scheme_zip()
@@ -152,6 +167,7 @@ impl WanxiangUpdater {
             sha256: info.sha256.clone(),
         };
         BaseUpdater::save_record(&record_path, &record)?;
+        crate::config::persist_installed_schema(*schema)?;
 
         // 清理 build 目录
         let build_dir = self.base.rime_dir.join("build");
@@ -193,37 +209,63 @@ impl WanxiangUpdater {
             .with_context(|| t.t("update.no_dict").to_string())?;
 
         if self.base.client.use_mirror() {
-            let latest_tag = self
-                .base
-                .client
-                .fetch_cnb_latest_tag(WX_OWNER, WX_CNB_REPO, cancel)
-                .await?;
-            let latest_release = self
-                .base
-                .client
-                .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, &latest_tag, cancel)
-                .await?;
-            if let Some(info) = find_matching_release_asset(&latest_release, dict_zip) {
-                Some(info)
-            } else if latest_tag == WX_CNB_DICT_TAG {
-                None
-            } else {
-                let fallback_release = self
-                    .base
-                    .client
-                    .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, WX_CNB_DICT_TAG, cancel)
-                    .await?;
-                find_matching_release_asset(&fallback_release, dict_zip)
+            match self.fetch_mirror_dict_info(dict_zip, cancel).await {
+                Ok(info) => Some(info),
+                Err(_) => {
+                    self.fetch_github_dict_info(schema, dict_zip, cancel)
+                        .await?
+                }
             }
         } else {
-            let releases = self
-                .base
-                .client
-                .fetch_github_releases(schema.owner(), schema.repo(), schema.dict_tag(), cancel)
-                .await?;
-            BaseUpdater::find_update_info(&releases, dict_zip, None)
+            self.fetch_github_dict_info(schema, dict_zip, cancel)
+                .await?
         }
         .context(format!("{}: {dict_zip}", t.t("err.no_dict_file")))
+    }
+
+    async fn fetch_mirror_dict_info(
+        &self,
+        dict_zip: &str,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<UpdateInfo> {
+        let latest_tag = self
+            .base
+            .client
+            .fetch_cnb_latest_tag(WX_OWNER, WX_CNB_REPO, cancel)
+            .await?;
+        let latest_release = self
+            .base
+            .client
+            .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, &latest_tag, cancel)
+            .await?;
+        if let Some(info) = find_matching_release_asset(&latest_release, dict_zip) {
+            return Ok(info);
+        }
+        if latest_tag == WX_CNB_DICT_TAG {
+            anyhow::bail!("mirror asset not found: {dict_zip}");
+        }
+
+        let fallback_release = self
+            .base
+            .client
+            .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, WX_CNB_DICT_TAG, cancel)
+            .await?;
+        find_matching_release_asset(&fallback_release, dict_zip)
+            .ok_or_else(|| anyhow::anyhow!("mirror asset not found: {dict_zip}"))
+    }
+
+    async fn fetch_github_dict_info(
+        &self,
+        schema: &Schema,
+        dict_zip: &str,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<Option<UpdateInfo>> {
+        let releases = self
+            .base
+            .client
+            .fetch_github_releases(schema.owner(), schema.repo(), schema.dict_tag(), cancel)
+            .await?;
+        Ok(BaseUpdater::find_update_info(&releases, dict_zip, None))
     }
 
     /// 更新词库
@@ -328,22 +370,37 @@ impl WanxiangUpdater {
     pub async fn check_model_update(&self, cancel: Option<&CancelSignal>) -> Result<UpdateInfo> {
         let t = L10n::new(self.base.lang);
         let info = if self.base.client.use_mirror() {
-            let release = self
-                .base
-                .client
-                .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, "model", cancel)
-                .await?;
-            find_matching_release_asset(&release, MODEL_FILE)
+            match self.fetch_mirror_model_info(cancel).await {
+                Ok(info) => Some(info),
+                Err(_) => self.fetch_github_model_info(cancel).await?,
+            }
         } else {
-            let releases = self
-                .base
-                .client
-                .fetch_github_releases(WX_OWNER, MODEL_REPO, MODEL_TAG, cancel)
-                .await?;
-            BaseUpdater::find_update_info(&releases, MODEL_FILE, None)
+            self.fetch_github_model_info(cancel).await?
         };
 
         info.context(format!("{}: {MODEL_FILE}", t.t("err.no_model_file")))
+    }
+
+    async fn fetch_mirror_model_info(&self, cancel: Option<&CancelSignal>) -> Result<UpdateInfo> {
+        let release = self
+            .base
+            .client
+            .fetch_cnb_release(WX_OWNER, WX_CNB_REPO, "model", cancel)
+            .await?;
+        find_matching_release_asset(&release, MODEL_FILE)
+            .ok_or_else(|| anyhow::anyhow!("mirror asset not found: {MODEL_FILE}"))
+    }
+
+    async fn fetch_github_model_info(
+        &self,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<Option<UpdateInfo>> {
+        let releases = self
+            .base
+            .client
+            .fetch_github_releases(WX_OWNER, MODEL_REPO, MODEL_TAG, cancel)
+            .await?;
+        Ok(BaseUpdater::find_update_info(&releases, MODEL_FILE, None))
     }
 
     /// 更新模型

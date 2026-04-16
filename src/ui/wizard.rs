@@ -52,7 +52,6 @@ pub async fn run_init_wizard() -> Result<()> {
 
     // 4. 保存配置
     let mut manager = Manager::new()?;
-    manager.config.schema = schema;
     manager.config.model_patch_enabled = model_patch;
     manager.save()?;
 

@@ -1,5 +1,5 @@
 use crate::i18n::Lang;
-use crate::skin::builtin::{builtin_skins, find_skin};
+use crate::skin::builtin::builtin_skins;
 use anyhow::Result;
 use serde_yaml;
 use std::collections::HashMap;
@@ -56,26 +56,6 @@ fn set_patch(
     doc.insert("patch".into(), serde_yaml::Value::Mapping(mapping));
 }
 
-/// 将内置主题写入 skin patch 文件
-pub fn write_skin_presets(path: &Path, keys: &[&str]) -> Result<()> {
-    let mut doc = read_patch(path)?;
-    let mut patch = get_patch(&mut doc);
-
-    for key in keys {
-        if let Some(skin) = find_skin(key) {
-            let patch_key = format!("preset_color_schemes/{}", key);
-            let mut mapping = serde_yaml::Mapping::new();
-            for (k, v) in &skin.values {
-                mapping.insert(serde_yaml::Value::String(k.clone()), v.clone());
-            }
-            patch.insert(patch_key, serde_yaml::Value::Mapping(mapping));
-        }
-    }
-
-    set_patch(&mut doc, patch);
-    write_patch(path, &doc)
-}
-
 /// 设置默认主题
 pub fn set_default_skin(path: &Path, theme_key: &str) -> Result<()> {
     let mut doc = read_patch(path)?;
@@ -88,6 +68,28 @@ pub fn set_default_skin(path: &Path, theme_key: &str) -> Result<()> {
     write_patch(path, &doc)
 }
 
+pub fn sync_skin_presets(path: &Path, keys: &[&str]) -> Result<()> {
+    let mut doc = read_patch(path)?;
+    let mut patch = get_patch(&mut doc);
+    let selected: std::collections::HashSet<&str> = keys.iter().copied().collect();
+
+    for skin in builtin_skins(Lang::Zh) {
+        let patch_key = format!("preset_color_schemes/{}", skin.key);
+        if selected.contains(skin.key.as_str()) {
+            let mut mapping = serde_yaml::Mapping::new();
+            for (k, v) in &skin.values {
+                mapping.insert(serde_yaml::Value::String(k.clone()), v.clone());
+            }
+            patch.insert(patch_key, serde_yaml::Value::Mapping(mapping));
+        } else {
+            patch.remove(&patch_key);
+        }
+    }
+
+    set_patch(&mut doc, patch);
+    write_patch(path, &doc)
+}
+
 /// 列出所有可用的内置主题
 #[allow(dead_code)]
 pub fn list_available_skins() -> Vec<(String, String)> {
@@ -95,4 +97,37 @@ pub fn list_available_skins() -> Vec<(String, String)> {
         .into_iter()
         .map(|s| (s.key, s.display_name))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_patch_path(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time went backwards")
+            .as_nanos();
+        std::env::temp_dir().join(format!("snout-skin-{name}-{nanos}.yaml"))
+    }
+
+    #[test]
+    fn sync_skin_presets_preserves_custom_entries() {
+        let path = temp_patch_path("preserve-custom");
+        std::fs::write(
+            &path,
+            "patch:\n  preset_color_schemes/custom_theme:\n    name: custom\n  preset_color_schemes/jianchun:\n    name: old\n",
+        )
+        .expect("write patch");
+
+        sync_skin_presets(&path, &["wechat"]).expect("sync presets");
+
+        let data = std::fs::read_to_string(&path).expect("read patch");
+        assert!(data.contains("preset_color_schemes/custom_theme"));
+        assert!(data.contains("preset_color_schemes/wechat"));
+        assert!(!data.contains("preset_color_schemes/jianchun:\n    name: old"));
+
+        std::fs::remove_file(path).ok();
+    }
 }

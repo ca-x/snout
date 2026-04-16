@@ -17,6 +17,9 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
         if entry.is_dir() {
             std::fs::create_dir_all(&outpath)?;
         } else {
+            if outpath.exists() && should_preserve_existing(&outpath) {
+                continue;
+            }
             if let Some(parent) = outpath.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -59,6 +62,14 @@ pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
                 let from = entry.path();
                 let to = base.join(entry.file_name());
                 if to.exists() {
+                    if should_preserve_existing(&to) {
+                        if from.is_dir() {
+                            std::fs::remove_dir_all(&from)?;
+                        } else {
+                            std::fs::remove_file(&from)?;
+                        }
+                        continue;
+                    }
                     if to.is_dir() {
                         std::fs::remove_dir_all(&to)?;
                     } else {
@@ -72,6 +83,14 @@ pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn should_preserve_existing(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    file_name.ends_with(".custom.yaml") || matches!(file_name, "installation.yaml" | "user.yaml")
 }
 
 #[cfg(test)]
@@ -140,6 +159,57 @@ mod tests {
         assert!(tmp.join("lua/test.lua").exists());
         assert!(tmp.join("schema.yaml").exists());
         assert!(!wrapper.exists());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_extract_zip_preserves_existing_custom_files() {
+        let tmp = std::env::temp_dir().join("snout-test-preserve-custom");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = create_test_zip(&tmp, &[("weasel.custom.yaml", b"archive")]);
+        let dest = tmp.join("output");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("weasel.custom.yaml"), "user").unwrap();
+
+        extract_zip(&zip_path, &dest).unwrap();
+
+        let content = std::fs::read_to_string(dest.join("weasel.custom.yaml")).unwrap();
+        assert_eq!(content, "user");
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_handle_nested_dir_preserves_existing_custom_files() {
+        let tmp = std::env::temp_dir().join("snout-test-nested-preserve-custom");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("squirrel.custom.yaml"), "user").unwrap();
+
+        let wrapper = tmp.join("wrapper");
+        std::fs::create_dir_all(&wrapper).unwrap();
+        std::fs::create_dir_all(wrapper.join("lua")).unwrap();
+        std::fs::write(wrapper.join("lua/test.lua"), "test").unwrap();
+        std::fs::write(wrapper.join("squirrel.custom.yaml"), "archive").unwrap();
+        std::fs::write(wrapper.join("schema.yaml"), "schema").unwrap();
+
+        handle_nested_dir(&tmp, "test.zip").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("squirrel.custom.yaml")).unwrap(),
+            "user"
+        );
+        assert_eq!(
+            std::fs::read_to_string(tmp.join("schema.yaml")).unwrap(),
+            "schema"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

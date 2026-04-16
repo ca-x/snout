@@ -15,25 +15,31 @@ impl MintUpdater {
     /// 检查方案更新（主分支归档）
     pub async fn check_scheme_update(&self, cancel: Option<&CancelSignal>) -> Result<UpdateInfo> {
         if self.base.client.use_mirror() {
-            let release = self
+            match self
                 .base
                 .client
                 .fetch_cnb_release(MINT_OWNER, MINT_REPO, "latest", cancel)
-                .await?;
-            find_mint_release_asset(&release)
-                .ok_or_else(|| anyhow::anyhow!("mirror asset not found: {}", MINT_ARCHIVE))
-        } else {
-            self.base
-                .client
-                .fetch_github_branch_archive(
-                    MINT_OWNER,
-                    MINT_REPO,
-                    MINT_BRANCH,
-                    MINT_ARCHIVE,
-                    cancel,
-                )
                 .await
+            {
+                Ok(release) => match find_mint_release_asset(&release) {
+                    Some(info) => Ok(info),
+                    None => self.fetch_github_branch_archive(cancel).await,
+                },
+                Err(_) => self.fetch_github_branch_archive(cancel).await,
+            }
+        } else {
+            self.fetch_github_branch_archive(cancel).await
         }
+    }
+
+    async fn fetch_github_branch_archive(
+        &self,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<UpdateInfo> {
+        self.base
+            .client
+            .fetch_github_branch_archive(MINT_OWNER, MINT_REPO, MINT_BRANCH, MINT_ARCHIVE, cancel)
+            .await
     }
 
     /// 更新方案
@@ -115,6 +121,7 @@ impl MintUpdater {
             sha256: info.sha256.clone(),
         };
         BaseUpdater::save_record(&record_path, &record)?;
+        crate::config::persist_installed_schema(Schema::Mint)?;
 
         let build_dir = self.base.rime_dir.join("build");
         if build_dir.exists() {

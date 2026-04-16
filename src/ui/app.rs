@@ -29,6 +29,7 @@ pub enum AppScreen {
     Result,
     SchemeSelector,
     SkinSelector,
+    SkinRoundPrompt,
     ConfigView,
     ConfigInput,
 }
@@ -47,6 +48,7 @@ pub struct App {
     pub menu_selected: usize,
     pub scheme_selected: usize,
     pub skin_selected: usize,
+    pub skin_round_choice: bool,
     pub config_selected: usize,
     pub schema: Schema,
     pub rime_dir: String,
@@ -71,6 +73,7 @@ pub struct App {
     config_input_value: String,
     // 通知
     notification: Option<Notification>,
+    pending_skin_selection: Option<PendingSkinSelection>,
 }
 
 #[derive(Debug)]
@@ -91,12 +94,23 @@ struct Notification {
     ttl: Option<Duration>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingSkinSelection {
+    key: String,
+    name: String,
+    target: SkinMenuTarget,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ConfigStatusSnapshot {
     scheme_status: String,
     dict_status: String,
     model_status: String,
     model_patch_status: String,
+    candidate_page_size: String,
+    installed_scheme_version: String,
+    installed_dict_version: String,
+    installed_model_version: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +121,7 @@ enum ConfigAction {
     ProxyType,
     ProxyAddress,
     ModelPatch,
+    CandidatePageSize,
     EngineSync,
     SyncStrategy,
     Refresh,
@@ -115,6 +130,7 @@ enum ConfigAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfigInputField {
     ProxyAddress,
+    CandidatePageSize,
 }
 
 #[derive(Clone)]
@@ -140,6 +156,7 @@ impl App {
             menu_selected: 0,
             scheme_selected: 0,
             skin_selected: 0,
+            skin_round_choice: true,
             config_selected: 0,
             schema: manager.config.schema,
             rime_dir: manager.rime_dir.display().to_string(),
@@ -162,6 +179,7 @@ impl App {
             config_input_field: None,
             config_input_value: String::new(),
             notification: None,
+            pending_skin_selection: None,
         }
     }
 
@@ -212,6 +230,12 @@ impl App {
                     self.t.t("hint.back")
                 )
             }
+            AppScreen::SkinRoundPrompt => format!(
+                "←→/hj {}  Enter {}  Esc {}",
+                self.t.t("hint.toggle"),
+                self.t.t("hint.confirm"),
+                self.t.t("hint.back")
+            ),
             AppScreen::ConfigInput => format!(
                 "{}  Enter {}  Esc {}",
                 self.t.t("hint.input"),
@@ -313,6 +337,7 @@ async fn run_app(
     app: &mut App,
     manager: &Manager,
 ) -> Result<()> {
+    refresh_config_status(app);
     loop {
         let mut progress_events = Vec::new();
         if let Some(rx) = &app.progress_rx {
@@ -359,6 +384,7 @@ async fn run_app(
                     AppScreen::Result => handle_result_key(app, key.code),
                     AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
                     AppScreen::SkinSelector => handle_skin_key(app, key.code, manager)?,
+                    AppScreen::SkinRoundPrompt => handle_skin_round_prompt_key(app, key.code)?,
                     AppScreen::ConfigView => handle_config_key(app, key.code),
                     AppScreen::ConfigInput => handle_config_input_key(app, key.code),
                 }
@@ -518,9 +544,7 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
         KeyCode::Enter => {
             if let Some(s) = schemas.get(app.scheme_selected) {
                 app.schema = *s;
-                let mut m = Manager::new()?;
-                m.config.schema = *s;
-                m.save()?;
+                refresh_config_status(app);
                 app.notify(format!(
                     "{}: {}",
                     app.t.t("scheme.switched"),
@@ -549,27 +573,24 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
         KeyCode::Enter => {
             if let Some((key, name)) = skins.get(app.skin_selected) {
                 match skin_menu_target(app) {
-                    Some(SkinMenuTarget::Fcitx5Theme) => {
-                        if let Err(e) = crate::skin::fcitx5::apply_theme(key, app.t.lang()) {
-                            app.notify(format!("❌ {e}"));
-                        } else {
-                            app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
-                        }
+                    Some(SkinMenuTarget::Fcitx5Theme)
+                        if crate::skin::fcitx5::theme_supports_optional_rounding(key) =>
+                    {
+                        app.skin_round_choice =
+                            crate::skin::fcitx5::installed_theme_rounding(key)?.unwrap_or(true);
+                        app.pending_skin_selection = Some(PendingSkinSelection {
+                            key: key.clone(),
+                            name: name.clone(),
+                            target: SkinMenuTarget::Fcitx5Theme,
+                        });
+                        app.screen = AppScreen::SkinRoundPrompt;
+                        return Ok(());
                     }
-                    Some(SkinMenuTarget::ThemePatch(patch)) => {
-                        if let Err(e) =
-                            crate::skin::patch::write_skin_presets(&patch, &[key.as_str()])
-                        {
-                            app.notify(format!("❌ {e}"));
-                        } else if let Err(e) = crate::skin::patch::set_default_skin(&patch, key) {
-                            app.notify(format!("❌ {e}"));
-                        } else {
-                            app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
-                        }
+                    Some(target) => {
+                        apply_skin_selection(app, target, key, name, None);
                     }
                     None => {
-                        let msg = app.t.t("skin.not_supported").to_string();
-                        app.notify(msg);
+                        app.notify(app.t.t("skin.not_supported").to_string());
                     }
                 }
             }
@@ -577,6 +598,78 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
         }
         KeyCode::Esc | KeyCode::Char('q') => {
             app.screen = AppScreen::Menu;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn apply_pending_skin_selection(app: &mut App) -> Result<()> {
+    let Some(selection) = app.pending_skin_selection.clone() else {
+        return Ok(());
+    };
+
+    apply_skin_selection(
+        app,
+        selection.target,
+        &selection.key,
+        &selection.name,
+        Some(app.skin_round_choice),
+    );
+    Ok(())
+}
+
+fn apply_skin_selection(
+    app: &mut App,
+    target: SkinMenuTarget,
+    key: &str,
+    name: &str,
+    rounded: Option<bool>,
+) {
+    match target {
+        SkinMenuTarget::Fcitx5Theme => {
+            if let Err(e) = crate::skin::fcitx5::apply_theme(key, rounded, app.t.lang()) {
+                app.notify(format!("❌ {e}"));
+            } else if crate::skin::fcitx5::theme_supports_optional_rounding(key) {
+                let round_state = if rounded.unwrap_or(false) {
+                    app.t.t("skin.round_on")
+                } else {
+                    app.t.t("skin.round_off")
+                };
+                app.notify(format!(
+                    "✅ {}: {} ({})",
+                    app.t.t("skin.applied"),
+                    name,
+                    round_state
+                ));
+            } else {
+                app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
+            }
+        }
+        SkinMenuTarget::ThemePatch(patch) => {
+            if let Err(e) = crate::skin::patch::sync_skin_presets(&patch, &[key]) {
+                app.notify(format!("❌ {e}"));
+            } else if let Err(e) = crate::skin::patch::set_default_skin(&patch, key) {
+                app.notify(format!("❌ {e}"));
+            } else {
+                app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
+            }
+        }
+    }
+}
+
+fn handle_skin_round_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Left | KeyCode::Char('h') => app.skin_round_choice = true,
+        KeyCode::Right | KeyCode::Char('l') => app.skin_round_choice = false,
+        KeyCode::Enter => {
+            apply_pending_skin_selection(app)?;
+            app.pending_skin_selection = None;
+            app.screen = AppScreen::Menu;
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.pending_skin_selection = None;
+            app.screen = AppScreen::SkinSelector;
         }
         _ => {}
     }
@@ -645,6 +738,18 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     ConfigAction::ModelPatch => {
                         manager.config.model_patch_enabled = !manager.config.model_patch_enabled
                     }
+                    ConfigAction::CandidatePageSize => {
+                        app.config_input_field = Some(ConfigInputField::CandidatePageSize);
+                        app.config_input_value = match crate::custom::candidate_page_size(
+                            std::path::Path::new(&app.rime_dir),
+                            app.schema,
+                        ) {
+                            Ok(Some(value)) => value.to_string(),
+                            _ => String::new(),
+                        };
+                        app.screen = AppScreen::ConfigInput;
+                        return;
+                    }
                     ConfigAction::EngineSync => {
                         manager.config.engine_sync_enabled = !manager.config.engine_sync_enabled
                     }
@@ -684,10 +789,36 @@ fn handle_config_input_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Enter => {
             if let Ok(mut manager) = Manager::new() {
-                if let Some(ConfigInputField::ProxyAddress) = app.config_input_field {
-                    manager.config.proxy_address = app.config_input_value.trim().to_string();
-                    let _ = manager.save();
-                    app.notify(app.t.t("config.saved").to_string());
+                match app.config_input_field {
+                    Some(ConfigInputField::ProxyAddress) => {
+                        manager.config.proxy_address = app.config_input_value.trim().to_string();
+                        let _ = manager.save();
+                        app.notify(app.t.t("config.saved").to_string());
+                    }
+                    Some(ConfigInputField::CandidatePageSize) => {
+                        let trimmed = app.config_input_value.trim();
+                        let value = if trimmed.is_empty() {
+                            None
+                        } else {
+                            match trimmed.parse::<u8>() {
+                                Ok(value @ 1..=9) => Some(value),
+                                _ => {
+                                    app.notify(app.t.t("config.invalid_page_size").to_string());
+                                    return;
+                                }
+                            }
+                        };
+                        if crate::custom::set_candidate_page_size(
+                            std::path::Path::new(&app.rime_dir),
+                            app.schema,
+                            value,
+                        )
+                        .is_ok()
+                        {
+                            app.notify(app.t.t("config.saved").to_string());
+                        }
+                    }
+                    None => {}
                 }
             }
             app.config_input_field = None;
@@ -723,7 +854,11 @@ fn config_actions(config: &crate::types::Config) -> Vec<ConfigAction> {
         actions.push(ConfigAction::ProxyType);
         actions.push(ConfigAction::ProxyAddress);
     }
-    actions.extend([ConfigAction::ModelPatch, ConfigAction::EngineSync]);
+    actions.extend([
+        ConfigAction::ModelPatch,
+        ConfigAction::CandidatePageSize,
+        ConfigAction::EngineSync,
+    ]);
     if config.engine_sync_enabled {
         actions.push(ConfigAction::SyncStrategy);
     }
@@ -758,6 +893,10 @@ async fn build_config_status_snapshot(
                 dict_status: t.t("update.failed").into(),
                 model_status: t.t("update.failed").into(),
                 model_patch_status: t.t("update.failed").into(),
+                candidate_page_size: t.t("update.failed").into(),
+                installed_scheme_version: t.t("config.unknown").into(),
+                installed_dict_version: t.t("config.unknown").into(),
+                installed_model_version: t.t("config.unknown").into(),
             };
         }
     };
@@ -791,6 +930,14 @@ async fn build_config_status_snapshot(
                         t.t("patch.model.disabled")
                     }
                 ),
+                candidate_page_size: candidate_page_size_text(&rime_dir, schema, &t),
+                installed_scheme_version: installed_version_text(&t, scheme_local.as_ref()),
+                installed_dict_version: installed_dict_version_text(
+                    schema,
+                    &t,
+                    dict_local.as_ref(),
+                ),
+                installed_model_version: installed_version_text(&t, model_local.as_ref()),
             };
         }
     };
@@ -877,6 +1024,10 @@ async fn build_config_status_snapshot(
                 t.t("patch.model.disabled")
             }
         ),
+        candidate_page_size: candidate_page_size_text(&rime_dir, schema, &t),
+        installed_scheme_version: installed_version_text(&t, scheme_local.as_ref()),
+        installed_dict_version: installed_dict_version_text(schema, &t, dict_local.as_ref()),
+        installed_model_version: installed_version_text(&t, model_local.as_ref()),
     }
 }
 
@@ -895,6 +1046,32 @@ fn local_status_text(
             }
         }
         (Some(local), None) => format!("{} ({})", local.tag, t.t("config.unknown")),
+    }
+}
+
+fn candidate_page_size_text(rime_dir: &std::path::Path, schema: Schema, t: &L10n) -> String {
+    match crate::custom::candidate_page_size(rime_dir, schema) {
+        Ok(Some(value)) => value.to_string(),
+        Ok(None) => t.t("config.default_value").into(),
+        Err(_) => t.t("config.unknown").into(),
+    }
+}
+
+fn installed_version_text(t: &L10n, local: Option<&crate::types::UpdateRecord>) -> String {
+    local
+        .map(|record| record.tag.clone())
+        .unwrap_or_else(|| t.t("status.not_installed").into())
+}
+
+fn installed_dict_version_text(
+    schema: Schema,
+    t: &L10n,
+    local: Option<&crate::types::UpdateRecord>,
+) -> String {
+    if schema.dict_zip().is_none() {
+        t.t("config.na").into()
+    } else {
+        installed_version_text(t, local)
     }
 }
 
@@ -1157,6 +1334,7 @@ fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, Upda
     app.result_rx = None;
     app.update_task = None;
     app.cancel_signal = None;
+    refresh_config_status(app);
 }
 
 fn upsert_stage_line(app: &mut App, event: &UpdateEvent) {
@@ -1288,10 +1466,15 @@ fn ui(f: &mut Frame, app: &App) {
         AppScreen::SkinSelector => render_skin_selector(f, chunks[1], app),
         AppScreen::ConfigView => render_config(f, chunks[1], app),
         AppScreen::ConfigInput => render_config_input(f, chunks[1], app),
+        AppScreen::SkinRoundPrompt => render_menu(f, chunks[1], app),
     }
 
     if let Some(notification) = &app.notification {
         render_notification_popup(f, size, &notification.message, app.t.t("hint.notice"));
+    }
+
+    if matches!(app.screen, AppScreen::SkinRoundPrompt) {
+        render_skin_round_prompt(f, size, app);
     }
 
     // Footer
@@ -1325,6 +1508,61 @@ fn render_notification_popup(f: &mut Frame, area: Rect, message: &str, title: &s
             )),
     )
     .wrap(Wrap { trim: true });
+    f.render_widget(popup, popup_area);
+}
+
+fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
+    let Some(selection) = &app.pending_skin_selection else {
+        return;
+    };
+
+    let yes_style = if app.skin_round_choice {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+    let no_style = if !app.skin_round_choice {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Yellow)
+    };
+    let popup_area = centered_rect(56, 8, area);
+    f.render_widget(Clear, popup_area);
+    let content = vec![
+        Line::from(vec![Span::styled(
+            format!("{}: {}", app.t.t("skin.round_prompt_theme"), selection.name),
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("skin.round_prompt_body"),
+            Style::default().fg(Color::White),
+        )]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(format!("  {}  ", app.t.t("skin.round_on")), yes_style),
+            Span::raw("  "),
+            Span::styled(format!("  {}  ", app.t.t("skin.round_off")), no_style),
+        ]),
+    ];
+
+    let popup = Paragraph::new(content).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(Span::styled(
+                format!(" {} ", app.t.t("skin.round_prompt_title")),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
     f.render_widget(popup, popup_area);
 }
 
@@ -1414,7 +1652,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             Line::from(reason),
         ]
     } else {
-        vec![
+        let mut lines = vec![
             Line::from(vec![Span::styled(
                 app.t.t("hint.confirm"),
                 Style::default()
@@ -1430,7 +1668,51 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             )]),
             Line::from(""),
             Line::from(menu_description(app, selected_idx)),
-        ]
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                app.t.t("menu.installed_versions"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(format!(
+                "  {}: {}",
+                app.t.t("config.scheme_status_label"),
+                app.config_status.installed_scheme_version
+            )),
+            Line::from(format!(
+                "  {}: {}",
+                app.t.t("config.dict_status_label"),
+                app.config_status.installed_dict_version
+            )),
+            Line::from(format!(
+                "  {}: {}",
+                app.t.t("config.model_status_label"),
+                app.config_status.installed_model_version
+            )),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                app.t.t("menu.current_settings"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(format!(
+                "  {}: {}",
+                app.t.t("config.candidate_page_size_label"),
+                app.config_status.candidate_page_size
+            )),
+            Line::from(format!(
+                "  {}: {}",
+                app.t.t("config.model_patch_status_label"),
+                app.config_status.model_patch_status
+            )),
+        ];
+        if app.config_status_loading {
+            lines.push(Line::from(""));
+            lines.push(Line::from(app.t.t("config.loading")));
+        }
+        lines
     };
     let detail_panel = Paragraph::new(detail).wrap(Wrap { trim: true }).block(
         Block::default()
@@ -1878,8 +2160,20 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
         action_line(
             actions
                 .iter()
-                .position(|action| *action == ConfigAction::EngineSync)
+                .position(|action| *action == ConfigAction::CandidatePageSize)
                 .unwrap_or(6),
+            format!("{}: ", app.t.t("config.candidate_page_size_label")),
+            if app.config_status_loading {
+                app.t.t("config.loading").into()
+            } else {
+                app.config_status.candidate_page_size.clone()
+            },
+        ),
+        action_line(
+            actions
+                .iter()
+                .position(|action| *action == ConfigAction::EngineSync)
+                .unwrap_or(7),
             format!("{}: ", app.t.t("config.engine_sync_label")),
             if config.engine_sync_enabled {
                 app.t.t("config.enabled").into()
@@ -1891,7 +2185,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::SyncStrategy)
-                .unwrap_or(7),
+                .unwrap_or(8),
             format!("{}: ", app.t.t("config.sync_strategy_label")),
             if config.engine_sync_use_link {
                 app.t.t("config.sync_link").into()
@@ -1904,7 +2198,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::Refresh)
-                .unwrap_or(8),
+                .unwrap_or(9),
             format!("{}: ", app.t.t("hint.refresh")),
             app.t.t("hint.confirm").into(),
         ),
@@ -2031,6 +2325,20 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::White),
             ),
         ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.candidate_page_size_label")),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                if app.config_status_loading {
+                    app.t.t("config.loading")
+                } else {
+                    &app.config_status.candidate_page_size
+                },
+                Style::default().fg(Color::White),
+            ),
+        ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             format!("  {}:", app.t.t("config.paths_section")),
@@ -2085,7 +2393,12 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
 fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
     let title = match app.config_input_field {
         Some(ConfigInputField::ProxyAddress) => app.t.t("config.proxy_address_label"),
+        Some(ConfigInputField::CandidatePageSize) => app.t.t("config.candidate_page_size_label"),
         None => app.t.t("config.title"),
+    };
+    let hint = match app.config_input_field {
+        Some(ConfigInputField::CandidatePageSize) => app.t.t("config.input_hint_page_size"),
+        _ => app.t.t("config.input_hint"),
     };
     let text = vec![
         Line::from(vec![Span::styled(
@@ -2095,10 +2408,7 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            app.t.t("config.input_hint"),
-            Style::default().fg(Color::Gray),
-        )]),
+        Line::from(vec![Span::styled(hint, Style::default().fg(Color::Gray))]),
         Line::from(""),
         Line::from(vec![Span::styled(
             if app.config_input_value.is_empty() {

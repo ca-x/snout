@@ -9,9 +9,11 @@ use reqwest::Proxy;
 
 pub struct Client {
     pub(crate) http: reqwest::Client,
+    pub(crate) http_direct: reqwest::Client,
     pub(crate) github_token: String,
     use_mirror: bool,
     pub(crate) lang: Lang,
+    has_proxy: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,38 +73,38 @@ impl Client {
     }
 
     pub fn new(config: &Config) -> Result<Self> {
-        let t = L10n::new(Lang::from_str(&config.language));
-        let mut builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("snout/0.1");
-
-        if let Some(proxy_url) = resolve_proxy_url(config, &t)? {
-            let proxy = Proxy::all(proxy_url)?;
-            builder = builder.proxy(proxy);
-        }
-
-        Ok(Self {
-            http: builder.build()?,
-            github_token: config.github_token.clone(),
-            use_mirror: config.use_mirror,
-            lang: Lang::from_str(&config.language),
-        })
+        Self::new_internal(config, true)
     }
 
     pub fn new_download_client(config: &Config) -> Result<Self> {
+        Self::new_internal(config, false)
+    }
+
+    fn new_internal(config: &Config, with_timeout: bool) -> Result<Self> {
         let t = L10n::new(Lang::from_str(&config.language));
         let mut builder = reqwest::Client::builder().user_agent("snout/0.1");
+        let mut direct_builder = reqwest::Client::builder().user_agent("snout/0.1");
 
-        if let Some(proxy_url) = resolve_proxy_url(config, &t)? {
+        if with_timeout {
+            let timeout = std::time::Duration::from_secs(30);
+            builder = builder.timeout(timeout);
+            direct_builder = direct_builder.timeout(timeout);
+        }
+
+        let proxy_url = resolve_proxy_url(config, &t)?;
+        if let Some(proxy_url) = &proxy_url {
             let proxy = Proxy::all(proxy_url)?;
             builder = builder.proxy(proxy);
         }
+        direct_builder = direct_builder.no_proxy();
 
         Ok(Self {
             http: builder.build()?,
+            http_direct: direct_builder.build()?,
             github_token: config.github_token.clone(),
             use_mirror: config.use_mirror,
             lang: Lang::from_str(&config.language),
+            has_proxy: proxy_url.is_some(),
         })
     }
 
@@ -131,6 +133,48 @@ impl Client {
 
     pub fn use_mirror(&self) -> bool {
         self.use_mirror
+    }
+
+    pub(crate) fn has_proxy(&self) -> bool {
+        self.has_proxy
+    }
+
+    pub(crate) fn is_mirror_url(&self, url: &str) -> bool {
+        url.starts_with(CNB_BASE)
+    }
+
+    pub(crate) async fn send_get(
+        &self,
+        url: &str,
+        headers: HeaderMap,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<reqwest::Response> {
+        let try_direct_first = self.has_proxy() && self.is_mirror_url(url);
+        let mut direct_error = None;
+
+        if try_direct_first {
+            let direct = self.http_direct.get(url).headers(headers.clone()).send();
+            match Self::await_with_cancel(direct, cancel).await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    direct_error = Some(anyhow::anyhow!(
+                        "direct mirror request returned {}",
+                        response.status()
+                    ));
+                }
+                Err(error) => direct_error = Some(error),
+            }
+        }
+
+        let proxied = self.http.get(url).headers(headers).send();
+        match Self::await_with_cancel(proxied, cancel).await {
+            Ok(response) => Ok(response),
+            Err(error) if direct_error.is_some() => Err(anyhow::anyhow!(
+                "mirror request failed without proxy ({}) and with proxy ({error})",
+                direct_error.expect("direct error")
+            )),
+            Err(error) => Err(error),
+        }
     }
 }
 

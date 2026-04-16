@@ -654,10 +654,6 @@ pub fn builtin_skins(lang: Lang) -> Vec<SkinPreset> {
     ]
 }
 
-pub fn find_skin(key: &str) -> Option<SkinPreset> {
-    builtin_skins(Lang::Zh).into_iter().find(|s| s.key == key)
-}
-
 pub fn list_available_skins(lang: Lang) -> Vec<(String, String)> {
     builtin_skins(lang)
         .into_iter()

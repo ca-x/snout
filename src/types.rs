@@ -225,6 +225,25 @@ impl Schema {
             _ => anyhow::bail!("{}: {}", L10n::new(lang).t("schema.unknown"), s),
         }
     }
+
+    pub fn from_scheme_archive_name(name: &str) -> Option<Self> {
+        match name {
+            "rime-wanxiang-base.zip" => Some(Schema::WanxiangBase),
+            "rime-wanxiang-moqi-fuzhu.zip" => Some(Schema::WanxiangMoqi),
+            "rime-wanxiang-flypy-fuzhu.zip" => Some(Schema::WanxiangFlypy),
+            "rime-wanxiang-zrm-fuzhu.zip" => Some(Schema::WanxiangZrm),
+            "rime-wanxiang-tiger-fuzhu.zip" => Some(Schema::WanxiangTiger),
+            "rime-wanxiang-wubi-fuzhu.zip" => Some(Schema::WanxiangWubi),
+            "rime-wanxiang-hanxin-fuzhu.zip" => Some(Schema::WanxiangHanxin),
+            "rime-wanxiang-shouyou-fuzhu.zip" => Some(Schema::WanxiangShouyou),
+            "rime-wanxiang-shyplus-fuzhu.zip" => Some(Schema::WanxiangShyplus),
+            "rime-wanxiang-wx-fuzhu.zip" => Some(Schema::WanxiangWx),
+            "full.zip" => Some(Schema::Ice),
+            "rime-frost-schemas.zip" => Some(Schema::Frost),
+            MINT_ARCHIVE => Some(Schema::Mint),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Schema {
@@ -265,6 +284,7 @@ impl Engine {
 
 // ── 配置 ──
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     pub schema: Schema,
     pub use_mirror: bool,
@@ -553,5 +573,26 @@ mod tests {
         assert!(json.contains("engine_sync_use_link"));
         assert!(!json.contains("fcitx_compat"));
         assert!(!json.contains("fcitx_use_link"));
+    }
+
+    #[test]
+    fn test_schema_from_scheme_archive_name() {
+        assert_eq!(
+            Schema::from_scheme_archive_name("rime-wanxiang-base.zip"),
+            Some(Schema::WanxiangBase)
+        );
+        assert_eq!(
+            Schema::from_scheme_archive_name("full.zip"),
+            Some(Schema::Ice)
+        );
+        assert_eq!(
+            Schema::from_scheme_archive_name("rime-frost-schemas.zip"),
+            Some(Schema::Frost)
+        );
+        assert_eq!(
+            Schema::from_scheme_archive_name(MINT_ARCHIVE),
+            Some(Schema::Mint)
+        );
+        assert_eq!(Schema::from_scheme_archive_name("unknown.zip"), None);
     }
 }

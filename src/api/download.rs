@@ -18,6 +18,7 @@ impl Client {
         let t = L10n::new(self.lang);
         let mut last_err = None;
         let tmp_path = temp_download_path(dest);
+        let prefer_direct_mirror = self.has_proxy() && self.is_mirror_url(url);
         for attempt in 0..3 {
             if let Some(signal) = cancel {
                 signal.checkpoint()?;
@@ -38,12 +39,10 @@ impl Client {
                 .map(|meta| meta.len())
                 .unwrap_or(0);
 
-            let mut request = self.http.get(url);
-            if resume_from > 0 {
-                request = request.header("Range", format!("bytes={resume_from}-"));
-            }
-
-            let resp = match Client::await_with_cancel(request.send(), cancel).await {
+            let resp = match self
+                .send_download_request(url, resume_from, cancel, prefer_direct_mirror)
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     last_err = Some(anyhow::anyhow!(
@@ -121,6 +120,48 @@ impl Client {
         }
 
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("{}", t.t("err.download_failed"))))
+    }
+}
+
+impl Client {
+    async fn send_download_request(
+        &self,
+        url: &str,
+        resume_from: u64,
+        cancel: Option<&CancelSignal>,
+        prefer_direct_mirror: bool,
+    ) -> Result<reqwest::Response> {
+        let mut direct_error = None;
+
+        if prefer_direct_mirror {
+            let mut direct = self.http_direct.get(url);
+            if resume_from > 0 {
+                direct = direct.header("Range", format!("bytes={resume_from}-"));
+            }
+            match Client::await_with_cancel(direct.send(), cancel).await {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    direct_error = Some(anyhow::anyhow!(
+                        "direct mirror download returned {}",
+                        response.status()
+                    ));
+                }
+                Err(error) => direct_error = Some(error),
+            }
+        }
+
+        let mut proxied = self.http.get(url);
+        if resume_from > 0 {
+            proxied = proxied.header("Range", format!("bytes={resume_from}-"));
+        }
+        match Client::await_with_cancel(proxied.send(), cancel).await {
+            Ok(response) => Ok(response),
+            Err(error) if direct_error.is_some() => Err(anyhow::anyhow!(
+                "mirror download failed without proxy ({}) and with proxy ({error})",
+                direct_error.expect("direct error")
+            )),
+            Err(error) => Err(error),
+        }
     }
 }
 

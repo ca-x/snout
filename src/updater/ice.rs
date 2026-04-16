@@ -102,6 +102,7 @@ impl IceUpdater {
             sha256: info.sha256.clone(),
         };
         BaseUpdater::save_record(&record_path, &record)?;
+        crate::config::persist_installed_schema(Schema::Ice)?;
 
         // 清理 build 目录
         let build_dir = self.base.rime_dir.join("build");

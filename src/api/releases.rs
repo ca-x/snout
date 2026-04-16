@@ -53,9 +53,7 @@ impl Client {
             signal.checkpoint()?;
         }
         let url = format!("{GITHUB_API}/repos/{owner}/{repo}/branches/{branch}");
-
-        let resp = self.http.get(&url).headers(self.github_headers()).send();
-        let resp = Self::await_with_cancel(resp, cancel).await?;
+        let resp = self.send_get(&url, self.github_headers(), cancel).await?;
 
         if !resp.status().is_success() {
             anyhow::bail!("{} {}", t.t("api.github_branch_status"), resp.status());
@@ -104,8 +102,7 @@ impl Client {
                 Client::cancellable_sleep(delay, cancel).await?;
             }
 
-            let resp = self.http.get(&url).headers(self.github_headers()).send();
-            let resp = Self::await_with_cancel(resp, cancel).await;
+            let resp = self.send_get(&url, self.github_headers(), cancel).await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {
@@ -153,8 +150,7 @@ impl Client {
                 Client::cancellable_sleep(delay, cancel).await?;
             }
 
-            let resp = self.http.get(&url).headers(self.cnb_headers()).send();
-            let resp = Self::await_with_cancel(resp, cancel).await;
+            let resp = self.send_get(&url, self.cnb_headers(), cancel).await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {
@@ -209,8 +205,7 @@ impl Client {
                 Client::cancellable_sleep(delay, cancel).await?;
             }
 
-            let resp = self.http.get(&url).headers(self.cnb_headers()).send();
-            let resp = Self::await_with_cancel(resp, cancel).await;
+            let resp = self.send_get(&url, self.cnb_headers(), cancel).await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {

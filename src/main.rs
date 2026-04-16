@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod custom;
 mod deployer;
 mod feedback;
 mod fileutil;
@@ -127,6 +128,14 @@ struct Cli {
     /// 覆盖内置皮肤 key / Override skin patch key
     #[arg(long)]
     skin_patch_key: Option<String>,
+
+    /// 设置候选词数量 / Set candidate page size
+    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=9))]
+    candidate_page_size: Option<u8>,
+
+    /// 清除候选词数量覆写 / Clear candidate page size override
+    #[arg(long, action = ArgAction::SetTrue)]
+    clear_candidate_page_size: bool,
 }
 
 #[tokio::main]
@@ -143,6 +152,12 @@ async fn main() -> anyhow::Result<()> {
         let schema = manager.config.schema;
         let cache_dir = manager.cache_dir.clone();
         let rime_dir = manager.rime_dir.clone();
+
+        if cli.clear_candidate_page_size {
+            custom::set_candidate_page_size(&rime_dir, schema, None)?;
+        } else if let Some(page_size) = cli.candidate_page_size {
+            custom::set_candidate_page_size(&rime_dir, schema, Some(page_size))?;
+        }
 
         if cli.update {
             updater::update_all(
