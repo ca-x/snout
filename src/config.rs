@@ -202,9 +202,19 @@ fn which_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(not(target_os = "linux"))]
+fn which_exists(_cmd: &str) -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
 fn fcitx5_rime_installed() -> bool {
     linux_fcitx5_rime_dir().exists() || linux_fcitx5_config_rime_dir().exists()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fcitx5_rime_installed() -> bool {
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -212,9 +222,19 @@ fn fcitx_rime_installed() -> bool {
     linux_fcitx_rime_dir().exists()
 }
 
+#[cfg(not(target_os = "linux"))]
+fn fcitx_rime_installed() -> bool {
+    false
+}
+
 #[cfg(target_os = "linux")]
 fn linux_fcitx5_rime_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_default().join("fcitx5/rime")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_fcitx5_rime_dir() -> PathBuf {
+    PathBuf::new()
 }
 
 #[cfg(target_os = "linux")]
@@ -224,6 +244,11 @@ fn linux_fcitx5_config_rime_dir() -> PathBuf {
         .join(".config/fcitx5/rime")
 }
 
+#[cfg(not(target_os = "linux"))]
+fn linux_fcitx5_config_rime_dir() -> PathBuf {
+    PathBuf::new()
+}
+
 #[cfg(target_os = "linux")]
 fn linux_ibus_rime_dir() -> PathBuf {
     dirs::home_dir()
@@ -231,11 +256,21 @@ fn linux_ibus_rime_dir() -> PathBuf {
         .join(".config/ibus/rime")
 }
 
+#[cfg(not(target_os = "linux"))]
+fn linux_ibus_rime_dir() -> PathBuf {
+    PathBuf::new()
+}
+
 #[cfg(target_os = "linux")]
 fn linux_fcitx_rime_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
         .join(".config/fcitx/rime")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_fcitx_rime_dir() -> PathBuf {
+    PathBuf::new()
 }
 
 #[cfg(target_os = "linux")]
@@ -246,6 +281,11 @@ fn linux_rime_dir_candidates() -> Vec<PathBuf> {
         linux_ibus_rime_dir(),
         linux_fcitx_rime_dir(),
     ]
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_rime_dir_candidates() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 #[cfg(target_os = "macos")]
