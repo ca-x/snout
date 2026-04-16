@@ -28,33 +28,64 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
     match engine {
         #[cfg(target_os = "linux")]
         "fcitx5" => {
+            if deploy_with_qdbus6().is_ok() {
+                println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+                return Ok(());
+            }
+            if let Some(rime_dir) = linux_detect_rime_dir() {
+                if run_rime_deployer(&rime_dir).is_ok() {
+                    println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+                    return Ok(());
+                }
+            }
             let bin = find_binary("fcitx5-remote", t)?;
             std::process::Command::new(bin).arg("-r").spawn()?;
             println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
         }
         #[cfg(target_os = "linux")]
         "ibus" => {
-            let bin = find_binary("ibus", t)?;
-            std::process::Command::new(bin)
-                .args(["engine", "Rime"])
-                .spawn()?;
+            if let Some(rime_dir) = engine_data_dir("ibus") {
+                let _ = run_rime_deployer(&rime_dir);
+            }
+            let bin = find_binary("ibus-daemon", t).or_else(|_| find_binary("ibus", t))?;
+            std::process::Command::new(bin).args(["-drx"]).spawn()?;
             println!("  ✅ {}", t.t("deploy.reloaded.ibus"));
+        }
+        #[cfg(target_os = "linux")]
+        "fcitx" => {
+            if let Some(rime_dir) = engine_data_dir("fcitx") {
+                run_rime_deployer(&rime_dir)?;
+            }
+            println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
         }
         #[cfg(target_os = "macos")]
         "squirrel" => {
-            let squirrel = "/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel";
-            if Path::new(squirrel).exists() {
+            if let Some(squirrel) = macos_squirrel_binary() {
                 std::process::Command::new(squirrel)
                     .arg("--reload")
                     .spawn()?;
                 println!("  ✅ {}", t.t("deploy.reloaded.squirrel"));
             }
         }
+        #[cfg(target_os = "macos")]
+        "fcitx5" => {
+            if let Some(fcitx5_curl) = macos_fcitx5_curl() {
+                std::process::Command::new(fcitx5_curl)
+                    .args(["/config/addon/rime/deploy", "-X", "POST", "-d", "{}"])
+                    .spawn()?;
+                println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+            }
+        }
         #[cfg(target_os = "windows")]
         "weasel" => {
-            let weasel = Path::new(r"C:\Program Files\Rime\weaselDeployer.exe");
-            if weasel.exists() {
-                std::process::Command::new(weasel).spawn()?;
+            if let Some(server) = windows_server_executable() {
+                let _ = std::process::Command::new(&server).arg("/q").status();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _ = std::process::Command::new(&server).spawn();
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            if let Some(weasel) = windows_deployer_executable() {
+                std::process::Command::new(weasel).arg("/deploy").spawn()?;
                 println!("  ✅ {}", t.t("deploy.reloaded.weasel"));
             }
         }
@@ -75,18 +106,24 @@ pub fn detect_engines() -> Vec<String> {
         if has_binary("ibus") {
             engines.push("ibus".into());
         }
+        if has_binary("fcitx") {
+            engines.push("fcitx".into());
+        }
     }
 
     #[cfg(target_os = "macos")]
     {
-        if Path::new("/Library/Input Methods/Squirrel.app").exists() {
+        if macos_squirrel_binary().is_some() {
             engines.push("squirrel".into());
+        }
+        if macos_fcitx5_curl().is_some() {
+            engines.push("fcitx5".into());
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        if Path::new(r"C:\Program Files\Rime").exists() {
+        if windows_deployer_executable().is_some() || windows_server_executable().is_some() {
             engines.push("weasel".into());
         }
     }
@@ -103,13 +140,14 @@ pub fn engine_data_dir(engine: &str) -> Option<PathBuf> {
         "fcitx5" => Some(dirs::data_dir()?.join("fcitx5/rime")),
         #[cfg(target_os = "linux")]
         "ibus" => Some(home.join(".config/ibus/rime")),
+        #[cfg(target_os = "linux")]
+        "fcitx" => Some(home.join(".config/fcitx/rime")),
         #[cfg(target_os = "macos")]
         "squirrel" => Some(home.join("Library/Rime")),
+        #[cfg(target_os = "macos")]
+        "fcitx5" => Some(home.join(".local/share/fcitx5/rime")),
         #[cfg(target_os = "windows")]
-        "weasel" => {
-            let appdata = std::env::var("APPDATA").ok()?;
-            Some(PathBuf::from(appdata).join("Rime"))
-        }
+        "weasel" => windows_rime_user_dir(),
         _ => None,
     }
 }
@@ -232,6 +270,156 @@ fn which(name: &str) -> Option<PathBuf> {
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| PathBuf::from(s.trim()))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_detect_rime_dir() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    [
+        home.join(".local/share/fcitx5/rime"),
+        home.join(".config/fcitx5/rime"),
+        home.join(".config/ibus/rime"),
+        home.join(".config/fcitx/rime"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+    .or_else(|| Some(home.join(".local/share/fcitx5/rime")))
+}
+
+#[cfg(target_os = "linux")]
+fn deploy_with_qdbus6() -> Result<()> {
+    if which("qdbus6").is_none() {
+        anyhow::bail!("qdbus6 unavailable");
+    }
+    std::process::Command::new("qdbus6")
+        .args([
+            "org.fcitx.Fcitx5",
+            "/controller",
+            "org.fcitx.Fcitx.Controller1.SetConfig",
+            "fcitx://config/addon/rime/deploy",
+            "",
+        ])
+        .status()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_rime_deployer(rime_dir: &Path) -> Result<()> {
+    for candidate in [
+        "/usr/lib/rime/rime_deployer",
+        "/usr/lib64/rime/rime_deployer",
+        "/usr/local/lib/rime/rime_deployer",
+        "rime_deployer",
+    ] {
+        let command = if candidate == "rime_deployer" {
+            which(candidate).unwrap_or_else(|| PathBuf::from(candidate))
+        } else {
+            PathBuf::from(candidate)
+        };
+        if !command.exists() && candidate != "rime_deployer" {
+            continue;
+        }
+        let status = std::process::Command::new(&command)
+            .args(["--build", &rime_dir.display().to_string()])
+            .status();
+        if matches!(status, Ok(s) if s.success()) {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("rime_deployer unavailable")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_squirrel_binary() -> Option<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    [
+        PathBuf::from("/Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel"),
+        home.join("Library/Input Methods/Squirrel.app/Contents/MacOS/Squirrel"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_fcitx5_curl() -> Option<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    [
+        PathBuf::from("/Library/Input Methods/Fcitx5.app/Contents/bin/fcitx5-curl"),
+        home.join("Library/Input Methods/Fcitx5.app/Contents/bin/fcitx5-curl"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_registry_query(key: &str, value: &str) -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", key, "/v", value])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(value) {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let data = parts[2..].join(" ");
+        if !data.is_empty() {
+            return Some(data);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_rime_user_dir() -> Option<PathBuf> {
+    windows_registry_query(r"HKCU\Software\Rime\Weasel", "RimeUserDir")
+        .or_else(|| windows_registry_query(r"HKLM\SOFTWARE\WOW6432Node\Rime\Weasel", "RimeUserDir"))
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("APPDATA")
+                .ok()
+                .map(|v| PathBuf::from(v).join("Rime"))
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_server_executable() -> Option<PathBuf> {
+    if let (Some(root), Some(exe)) = (
+        windows_registry_query(r"HKLM\SOFTWARE\WOW6432Node\Rime\Weasel", "WeaselRoot"),
+        windows_registry_query(r"HKLM\SOFTWARE\WOW6432Node\Rime\Weasel", "ServerExecutable"),
+    ) {
+        return Some(PathBuf::from(root).join(exe));
+    }
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let candidate = PathBuf::from(local).join("Programs/Rime/weasel-x64/WeaselServer.exe");
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_deployer_executable() -> Option<PathBuf> {
+    if let Some(server) = windows_server_executable() {
+        let deployer = server.with_file_name("WeaselDeployer.exe");
+        if deployer.exists() {
+            return Some(deployer);
+        }
+    }
+    let local = std::env::var("LOCALAPPDATA").ok()?;
+    let candidate = PathBuf::from(local).join("Programs/Rime/weasel-x64/WeaselDeployer.exe");
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    None
 }
 
 #[cfg(unix)]

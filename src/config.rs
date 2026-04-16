@@ -101,26 +101,44 @@ fn load_or_create_config(path: &Path) -> Result<Config> {
 
 fn detect_rime_dir() -> PathBuf {
     if cfg!(target_os = "windows") {
-        let appdata = std::env::var("APPDATA").unwrap_or_default();
-        PathBuf::from(appdata).join("Rime")
+        windows_rime_user_dir().unwrap_or_else(|| {
+            let appdata = std::env::var("APPDATA").unwrap_or_default();
+            PathBuf::from(appdata).join("Rime")
+        })
     } else if cfg!(target_os = "macos") {
-        dirs::home_dir().unwrap_or_default().join("Library/Rime")
-    } else {
-        // Linux: 优先已有的 Fcitx5 数据目录, 然后 IBus，再按已安装引擎推断默认目录。
-        let fcitx5 = linux_fcitx5_rime_dir();
+        let squirrel = macos_squirrel_rime_dir();
+        let fcitx5 = macos_fcitx5_rime_dir();
+
+        if squirrel.exists() {
+            return squirrel;
+        }
         if fcitx5.exists() {
             return fcitx5;
         }
 
-        let ibus = linux_ibus_rime_dir();
-        if ibus.exists() {
-            return ibus;
+        if macos_squirrel_installed() {
+            squirrel
+        } else if macos_fcitx5_installed() {
+            fcitx5
+        } else {
+            squirrel
+        }
+    } else {
+        // Linux: 按已知优先级覆盖 fcitx5/ibus/fcitx 的常见目录。
+        for candidate in linux_rime_dir_candidates() {
+            if candidate.exists() {
+                return candidate;
+            }
         }
 
         if which_exists("fcitx5-remote") {
-            fcitx5
+            linux_fcitx5_rime_dir()
+        } else if which_exists("ibus") {
+            linux_ibus_rime_dir()
+        } else if which_exists("fcitx") {
+            linux_fcitx_rime_dir()
         } else {
-            ibus
+            linux_fcitx5_rime_dir()
         }
     }
 }
@@ -150,20 +168,24 @@ pub fn detect_installed_engines() -> Vec<String> {
         if which_exists("ibus") {
             engines.push("ibus".into());
         }
+        if which_exists("fcitx") || fcitx_rime_installed() {
+            engines.push("fcitx".into());
+        }
     }
 
     #[cfg(target_os = "macos")]
     {
-        let squirrel = Path::new("/Library/Input Methods/Squirrel.app");
-        if squirrel.exists() {
+        if macos_squirrel_installed() {
             engines.push("squirrel".into());
+        }
+        if macos_fcitx5_installed() {
+            engines.push("fcitx5".into());
         }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let weasel_reg = Path::new(r"C:\Program Files\Rime");
-        if weasel_reg.exists() {
+        if windows_weasel_detected() {
             engines.push("weasel".into());
         }
     }
@@ -182,7 +204,12 @@ fn which_exists(cmd: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn fcitx5_rime_installed() -> bool {
-    linux_fcitx5_rime_dir().exists()
+    linux_fcitx5_rime_dir().exists() || linux_fcitx5_config_rime_dir().exists()
+}
+
+#[cfg(target_os = "linux")]
+fn fcitx_rime_installed() -> bool {
+    linux_fcitx_rime_dir().exists()
 }
 
 #[cfg(target_os = "linux")]
@@ -191,8 +218,147 @@ fn linux_fcitx5_rime_dir() -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
+fn linux_fcitx5_config_rime_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".config/fcitx5/rime")
+}
+
+#[cfg(target_os = "linux")]
 fn linux_ibus_rime_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
         .join(".config/ibus/rime")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_fcitx_rime_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".config/fcitx/rime")
+}
+
+#[cfg(target_os = "linux")]
+fn linux_rime_dir_candidates() -> Vec<PathBuf> {
+    vec![
+        linux_fcitx5_rime_dir(),
+        linux_fcitx5_config_rime_dir(),
+        linux_ibus_rime_dir(),
+        linux_fcitx_rime_dir(),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn macos_squirrel_rime_dir() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join("Library/Rime")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_squirrel_rime_dir() -> PathBuf {
+    PathBuf::new()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_fcitx5_rime_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".local/share/fcitx5/rime")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_fcitx5_rime_dir() -> PathBuf {
+    PathBuf::new()
+}
+
+#[cfg(target_os = "macos")]
+fn macos_squirrel_installed() -> bool {
+    let home = dirs::home_dir().unwrap_or_default();
+    [
+        PathBuf::from("/Library/Input Methods/Squirrel.app"),
+        home.join("Library/Input Methods/Squirrel.app"),
+    ]
+    .iter()
+    .any(|path| path.exists())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_squirrel_installed() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn macos_fcitx5_installed() -> bool {
+    let home = dirs::home_dir().unwrap_or_default();
+    [
+        PathBuf::from("/Library/Input Methods/Fcitx5.app"),
+        home.join("Library/Input Methods/Fcitx5.app"),
+    ]
+    .iter()
+    .any(|path| path.exists())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn macos_fcitx5_installed() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn windows_weasel_detected() -> bool {
+    windows_rime_user_dir().is_some()
+        || windows_registry_query(r"HKLM\SOFTWARE\WOW6432Node\Rime\Weasel", "ServerExecutable")
+            .is_some()
+        || windows_registry_query(r"HKCU\Software\Rime\Weasel", "RimeUserDir").is_some()
+        || Path::new(r"C:\Program Files\Rime").exists()
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+fn windows_weasel_detected() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn windows_rime_user_dir() -> Option<PathBuf> {
+    windows_registry_query(r"HKCU\Software\Rime\Weasel", "RimeUserDir")
+        .or_else(|| windows_registry_query(r"HKLM\SOFTWARE\WOW6432Node\Rime\Weasel", "RimeUserDir"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_rime_user_dir() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn windows_registry_query(key: &str, value: &str) -> Option<String> {
+    let output = std::process::Command::new("reg")
+        .args(["query", key, "/v", value])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(value) {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let data = parts[2..].join(" ");
+        if !data.is_empty() {
+            return Some(data);
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+fn windows_registry_query(_key: &str, _value: &str) -> Option<String> {
+    None
 }
