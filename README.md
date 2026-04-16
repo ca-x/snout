@@ -279,6 +279,20 @@ snout --update --proxy socks5://127.0.0.1:1080  # With proxy
 snout --lang en --update  # English interface
 ```
 
+To initialize Mint specifically, choose **Mint Input** in the setup wizard, then
+run either:
+
+```bash
+snout --init
+```
+
+or update the current scheme directly after switching the saved config to Mint:
+
+```bash
+snout --scheme
+snout --scheme --mirror
+```
+
 ## Supported Schemes
 
 - Wanxiang
@@ -318,4 +332,5 @@ copied into the user Rime directory.
 
 ## License
 
+MIT
 MIT

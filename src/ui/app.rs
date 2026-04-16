@@ -865,6 +865,7 @@ mod tests {
         assert!(model_update_supported(Schema::WanxiangMoqi));
         assert!(model_update_supported(Schema::Ice));
         assert!(model_update_supported(Schema::Frost));
+        assert!(model_update_supported(Schema::Mint));
     }
 
     #[test]
