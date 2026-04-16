@@ -388,10 +388,8 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
         KeyCode::Up | KeyCode::Char('k') => {
             app.menu_selected = app.menu_selected.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.menu_selected < app.menu_items().len() - 1 {
-                app.menu_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.menu_selected < app.menu_items().len() - 1 => {
+            app.menu_selected += 1;
         }
         KeyCode::Enter | KeyCode::Char('1'..='8') => {
             let idx = match key {
@@ -489,22 +487,20 @@ fn handle_result_key(app: &mut App, key: KeyCode) {
 
 fn handle_updating_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
-            if app.update_in_progress {
-                if let Some(cancel) = &app.cancel_signal {
-                    cancel.cancel();
-                }
-                app.update_msg = app.t.t("update.cancelling").into();
-                upsert_stage_line(
-                    app,
-                    &UpdateEvent {
-                        component: UpdateComponent::Hook,
-                        phase: UpdatePhase::Cancelling,
-                        progress: app.update_pct,
-                        detail: app.t.t("update.cancelling").into(),
-                    },
-                );
+        KeyCode::Esc | KeyCode::Char('q') if app.update_in_progress => {
+            if let Some(cancel) = &app.cancel_signal {
+                cancel.cancel();
             }
+            app.update_msg = app.t.t("update.cancelling").into();
+            upsert_stage_line(
+                app,
+                &UpdateEvent {
+                    component: UpdateComponent::Hook,
+                    phase: UpdatePhase::Cancelling,
+                    progress: app.update_pct,
+                    detail: app.t.t("update.cancelling").into(),
+                },
+            );
         }
         _ => {}
     }
@@ -516,10 +512,8 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
         KeyCode::Up | KeyCode::Char('k') => {
             app.scheme_selected = app.scheme_selected.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.scheme_selected < schemas.len() - 1 {
-                app.scheme_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.scheme_selected < schemas.len() - 1 => {
+            app.scheme_selected += 1;
         }
         KeyCode::Enter => {
             if let Some(s) = schemas.get(app.scheme_selected) {
@@ -549,10 +543,8 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
         KeyCode::Up | KeyCode::Char('k') => {
             app.skin_selected = app.skin_selected.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.skin_selected < skins.len() - 1 {
-                app.skin_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.skin_selected < skins.len() - 1 => {
+            app.skin_selected += 1;
         }
         KeyCode::Enter => {
             if let Some((key, name)) = skins.get(app.skin_selected) {
@@ -603,10 +595,8 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => {
             app.config_selected = app.config_selected.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.config_selected + 1 < actions.len() {
-                app.config_selected += 1;
-            }
+        KeyCode::Down | KeyCode::Char('j') if app.config_selected + 1 < actions.len() => {
+            app.config_selected += 1;
         }
         KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
             if let Ok(mut manager) = Manager::new() {
