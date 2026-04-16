@@ -16,17 +16,10 @@ pub async fn run_init_wizard() -> Result<()> {
     let engines = config::detect_installed_engines();
     if engines.is_empty() {
         println!("⚠️  {}", t.t("wizard.no_engine"));
-        if lang == Lang::Zh {
-            println!("请先安装:");
-            println!("  • 小狼毫 (Weasel) - Windows");
-            println!("  • 鼠须管 (Squirrel) - macOS");
-            println!("  • Fcitx5 + Rime - Linux");
-        } else {
-            println!("Install one of:");
-            println!("  • Weasel - Windows");
-            println!("  • Squirrel - macOS");
-            println!("  • Fcitx5 + Rime - Linux");
-        }
+        println!("{}", t.t("wizard.install_one_of"));
+        println!("  • Weasel - Windows");
+        println!("  • Squirrel - macOS");
+        println!("  • Fcitx5 + Rime - Linux");
         return Ok(());
     }
     println!(
@@ -85,11 +78,7 @@ pub async fn run_init_wizard() -> Result<()> {
     .await?;
 
     println!("\n✅ {}!\n", t.t("wizard.complete"));
-    if lang == Lang::Zh {
-        println!("运行 `snout` 打开 TUI");
-    } else {
-        println!("Run `snout` to open TUI");
-    }
+    println!("{}", t.t("wizard.open_tui"));
 
     Ok(())
 }

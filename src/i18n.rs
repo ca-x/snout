@@ -72,6 +72,10 @@ impl L10n {
         en.insert("wizard.select_scheme", "Select scheme");
         zh.insert("wizard.enable_model_patch", "启用语言模型 patch?");
         en.insert("wizard.enable_model_patch", "Enable language model patch?");
+        zh.insert("wizard.install_one_of", "请先安装:");
+        en.insert("wizard.install_one_of", "Install one of:");
+        zh.insert("wizard.open_tui", "运行 `snout` 打开 TUI");
+        en.insert("wizard.open_tui", "Run `snout` to open TUI");
         zh.insert("wizard.downloading", "下载安装中...");
         en.insert("wizard.downloading", "Downloading and installing...");
         zh.insert("wizard.complete", "初始化完成");
