@@ -818,6 +818,10 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             "  • 白霜拼音: gaboolic/rime-frost",
             Style::default().fg(Color::White),
         )]),
+        Line::from(vec![Span::styled(
+            "  • Mint Input: Mintimate/oh-my-rime",
+            Style::default().fg(Color::White),
+        )]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  按 Esc 返回",

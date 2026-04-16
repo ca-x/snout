@@ -88,6 +88,8 @@ impl L10n {
         en.insert("update.complete", "Update complete");
         zh.insert("update.up_to_date", "已是最新版本");
         en.insert("update.up_to_date", "Already up to date");
+        zh.insert("status.not_installed", "未安装");
+        en.insert("status.not_installed", "Not installed");
         zh.insert("update.failed", "更新失败");
         en.insert("update.failed", "Update failed");
         zh.insert("update.scheme", "方案");

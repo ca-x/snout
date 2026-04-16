@@ -38,7 +38,7 @@ impl MintUpdater {
             .unwrap_or(false);
 
         if !scheme_switched && !BaseUpdater::needs_update(local.as_ref(), &info) {
-            progress("Already up to date", 1.0);
+            progress(t.t("update.up_to_date"), 1.0);
             return Ok(BaseUpdater::success_result(
                 t.t("update.scheme"),
                 &info.tag,
@@ -78,7 +78,7 @@ impl MintUpdater {
             component: t.t("update.scheme").into(),
             old_version: local
                 .map(|r| r.tag)
-                .unwrap_or_else(|| "not installed".into()),
+                .unwrap_or_else(|| t.t("status.not_installed").into()),
             new_version: info.tag,
             success: true,
             message: t.t("update.complete").into(),
