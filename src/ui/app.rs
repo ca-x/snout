@@ -30,6 +30,8 @@ pub enum AppScreen {
     SchemeSelector,
     SkinSelector,
     SkinRoundPrompt,
+    Fcitx5LightThemeSelector,
+    Fcitx5DarkThemeSelector,
     ConfigView,
     ConfigInput,
 }
@@ -49,6 +51,8 @@ pub struct App {
     pub scheme_selected: usize,
     pub skin_selected: usize,
     pub skin_round_choice: bool,
+    pub fcitx5_light_selected: Option<String>,
+    pub fcitx5_dark_selected: Option<String>,
     pub config_selected: usize,
     pub schema: Schema,
     pub rime_dir: String,
@@ -96,8 +100,8 @@ struct Notification {
 
 #[derive(Debug, Clone)]
 struct PendingSkinSelection {
-    key: String,
-    name: String,
+    light_key: String,
+    dark_key: String,
     target: SkinMenuTarget,
 }
 
@@ -157,6 +161,8 @@ impl App {
             scheme_selected: 0,
             skin_selected: 0,
             skin_round_choice: true,
+            fcitx5_light_selected: None,
+            fcitx5_dark_selected: None,
             config_selected: 0,
             schema: manager.config.schema,
             rime_dir: manager.rime_dir.display().to_string(),
@@ -222,7 +228,10 @@ impl App {
                 self.t.t("hint.cancel")
             ),
             AppScreen::Result => format!("Enter/Esc {}", self.t.t("hint.back")),
-            AppScreen::SchemeSelector | AppScreen::SkinSelector => {
+            AppScreen::SchemeSelector
+            | AppScreen::SkinSelector
+            | AppScreen::Fcitx5LightThemeSelector
+            | AppScreen::Fcitx5DarkThemeSelector => {
                 format!(
                     "↑↓/jk {}  Enter {}  Esc {}",
                     self.t.t("hint.navigate"),
@@ -384,6 +393,12 @@ async fn run_app(
                     AppScreen::Result => handle_result_key(app, key.code),
                     AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
                     AppScreen::SkinSelector => handle_skin_key(app, key.code, manager)?,
+                    AppScreen::Fcitx5LightThemeSelector => {
+                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Light)?
+                    }
+                    AppScreen::Fcitx5DarkThemeSelector => {
+                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Dark)?
+                    }
                     AppScreen::SkinRoundPrompt => handle_skin_round_prompt_key(app, key.code)?,
                     AppScreen::ConfigView => handle_config_key(app, key.code),
                     AppScreen::ConfigInput => handle_config_input_key(app, key.code),
@@ -475,7 +490,15 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
                 }
                 6 => {
                     app.skin_selected = 0;
-                    app.screen = AppScreen::SkinSelector;
+                    if matches!(skin_menu_target(app), Some(SkinMenuTarget::Fcitx5Theme)) {
+                        let selection =
+                            crate::skin::fcitx5::current_theme_selection().unwrap_or_default();
+                        app.fcitx5_light_selected = selection.light;
+                        app.fcitx5_dark_selected = selection.dark;
+                        app.screen = AppScreen::Fcitx5DarkThemeSelector;
+                    } else {
+                        app.screen = AppScreen::SkinSelector;
+                    }
                 }
                 7 => {
                     app.scheme_selected = current_schema_index(app.schema);
@@ -579,8 +602,8 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
                         app.skin_round_choice =
                             crate::skin::fcitx5::installed_theme_rounding(key)?.unwrap_or(true);
                         app.pending_skin_selection = Some(PendingSkinSelection {
-                            key: key.clone(),
-                            name: name.clone(),
+                            light_key: key.clone(),
+                            dark_key: key.clone(),
                             target: SkinMenuTarget::Fcitx5Theme,
                         });
                         app.screen = AppScreen::SkinRoundPrompt;
@@ -604,19 +627,132 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum Fcitx5ThemePhase {
+    Dark,
+    Light,
+}
+
+fn handle_fcitx5_theme_key(app: &mut App, key: KeyCode, phase: Fcitx5ThemePhase) -> Result<()> {
+    let skins = available_skin_choices(app);
+    match key {
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.skin_selected = app.skin_selected.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') if app.skin_selected < skins.len().saturating_sub(1) => {
+            app.skin_selected += 1;
+        }
+        KeyCode::Enter => {
+            if let Some((key, _name)) = skins.get(app.skin_selected) {
+                match phase {
+                    Fcitx5ThemePhase::Dark => {
+                        app.fcitx5_dark_selected = Some(key.clone());
+                        app.skin_selected =
+                            current_skin_index(app, app.fcitx5_light_selected.as_deref());
+                        app.screen = AppScreen::Fcitx5LightThemeSelector;
+                    }
+                    Fcitx5ThemePhase::Light => {
+                        app.fcitx5_light_selected = Some(key.clone());
+                        let light = app.fcitx5_light_selected.clone().unwrap_or_default();
+                        let dark = app
+                            .fcitx5_dark_selected
+                            .clone()
+                            .unwrap_or_else(|| light.clone());
+                        let requires_round_prompt =
+                            crate::skin::fcitx5::theme_supports_optional_rounding(&light)
+                                || crate::skin::fcitx5::theme_supports_optional_rounding(&dark);
+                        if requires_round_prompt {
+                            let rounded = crate::skin::fcitx5::installed_theme_rounding(&light)
+                                .or_else(|_| crate::skin::fcitx5::installed_theme_rounding(&dark))?
+                                .unwrap_or(true);
+                            app.skin_round_choice = rounded;
+                            app.pending_skin_selection = Some(PendingSkinSelection {
+                                light_key: light,
+                                dark_key: dark,
+                                target: SkinMenuTarget::Fcitx5Theme,
+                            });
+                            app.screen = AppScreen::SkinRoundPrompt;
+                        } else {
+                            apply_fcitx5_theme_pair(app, None);
+                            app.screen = AppScreen::Menu;
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => match phase {
+            Fcitx5ThemePhase::Dark => {
+                app.screen = AppScreen::Menu;
+            }
+            Fcitx5ThemePhase::Light => {
+                app.screen = AppScreen::Fcitx5DarkThemeSelector;
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+
 fn apply_pending_skin_selection(app: &mut App) -> Result<()> {
     let Some(selection) = app.pending_skin_selection.clone() else {
         return Ok(());
     };
 
-    apply_skin_selection(
-        app,
-        selection.target,
-        &selection.key,
-        &selection.name,
-        Some(app.skin_round_choice),
-    );
+    match selection.target {
+        SkinMenuTarget::Fcitx5Theme => apply_fcitx5_theme_pair(app, Some(app.skin_round_choice)),
+        _ => apply_skin_selection(
+            app,
+            selection.target,
+            &selection.light_key,
+            &selection.dark_key,
+            Some(app.skin_round_choice),
+        ),
+    }
     Ok(())
+}
+
+fn apply_fcitx5_theme_pair(app: &mut App, rounded: Option<bool>) {
+    let light = app.fcitx5_light_selected.clone().unwrap_or_default();
+    let dark = app
+        .fcitx5_dark_selected
+        .clone()
+        .unwrap_or_else(|| light.clone());
+    if light.is_empty() || dark.is_empty() {
+        app.notify(app.t.t("skin.not_supported").to_string());
+        return;
+    }
+
+    if let Err(e) =
+        crate::skin::fcitx5::apply_theme_pair(&light, &dark, rounded, rounded, app.t.lang())
+    {
+        app.notify(format!("❌ {e}"));
+        return;
+    }
+
+    let suffix = if rounded.is_some() {
+        let round_state = if rounded.unwrap_or(false) {
+            app.t.t("skin.round_on")
+        } else {
+            app.t.t("skin.round_off")
+        };
+        format!(" ({round_state})")
+    } else {
+        String::new()
+    };
+
+    app.notify(format!(
+        "✅ {}: {} / {}{}",
+        app.t.t("skin.applied"),
+        light,
+        dark,
+        suffix
+    ));
+}
+
+fn current_skin_index(app: &App, key: Option<&str>) -> usize {
+    let skins = available_skin_choices(app);
+    key.and_then(|key| skins.iter().position(|(candidate, _)| candidate == key))
+        .unwrap_or(0)
 }
 
 fn apply_skin_selection(
@@ -1464,6 +1600,12 @@ fn ui(f: &mut Frame, app: &App) {
         AppScreen::Result => render_result(f, chunks[1], app),
         AppScreen::SchemeSelector => render_scheme_selector(f, chunks[1], app),
         AppScreen::SkinSelector => render_skin_selector(f, chunks[1], app),
+        AppScreen::Fcitx5DarkThemeSelector => {
+            render_fcitx5_theme_selector(f, chunks[1], app, Fcitx5ThemePhase::Dark)
+        }
+        AppScreen::Fcitx5LightThemeSelector => {
+            render_fcitx5_theme_selector(f, chunks[1], app, Fcitx5ThemePhase::Light)
+        }
         AppScreen::ConfigView => render_config(f, chunks[1], app),
         AppScreen::ConfigInput => render_config_input(f, chunks[1], app),
         AppScreen::SkinRoundPrompt => render_menu(f, chunks[1], app),
@@ -1488,8 +1630,9 @@ fn ui(f: &mut Frame, app: &App) {
 }
 
 fn render_notification_popup(f: &mut Frame, area: Rect, message: &str, title: &str) {
-    let popup_width = (message.chars().count() as u16 + 8).clamp(24, area.width.saturating_sub(4));
-    let popup_area = centered_rect(popup_width, 5, area);
+    let popup_width = (message.chars().count() as u16 + 8).clamp(24, area.width.saturating_sub(2));
+    let popup_height = if area.height < 8 { 3 } else { 5 };
+    let popup_area = centered_rect(popup_width, popup_height, area);
     f.render_widget(Clear, popup_area);
     let popup = Paragraph::new(Line::from(vec![Span::styled(
         message,
@@ -1532,11 +1675,18 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
     } else {
         Style::default().fg(Color::Yellow)
     };
-    let popup_area = centered_rect(56, 8, area);
+    let popup_width = area.width.saturating_sub(2).clamp(36, 72);
+    let popup_height = area.height.saturating_sub(2).clamp(6, 9);
+    let popup_area = centered_rect(popup_width, popup_height, area);
     f.render_widget(Clear, popup_area);
     let content = vec![
         Line::from(vec![Span::styled(
-            format!("{}: {}", app.t.t("skin.round_prompt_theme"), selection.name),
+            format!(
+                "{}: {} / {}",
+                app.t.t("skin.round_prompt_theme"),
+                selection.light_key,
+                selection.dark_key
+            ),
             Style::default().fg(Color::White),
         )]),
         Line::from(""),
@@ -1588,10 +1738,17 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     let menu_items = app.menu_items();
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
+    let chunks = if area.width < 90 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(48), Constraint::Percentage(52)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(area)
+    };
     let items: Vec<ListItem> = menu_items
         .iter()
         .enumerate()
@@ -1919,10 +2076,6 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
     let visible_rows = area.height.saturating_sub(2) as usize;
     let window = sliding_window(app.skin_selected, skins.len(), visible_rows.max(1));
     let visible_skins = &skins[window.start..window.end];
-    let current_linux_theme = match skin_menu_target(app) {
-        Some(SkinMenuTarget::Fcitx5Theme) => crate::skin::fcitx5::current_theme().ok().flatten(),
-        _ => None,
-    };
     let installed_linux_themes = match skin_menu_target(app) {
         Some(SkinMenuTarget::Fcitx5Theme) => {
             crate::skin::fcitx5::installed_theme_names().unwrap_or_default()
@@ -1941,12 +2094,6 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(
                     format!(" [{}]", app.t.t("skin.installed_marker")),
                     Style::default().fg(Color::Cyan),
-                ));
-            }
-            if current_linux_theme.as_deref() == Some(key.as_str()) {
-                spans.push(Span::styled(
-                    format!(" [{}]", app.t.t("skin.current_marker")),
-                    Style::default().fg(Color::Yellow),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -1990,6 +2137,131 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
             .min(visible_skins.len().saturating_sub(1)),
     ));
     f.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_fcitx5_theme_selector(f: &mut Frame, area: Rect, app: &App, phase: Fcitx5ThemePhase) {
+    let chunks = if area.width < 88 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(6), Constraint::Length(4)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(72), Constraint::Percentage(28)])
+            .split(area)
+    };
+    let skins = available_skin_choices(app);
+    let visible_rows = chunks[0].height.saturating_sub(2) as usize;
+    let window = sliding_window(app.skin_selected, skins.len(), visible_rows.max(1));
+    let visible_skins = &skins[window.start..window.end];
+    let current = crate::skin::fcitx5::current_theme_selection()
+        .ok()
+        .unwrap_or_default();
+
+    let items: Vec<ListItem> = visible_skins
+        .iter()
+        .map(|(key, name)| {
+            let mut spans = vec![
+                Span::styled("  ", Style::default()),
+                Span::styled(name.as_str(), Style::default().fg(Color::White)),
+                Span::styled(format!(" ({key})"), Style::default().fg(Color::Gray)),
+            ];
+            if current.light.as_deref() == Some(key.as_str()) {
+                spans.push(Span::styled(
+                    format!(" [{}]", app.t.t("skin.current_light_marker")),
+                    Style::default().fg(Color::Cyan),
+                ));
+            }
+            if current.dark.as_deref() == Some(key.as_str()) {
+                spans.push(Span::styled(
+                    format!(" [{}]", app.t.t("skin.current_dark_marker")),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect();
+
+    let title_key = match phase {
+        Fcitx5ThemePhase::Dark => "skin.fcitx5_dark_select_prompt",
+        Fcitx5ThemePhase::Light => "skin.fcitx5_light_select_prompt",
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Magenta))
+                .title(Span::styled(
+                    format!(
+                        " {} {}/{} ",
+                        app.t.t(title_key),
+                        window.current_index,
+                        window.total_items.max(1)
+                    ),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▸ ");
+
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(
+        app.skin_selected
+            .saturating_sub(window.start)
+            .min(visible_skins.len().saturating_sub(1)),
+    ));
+    f.render_stateful_widget(list, chunks[0], &mut state);
+
+    let summary = vec![
+        Line::from(format!(
+            "  {}: {}",
+            app.t.t("skin.current_dark_marker"),
+            current
+                .dark
+                .unwrap_or_else(|| app.t.t("config.none").into())
+        )),
+        Line::from(format!(
+            "  {}: {}",
+            app.t.t("skin.current_light_marker"),
+            current
+                .light
+                .unwrap_or_else(|| app.t.t("config.none").into())
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "  {}: {}",
+            app.t.t("skin.selected_dark_marker"),
+            app.fcitx5_dark_selected
+                .clone()
+                .unwrap_or_else(|| app.t.t("config.none").into())
+        )),
+        Line::from(format!(
+            "  {}: {}",
+            app.t.t("skin.selected_light_marker"),
+            app.fcitx5_light_selected
+                .clone()
+                .unwrap_or_else(|| app.t.t("config.none").into())
+        )),
+    ];
+    let summary_panel = Paragraph::new(summary).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(
+                format!(" {} ", app.t.t("menu.result")),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(summary_panel, chunks[1]);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2058,10 +2330,17 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(value, Style::default().fg(Color::White)),
         ])
     };
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(area);
+    let chunks = if area.width < 110 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(area)
+    };
 
     let left_lines = vec![
         Line::from(vec![Span::styled(

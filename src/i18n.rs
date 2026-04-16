@@ -340,6 +340,13 @@ impl L10n {
             "skin.fcitx5_select_prompt",
             "Choose Fcitx5 theme (Enter confirm / Esc back)",
         );
+        zh.insert("skin.fcitx5_dark_select_prompt", "选择 Fcitx5 暗色主题");
+        en.insert("skin.fcitx5_dark_select_prompt", "Choose Fcitx5 dark theme");
+        zh.insert("skin.fcitx5_light_select_prompt", "选择 Fcitx5 亮色主题");
+        en.insert(
+            "skin.fcitx5_light_select_prompt",
+            "Choose Fcitx5 light theme",
+        );
         zh.insert("skin.applied", "皮肤已设置");
         en.insert("skin.applied", "Skin applied");
         zh.insert("skin.not_supported", "当前平台不支持皮肤 Patch");
@@ -351,6 +358,14 @@ impl L10n {
         en.insert("skin.installed_marker", "Installed");
         zh.insert("skin.current_marker", "当前");
         en.insert("skin.current_marker", "Current");
+        zh.insert("skin.current_light_marker", "当前亮色");
+        en.insert("skin.current_light_marker", "Current light");
+        zh.insert("skin.current_dark_marker", "当前暗色");
+        en.insert("skin.current_dark_marker", "Current dark");
+        zh.insert("skin.selected_light_marker", "已选亮色");
+        en.insert("skin.selected_light_marker", "Selected light");
+        zh.insert("skin.selected_dark_marker", "已选暗色");
+        en.insert("skin.selected_dark_marker", "Selected dark");
         zh.insert("skin.round_prompt_title", "圆角设置");
         en.insert("skin.round_prompt_title", "Rounded corners");
         zh.insert("skin.round_prompt_theme", "主题");

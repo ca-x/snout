@@ -2,8 +2,45 @@ use crate::i18n::{L10n, Lang};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use zbus::blocking::{Connection, Proxy};
 
 include!(concat!(env!("OUT_DIR"), "/fcitx5_theme_manifest.rs"));
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThemeSelection {
+    pub light: Option<String>,
+    pub dark: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FcitxThemeConfig {
+    theme: Option<String>,
+    dark_theme: Option<String>,
+    use_dark_theme: Option<bool>,
+    follow_system_dark_mode: Option<bool>,
+}
+
+impl FcitxThemeConfig {
+    fn for_pair(light_theme: &str, dark_theme: &str) -> Self {
+        Self {
+            theme: Some(light_theme.to_string()),
+            dark_theme: Some(dark_theme.to_string()),
+            use_dark_theme: Some(true),
+            follow_system_dark_mode: Some(true),
+        }
+    }
+
+    fn to_json_payload(&self) -> String {
+        serde_json::json!({
+            "Theme": self.theme,
+            "DarkTheme": self.dark_theme,
+            "UseDarkTheme": self.use_dark_theme,
+            "FollowSystemDarkMode": self.follow_system_dark_mode,
+        })
+        .to_string()
+    }
+}
 
 pub fn builtin_theme_choices() -> Vec<(String, String)> {
     FCITX5_THEME_NAMES
@@ -53,20 +90,37 @@ pub fn installed_theme_names() -> Result<HashSet<String>> {
     Ok(themes)
 }
 
-pub fn current_theme() -> Result<Option<String>> {
+pub fn current_theme_selection() -> Result<ThemeSelection> {
     let config_path = fcitx_classicui_config_path()?;
     if !config_path.exists() {
-        return Ok(None);
+        return Ok(ThemeSelection::default());
     }
 
     let content = std::fs::read_to_string(config_path).context("read fcitx5 classicui config")?;
-    Ok(read_theme_key(&content))
+    let config = read_theme_config(&content);
+    Ok(ThemeSelection {
+        light: config.theme,
+        dark: config.dark_theme,
+    })
+}
+
+pub fn apply_theme_pair(
+    light_theme: &str,
+    dark_theme: &str,
+    light_rounded: Option<bool>,
+    dark_rounded: Option<bool>,
+    lang: Lang,
+) -> Result<()> {
+    install_theme(light_theme, light_rounded)?;
+    if dark_theme != light_theme || dark_rounded != light_rounded {
+        install_theme(dark_theme, dark_rounded)?;
+    }
+    write_theme_setting_pair(light_theme, dark_theme)?;
+    reload_theme(lang)
 }
 
 pub fn apply_theme(theme_name: &str, rounded: Option<bool>, lang: Lang) -> Result<()> {
-    install_theme(theme_name, rounded)?;
-    write_theme_setting(theme_name)?;
-    reload_theme(lang)
+    apply_theme_pair(theme_name, theme_name, rounded, rounded, lang)
 }
 
 pub fn theme_supports_optional_rounding(theme_name: &str) -> bool {
@@ -134,10 +188,13 @@ fn theme_file_text(theme_name: &str, rel_path: &str) -> Option<String> {
 
 fn render_theme_conf(content: &str, rounded: Option<bool>) -> String {
     if rounded != Some(true) {
-        return content.to_string();
+        if content.ends_with('\n') {
+            return content.to_string();
+        }
+        return format!("{content}\n");
     }
 
-    content
+    let mut rendered = content
         .lines()
         .map(|line| {
             if line.trim() == "# Image=panel.svg" {
@@ -149,8 +206,9 @@ fn render_theme_conf(content: &str, rounded: Option<bool>) -> String {
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
-        + "\n"
+        .join("\n");
+    rendered.push('\n');
+    rendered
 }
 
 fn optional_rounding_state(content: &str) -> Option<bool> {
@@ -172,24 +230,27 @@ fn optional_rounding_state(content: &str) -> Option<bool> {
     }
 }
 
-fn write_theme_setting(theme_name: &str) -> Result<()> {
+fn write_theme_setting_pair(light_theme: &str, dark_theme: &str) -> Result<()> {
+    let config = FcitxThemeConfig::for_pair(light_theme, dark_theme);
     let config_path = fcitx_classicui_config_path()?;
     let content = if config_path.exists() {
         std::fs::read_to_string(&config_path).context("read classicui config before update")?
     } else {
         String::new()
     };
-    let updated = upsert_key_value(&content, "Theme", theme_name);
+    let updated = upsert_theme_values(&content, &config);
 
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent).context("create classicui config dir")?;
     }
     std::fs::write(config_path, updated).context("write classicui config")?;
+
+    let _ = set_theme_via_dbus(&config);
     Ok(())
 }
 
 fn reload_theme(lang: Lang) -> Result<()> {
-    if reload_via_qdbus6().is_ok() {
+    if reload_via_dbus().is_ok() {
         return Ok(());
     }
     if reload_via_fcitx5_remote().is_ok() {
@@ -200,24 +261,49 @@ fn reload_theme(lang: Lang) -> Result<()> {
     crate::deployer::deploy_to("fcitx5", &t)
 }
 
-fn reload_via_qdbus6() -> Result<()> {
-    if !which_exists("qdbus6") {
-        anyhow::bail!("qdbus6 unavailable");
-    }
+#[cfg(target_os = "linux")]
+fn fcitx5_proxy<'a>(connection: &'a Connection) -> Result<Proxy<'a>> {
+    Proxy::new(
+        connection,
+        "org.fcitx.Fcitx5",
+        "/controller",
+        "org.fcitx.Fcitx.Controller1",
+    )
+    .context("create fcitx5 dbus proxy")
+}
 
-    let status = std::process::Command::new("qdbus6")
-        .args([
-            "org.fcitx.Fcitx5",
-            "/controller",
-            "org.fcitx.Fcitx.Controller1.ReloadAddonConfig",
-            "classicui",
-        ])
-        .status()
-        .context("run qdbus6")?;
-    if !status.success() {
-        anyhow::bail!("qdbus6 reload failed");
-    }
+#[cfg(target_os = "linux")]
+fn set_theme_via_dbus(config: &FcitxThemeConfig) -> Result<()> {
+    let connection = Connection::session().context("connect session dbus")?;
+    let proxy = fcitx5_proxy(&connection)?;
+    let payload = config.to_json_payload();
+    let _: () = proxy
+        .call(
+            "SetConfig",
+            &("fcitx://config/addon/classicui/classicui", payload),
+        )
+        .context("set fcitx theme via dbus")?;
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_theme_via_dbus(_config: &FcitxThemeConfig) -> Result<()> {
+    anyhow::bail!("dbus unavailable")
+}
+
+#[cfg(target_os = "linux")]
+fn reload_via_dbus() -> Result<()> {
+    let connection = Connection::session().context("connect session dbus")?;
+    let proxy = fcitx5_proxy(&connection)?;
+    let _: () = proxy
+        .call("ReloadAddonConfig", &("classicui",))
+        .context("reload classicui via dbus")?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn reload_via_dbus() -> Result<()> {
+    anyhow::bail!("dbus unavailable")
 }
 
 fn reload_via_fcitx5_remote() -> Result<()> {
@@ -235,19 +321,41 @@ fn reload_via_fcitx5_remote() -> Result<()> {
     Ok(())
 }
 
-fn read_theme_key(content: &str) -> Option<String> {
+fn read_theme_config(content: &str) -> FcitxThemeConfig {
+    let mut config = FcitxThemeConfig::default();
     for line in content.lines() {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        if key.trim() == "Theme" {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        match key.trim() {
+            "Theme" => config.theme = Some(value.to_string()),
+            "DarkTheme" => config.dark_theme = Some(value.to_string()),
+            "UseDarkTheme" => config.use_dark_theme = parse_bool(value),
+            "FollowSystemDarkMode" => config.follow_system_dark_mode = parse_bool(value),
+            _ => {}
         }
     }
-    None
+    config
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn format_bool(value: bool) -> &'static str {
+    if value {
+        "True"
+    } else {
+        "False"
+    }
 }
 
 fn upsert_key_value(content: &str, key: &str, value: &str) -> String {
@@ -274,6 +382,34 @@ fn upsert_key_value(content: &str, key: &str, value: &str) -> String {
         output.push('\n');
     }
     output
+}
+
+fn upsert_theme_values(content: &str, config: &FcitxThemeConfig) -> String {
+    let content = if let Some(theme) = &config.theme {
+        upsert_key_value(content, "Theme", theme)
+    } else {
+        content.to_string()
+    };
+    let content = if let Some(dark_theme) = &config.dark_theme {
+        upsert_key_value(&content, "DarkTheme", dark_theme)
+    } else {
+        content
+    };
+    let content = if let Some(use_dark_theme) = config.use_dark_theme {
+        upsert_key_value(&content, "UseDarkTheme", format_bool(use_dark_theme))
+    } else {
+        content
+    };
+
+    if let Some(follow_system_dark_mode) = config.follow_system_dark_mode {
+        upsert_key_value(
+            &content,
+            "FollowSystemDarkMode",
+            format_bool(follow_system_dark_mode),
+        )
+    } else {
+        content
+    }
 }
 
 fn fcitx_theme_root_path() -> Result<PathBuf> {
@@ -304,11 +440,14 @@ mod tests {
     }
 
     #[test]
-    fn read_theme_key_extracts_theme_value() {
-        assert_eq!(
-            read_theme_key("[Groups/0]\nTheme=OriLight\nUseDarkTheme=False\n"),
-            Some("OriLight".into())
+    fn read_theme_config_extracts_light_and_dark_values() {
+        let config = read_theme_config(
+            "[Groups/0]\nTheme=OriLight\nDarkTheme=OriDark\nUseDarkTheme=True\nFollowSystemDarkMode=True\n",
         );
+        assert_eq!(config.theme, Some("OriLight".into()));
+        assert_eq!(config.dark_theme, Some("OriDark".into()));
+        assert_eq!(config.use_dark_theme, Some(true));
+        assert_eq!(config.follow_system_dark_mode, Some(true));
     }
 
     #[test]
@@ -321,6 +460,18 @@ mod tests {
     fn upsert_key_value_appends_missing_theme() {
         let output = upsert_key_value("UseDarkTheme=False\n", "Theme", "OriDark");
         assert_eq!(output, "UseDarkTheme=False\nTheme=OriDark\n");
+    }
+
+    #[test]
+    fn upsert_theme_values_updates_light_dark_and_mode_flags() {
+        let output = upsert_theme_values(
+            "Theme=Old\nUseDarkTheme=False\n",
+            &FcitxThemeConfig::for_pair("Latte", "Mocha"),
+        );
+        assert!(output.contains("Theme=Latte"));
+        assert!(output.contains("DarkTheme=Mocha"));
+        assert!(output.contains("UseDarkTheme=True"));
+        assert!(output.contains("FollowSystemDarkMode=True"));
     }
 
     #[test]

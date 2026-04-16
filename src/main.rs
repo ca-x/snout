@@ -129,6 +129,22 @@ struct Cli {
     #[arg(long)]
     skin_patch_key: Option<String>,
 
+    /// Linux Fcitx5 亮色主题 / Linux Fcitx5 light theme
+    #[arg(long)]
+    fcitx5_theme_light: Option<String>,
+
+    /// Linux Fcitx5 暗色主题 / Linux Fcitx5 dark theme
+    #[arg(long)]
+    fcitx5_theme_dark: Option<String>,
+
+    /// Linux Fcitx5 亮色主题启用圆角 / Enable rounded corners for Linux Fcitx5 light theme
+    #[arg(long, action = ArgAction::SetTrue)]
+    fcitx5_theme_light_round: bool,
+
+    /// Linux Fcitx5 暗色主题启用圆角 / Enable rounded corners for Linux Fcitx5 dark theme
+    #[arg(long, action = ArgAction::SetTrue)]
+    fcitx5_theme_dark_round: bool,
+
     /// 设置候选词数量 / Set candidate page size
     #[arg(long, value_parser = clap::value_parser!(u8).range(1..=9))]
     candidate_page_size: Option<u8>,
@@ -144,7 +160,13 @@ async fn main() -> anyhow::Result<()> {
 
     if cli.init {
         ui::wizard::run_init_wizard().await?;
-    } else if cli.update || cli.scheme || cli.dict || cli.model {
+    } else if cli.update
+        || cli.scheme
+        || cli.dict
+        || cli.model
+        || cli.fcitx5_theme_light.is_some()
+        || cli.fcitx5_theme_dark.is_some()
+    {
         let mut manager = config::Manager::new()?;
         apply_cli_overrides(&mut manager.config, &cli);
         let t = L10n::new(Lang::from_str(&manager.config.language));
@@ -157,6 +179,43 @@ async fn main() -> anyhow::Result<()> {
             custom::set_candidate_page_size(&rime_dir, schema, None)?;
         } else if let Some(page_size) = cli.candidate_page_size {
             custom::set_candidate_page_size(&rime_dir, schema, Some(page_size))?;
+        }
+
+        #[cfg(target_os = "linux")]
+        if cli.fcitx5_theme_light.is_some() || cli.fcitx5_theme_dark.is_some() {
+            let selection = crate::skin::fcitx5::current_theme_selection()?;
+            let light_theme = cli
+                .fcitx5_theme_light
+                .clone()
+                .or(selection.light.clone())
+                .or(cli.fcitx5_theme_dark.clone())
+                .unwrap_or_default();
+            let dark_theme = cli
+                .fcitx5_theme_dark
+                .clone()
+                .or(selection.dark.clone())
+                .or(cli.fcitx5_theme_light.clone())
+                .unwrap_or_default();
+            if !light_theme.is_empty() && !dark_theme.is_empty() {
+                crate::skin::fcitx5::apply_theme_pair(
+                    &light_theme,
+                    &dark_theme,
+                    if cli.fcitx5_theme_light_round {
+                        Some(true)
+                    } else {
+                        None
+                    },
+                    if cli.fcitx5_theme_dark_round {
+                        Some(true)
+                    } else {
+                        None
+                    },
+                    Lang::from_str(&manager.config.language),
+                )?;
+                if !(cli.update || cli.scheme || cli.dict || cli.model) {
+                    return Ok(());
+                }
+            }
         }
 
         if cli.update {
