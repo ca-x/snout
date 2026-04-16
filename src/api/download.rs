@@ -24,12 +24,12 @@ impl Client {
             }
             if attempt > 0 {
                 let delay = std::time::Duration::from_secs(1 << attempt);
-                eprintln!(
+                crate::feedback::warn(format!(
                     "⚠️ {}: {}s ({}/3)...",
                     t.t("api.download_retry"),
                     delay.as_secs(),
                     attempt + 1
-                );
+                ));
                 Client::cancellable_sleep(delay, cancel).await?;
             }
 

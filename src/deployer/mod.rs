@@ -14,7 +14,10 @@ pub fn deploy(lang: Lang) -> Result<()> {
         match deploy_to(engine, &t) {
             Ok(()) => success_count += 1,
             Err(e) => {
-                eprintln!("⚠️  {} ({engine}): {e}", t.t("deploy.target_failed"));
+                crate::feedback::warn(format!(
+                    "⚠️  {} ({engine}): {e}",
+                    t.t("deploy.target_failed")
+                ));
                 failures.push(format!("{engine}: {e}"));
             }
         }
@@ -29,18 +32,18 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
         #[cfg(target_os = "linux")]
         "fcitx5" => {
             if deploy_with_qdbus6().is_ok() {
-                println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+                crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
                 return Ok(());
             }
             if let Some(rime_dir) = linux_detect_rime_dir() {
                 if run_rime_deployer(&rime_dir).is_ok() {
-                    println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+                    crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
                     return Ok(());
                 }
             }
             let bin = find_binary("fcitx5-remote", t)?;
             std::process::Command::new(bin).arg("-r").spawn()?;
-            println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+            crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
         }
         #[cfg(target_os = "linux")]
         "ibus" => {
@@ -49,14 +52,14 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
             }
             let bin = find_binary("ibus-daemon", t).or_else(|_| find_binary("ibus", t))?;
             std::process::Command::new(bin).args(["-drx"]).spawn()?;
-            println!("  ✅ {}", t.t("deploy.reloaded.ibus"));
+            crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.ibus")));
         }
         #[cfg(target_os = "linux")]
         "fcitx" => {
             if let Some(rime_dir) = engine_data_dir("fcitx") {
                 run_rime_deployer(&rime_dir)?;
             }
-            println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+            crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
         }
         #[cfg(target_os = "macos")]
         "squirrel" => {
@@ -64,7 +67,7 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
                 std::process::Command::new(squirrel)
                     .arg("--reload")
                     .spawn()?;
-                println!("  ✅ {}", t.t("deploy.reloaded.squirrel"));
+                crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.squirrel")));
             }
         }
         #[cfg(target_os = "macos")]
@@ -73,7 +76,7 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
                 std::process::Command::new(fcitx5_curl)
                     .args(["/config/addon/rime/deploy", "-X", "POST", "-d", "{}"])
                     .spawn()?;
-                println!("  ✅ {}", t.t("deploy.reloaded.fcitx5"));
+                crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
             }
         }
         #[cfg(target_os = "windows")]
@@ -86,7 +89,7 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
             }
             if let Some(weasel) = windows_deployer_executable() {
                 std::process::Command::new(weasel).arg("/deploy").spawn()?;
-                println!("  ✅ {}", t.t("deploy.reloaded.weasel"));
+                crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.weasel")));
             }
         }
         _ => {}
@@ -191,11 +194,11 @@ pub fn sync_to_engines(
     }
 
     if !errors.is_empty() {
-        eprintln!(
+        crate::feedback::warn(format!(
             "⚠️ {}: {}",
             t.t("deploy.sync_partial_failed"),
             errors.join("; ")
-        );
+        ));
     }
     Ok(())
 }
@@ -238,11 +241,17 @@ pub fn run_hook(hook_path: &str, phase: &str, lang: Lang) -> Result<()> {
     let t = L10n::new(lang);
     let path = Path::new(hook_path);
     if !path.exists() {
-        eprintln!("  ⚠️ {phase} {}: {hook_path}", t.t("deploy.hook_missing"));
+        crate::feedback::warn(format!(
+            "  ⚠️ {phase} {}: {hook_path}",
+            t.t("deploy.hook_missing")
+        ));
         return Ok(());
     }
 
-    println!("  🔧 {phase} {}: {hook_path}", t.t("deploy.hook_running"));
+    crate::feedback::info(format!(
+        "  🔧 {phase} {}: {hook_path}",
+        t.t("deploy.hook_running")
+    ));
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(hook_path)
@@ -464,11 +473,11 @@ fn finalize_deploy_result(success_count: usize, failures: Vec<String>, t: &L10n)
     }
 
     if !failures.is_empty() {
-        eprintln!(
+        crate::feedback::warn(format!(
             "⚠️  {}: {}",
             t.t("deploy.partial_engines_failed"),
             failures.join("; ")
-        );
+        ));
     }
 
     Ok(())

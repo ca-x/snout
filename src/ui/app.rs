@@ -70,7 +70,7 @@ pub struct App {
     config_input_field: Option<ConfigInputField>,
     config_input_value: String,
     // 通知
-    pub notification: Option<(String, Instant)>,
+    notification: Option<Notification>,
 }
 
 #[derive(Debug)]
@@ -82,6 +82,13 @@ enum UpdateTaskError {
 #[derive(Debug)]
 struct UpdateTaskResult {
     results: Result<Vec<updater::UpdateResult>, UpdateTaskError>,
+}
+
+#[derive(Debug, Clone)]
+struct Notification {
+    message: String,
+    shown_at: Instant,
+    ttl: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -178,7 +185,15 @@ impl App {
     }
 
     pub fn notify(&mut self, msg: impl Into<String>) {
-        self.notification = Some((msg.into(), Instant::now()));
+        self.notify_for(msg, Some(Duration::from_secs(3)));
+    }
+
+    fn notify_for(&mut self, msg: impl Into<String>, ttl: Option<Duration>) {
+        self.notification = Some(Notification {
+            message: msg.into(),
+            shown_at: Instant::now(),
+            ttl,
+        });
     }
 
     fn current_hint(&self) -> String {
@@ -269,6 +284,7 @@ fn resolve_update_context(
 pub async fn run_tui() -> Result<()> {
     let manager = Manager::new()?;
     let mut app = App::new(&manager);
+    crate::feedback::set_tui_active(true);
 
     // 终端设置
     enable_raw_mode()?;
@@ -287,6 +303,7 @@ pub async fn run_tui() -> Result<()> {
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+    crate::feedback::set_tui_active(false);
 
     result
 }
@@ -349,8 +366,11 @@ async fn run_app(
         }
 
         // 清除过期通知
-        if let Some((_, t)) = &app.notification {
-            if t.elapsed() > Duration::from_secs(6) {
+        if let Some(notification) = &app.notification {
+            if notification
+                .ttl
+                .is_some_and(|ttl| notification.shown_at.elapsed() > ttl)
+            {
                 app.notification = None;
             }
         }
@@ -1280,25 +1300,70 @@ fn ui(f: &mut Frame, app: &App) {
         AppScreen::ConfigInput => render_config_input(f, chunks[1], app),
     }
 
-    // Footer / 通知
-    let footer_text = if let Some((msg, _)) = &app.notification {
-        vec![Span::styled(
-            format!(" 💡 {msg}"),
-            Style::default().fg(Color::Yellow),
-        )]
-    } else {
-        vec![Span::styled(
-            format!(" {}", app.current_hint()),
-            Style::default().fg(Color::White),
-        )]
-    };
+    if let Some(notification) = &app.notification {
+        render_notification_popup(f, size, &notification.message, app.t.t("hint.notice"));
+    }
+
+    // Footer
+    let footer_text = vec![Span::styled(
+        format!(" {}", app.current_hint()),
+        Style::default().fg(Color::White),
+    )];
     let footer =
         Paragraph::new(Line::from(footer_text)).block(Block::default().borders(Borders::TOP));
     f.render_widget(footer, chunks[2]);
 }
 
+fn render_notification_popup(f: &mut Frame, area: Rect, message: &str, title: &str) {
+    let popup_width = (message.chars().count() as u16 + 8).clamp(24, area.width.saturating_sub(4));
+    let popup_area = centered_rect(popup_width, 5, area);
+    f.render_widget(Clear, popup_area);
+    let popup = Paragraph::new(Line::from(vec![Span::styled(
+        message,
+        Style::default().fg(Color::White),
+    )]))
+    .alignment(Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(Span::styled(
+                format!(" {} ", title),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    )
+    .wrap(Wrap { trim: true });
+    f.render_widget(popup, popup_area);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(area.width.saturating_sub(width) / 2),
+            Constraint::Length(width.min(area.width)),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(area.height.saturating_sub(height) / 2),
+            Constraint::Length(height.min(area.height)),
+            Constraint::Min(0),
+        ])
+        .split(horizontal[1])[1]
+}
+
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     let menu_items = app.menu_items();
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
     let items: Vec<ListItem> = menu_items
         .iter()
         .enumerate()
@@ -1312,16 +1377,10 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 Style::default().fg(Color::White)
             };
-            let mut line = vec![
+            let line = vec![
                 Span::styled(format!("  {key}. "), Style::default().fg(Color::Cyan)),
                 Span::styled(*label, style),
             ];
-            if unavailable {
-                line.push(Span::styled(
-                    format!("  [{}]", app.t.t("hint.unavailable")),
-                    Style::default().fg(Color::Gray),
-                ));
-            }
             ListItem::new(Line::from(line))
         })
         .collect();
@@ -1347,13 +1406,61 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
 
     let mut state = ratatui::widgets::ListState::default();
     state.select(Some(app.menu_selected));
-    f.render_stateful_widget(list, area, &mut state);
+    f.render_stateful_widget(list, chunks[0], &mut state);
+
+    let selected_idx = app.menu_selected + 1;
+    let detail = if let Some(reason) = menu_unavailable_reason(app, selected_idx) {
+        vec![
+            Line::from(vec![Span::styled(
+                app.t.t("hint.unavailable"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(reason),
+        ]
+    } else {
+        vec![
+            Line::from(vec![Span::styled(
+                app.t.t("hint.confirm"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                app.t.t("menu.action_ready"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(""),
+            Line::from(menu_description(app, selected_idx)),
+        ]
+    };
+    let detail_panel = Paragraph::new(detail).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(
+                format!(" {} ", app.t.t("menu.result")),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(detail_panel, chunks[1]);
 }
 
 fn render_updating(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(4),
+            Constraint::Length(3),
+            Constraint::Min(3),
+        ])
         .split(area);
 
     let msg = Paragraph::new(Line::from(vec![
@@ -1376,6 +1483,35 @@ fn render_updating(f: &mut Frame, area: Rect, app: &App) {
         .ratio(app.update_pct)
         .label(format!("{:.0}%", app.update_pct * 100.0));
     f.render_widget(gauge, chunks[1]);
+
+    let stage_lines = if app.update_stage_lines.is_empty() {
+        vec![Line::from(vec![Span::styled(
+            format!("  {}", app.t.t("hint.wait")),
+            Style::default().fg(Color::Gray),
+        )])]
+    } else {
+        app.update_stage_lines
+            .iter()
+            .map(|stage| {
+                Line::from(vec![
+                    Span::styled("  • ", Style::default().fg(Color::Gray)),
+                    Span::styled(stage, Style::default().fg(Color::White)),
+                ])
+            })
+            .collect()
+    };
+    let stage_panel = Paragraph::new(stage_lines).wrap(Wrap { trim: true }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(
+                format!(" {} ", app.t.t("update.status_section")),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
+    );
+    f.render_widget(stage_panel, chunks[2]);
 }
 
 fn render_result(f: &mut Frame, area: Rect, app: &App) {
@@ -1405,16 +1541,6 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
     ];
 
-    for stage in &app.update_stage_lines {
-        lines.push(Line::from(vec![
-            Span::styled("  • ", Style::default().fg(Color::Gray)),
-            Span::styled(stage, Style::default().fg(Color::Gray)),
-        ]));
-    }
-    if !app.update_stage_lines.is_empty() {
-        lines.push(Line::from(""));
-    }
-
     for r in &app.update_results {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
@@ -1441,7 +1567,10 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
 
 fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
     let schemas = Schema::all();
-    let items: Vec<ListItem> = schemas
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    let window = sliding_window(app.scheme_selected, schemas.len(), visible_rows.max(1));
+    let visible_schemas = &schemas[window.start..window.end];
+    let items: Vec<ListItem> = visible_schemas
         .iter()
         .map(|s| {
             let prefix = if *s == app.schema { " ● " } else { " ○ " };
@@ -1463,7 +1592,12 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(Span::styled(
-                    format!(" {} ", app.t.t("scheme.select_prompt")),
+                    format!(
+                        " {} {}/{} ",
+                        app.t.t("scheme.select_prompt"),
+                        window.current_index,
+                        window.total_items.max(1)
+                    ),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -1477,12 +1611,19 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(app.scheme_selected.min(schemas.len() - 1)));
+    state.select(Some(
+        app.scheme_selected
+            .saturating_sub(window.start)
+            .min(visible_schemas.len().saturating_sub(1)),
+    ));
     f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
     let skins = available_skin_choices(app);
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    let window = sliding_window(app.skin_selected, skins.len(), visible_rows.max(1));
+    let visible_skins = &skins[window.start..window.end];
     let current_linux_theme = match skin_menu_target(app) {
         Some(SkinMenuTarget::Fcitx5Theme) => crate::skin::fcitx5::current_theme().ok().flatten(),
         _ => None,
@@ -1493,7 +1634,7 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
         }
         _ => std::collections::HashSet::new(),
     };
-    let items: Vec<ListItem> = skins
+    let items: Vec<ListItem> = visible_skins
         .iter()
         .map(|(key, name)| {
             let mut spans = vec![
@@ -1521,6 +1662,12 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
         Some(SkinMenuTarget::Fcitx5Theme) => "skin.fcitx5_select_prompt",
         _ => "skin.select_prompt",
     };
+    let title = format!(
+        "{} {}/{}",
+        app.t.t(title_key),
+        window.current_index,
+        window.total_items.max(1)
+    );
 
     let list = List::new(items)
         .block(
@@ -1528,7 +1675,7 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Magenta))
                 .title(Span::styled(
-                    format!(" {} ", app.t.t(title_key)),
+                    format!(" {} ", title),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -1542,8 +1689,39 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(app.skin_selected.min(skins.len().saturating_sub(1))));
+    state.select(Some(
+        app.skin_selected
+            .saturating_sub(window.start)
+            .min(visible_skins.len().saturating_sub(1)),
+    ));
     f.render_stateful_widget(list, area, &mut state);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SlidingWindow {
+    start: usize,
+    end: usize,
+    current_index: usize,
+    total_items: usize,
+}
+
+fn sliding_window(selected: usize, total_items: usize, window_size: usize) -> SlidingWindow {
+    let safe_window_size = window_size.max(1);
+    let bounded_selected = selected.min(total_items.saturating_sub(1));
+    let start = if total_items <= safe_window_size {
+        0
+    } else {
+        bounded_selected
+            .saturating_add(1)
+            .saturating_sub(safe_window_size)
+    };
+    let end = (start + safe_window_size).min(total_items);
+    SlidingWindow {
+        start,
+        end,
+        current_index: bounded_selected.saturating_add(1),
+        total_items,
+    }
 }
 
 fn render_config(f: &mut Frame, area: Rect, app: &App) {
@@ -1585,39 +1763,12 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(value, Style::default().fg(Color::White)),
         ])
     };
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(area);
 
-    let lines = vec![
-        Line::from(vec![Span::styled(
-            format!("  {}:", app.t.t("config.runtime_section")),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.current_scheme")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                app.schema.display_name_lang(app.t.lang()),
-                Style::default().fg(Color::Cyan),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.detected_engines")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(engines, Style::default().fg(Color::White)),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.language_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(language, Style::default().fg(Color::White)),
-        ]),
-        Line::from(""),
+    let left_lines = vec![
         Line::from(vec![Span::styled(
             format!("  {}:", app.t.t("config.features_section")),
             Style::default()
@@ -1656,37 +1807,6 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                 app.t.t("config.disabled").into()
             },
         ),
-        Line::from(vec![
-            Span::styled("   ", Style::default()),
-            Span::styled(
-                format!("{}: ", app.t.t("config.proxy_source_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                match effective_proxy.as_ref().map(|proxy| proxy.source) {
-                    Some(crate::api::ProxySource::Config) => app.t.t("config.proxy_source_config"),
-                    Some(crate::api::ProxySource::Environment) => {
-                        app.t.t("config.proxy_source_env")
-                    }
-                    None => app.t.t("config.none"),
-                },
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("   ", Style::default()),
-            Span::styled(
-                format!("{}: ", app.t.t("config.proxy_value_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                effective_proxy
-                    .as_ref()
-                    .map(|proxy| proxy.url.as_str())
-                    .unwrap_or_else(|| app.t.t("config.none")),
-                Style::default().fg(Color::White),
-            ),
-        ]),
         if config.proxy_enabled {
             action_line(
                 actions
@@ -1766,6 +1886,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                 app.t.t("config.sync_copy").into()
             },
         ),
+        Line::from(""),
         action_line(
             actions
                 .iter()
@@ -1774,6 +1895,66 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             format!("{}: ", app.t.t("hint.refresh")),
             app.t.t("hint.confirm").into(),
         ),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            format!("  {}", app.t.t("config.back")),
+            Style::default().fg(Color::Gray),
+        )]),
+    ];
+
+    let right_lines = vec![
+        Line::from(vec![Span::styled(
+            format!("  {}:", app.t.t("config.runtime_section")),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.current_scheme")),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                app.schema.display_name_lang(app.t.lang()),
+                Style::default().fg(Color::Cyan),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.detected_engines")),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(engines, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.proxy_source_label")),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                match effective_proxy.as_ref().map(|proxy| proxy.source) {
+                    Some(crate::api::ProxySource::Config) => app.t.t("config.proxy_source_config"),
+                    Some(crate::api::ProxySource::Environment) => {
+                        app.t.t("config.proxy_source_env")
+                    }
+                    None => app.t.t("config.none"),
+                },
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.proxy_value_label")),
+                Style::default().fg(Color::Gray),
+            ),
+            Span::styled(
+                effective_proxy
+                    .as_ref()
+                    .map(|proxy| proxy.url.as_str())
+                    .unwrap_or_else(|| app.t.t("config.none")),
+                Style::default().fg(Color::White),
+            ),
+        ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             format!("  {}:", app.t.t("config.status_section")),
@@ -1858,14 +2039,9 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(&app.config_path, Style::default().fg(Color::White)),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!("  {}", app.t.t("config.back")),
-            Style::default().fg(Color::Gray),
-        )]),
     ];
 
-    let p = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+    let left = Paragraph::new(left_lines).wrap(Wrap { trim: false }).block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Blue))
@@ -1876,7 +2052,21 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )),
     );
-    f.render_widget(p, area);
+    let right = Paragraph::new(right_lines)
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title(Span::styled(
+                    format!(" {} ", app.t.t("menu.result")),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )),
+        );
+    f.render_widget(left, chunks[0]);
+    f.render_widget(right, chunks[1]);
 }
 
 fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
@@ -1890,6 +2080,11 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("config.input_hint"),
+            Style::default().fg(Color::Gray),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -1914,6 +2109,21 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
             )),
     );
     f.render_widget(p, area);
+}
+
+fn menu_description(app: &App, idx: usize) -> String {
+    match idx {
+        1 => app.t.t("menu.desc.update_all").into(),
+        2 => app.t.t("menu.desc.update_scheme").into(),
+        3 => app.t.t("menu.desc.update_dict").into(),
+        4 => app.t.t("menu.desc.update_model").into(),
+        5 => app.t.t("menu.desc.model_patch").into(),
+        6 => app.t.t("menu.desc.skin_patch").into(),
+        7 => app.t.t("menu.desc.switch_scheme").into(),
+        8 => app.t.t("menu.desc.config").into(),
+        9 => app.t.t("menu.desc.quit").into(),
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]

@@ -129,7 +129,7 @@ impl WanxiangUpdater {
                 crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name)
             {
                 let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
-                eprintln!("⚠️ {msg}");
+                crate::feedback::warn(format!("⚠️ {msg}"));
                 warnings.push(msg);
             }
         }
@@ -278,7 +278,7 @@ impl WanxiangUpdater {
         if self.base.client.use_mirror() {
             if let Err(e) = crate::fileutil::extract::handle_nested_dir(&dict_dir, &info.name) {
                 let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
-                eprintln!("⚠️ {msg}");
+                crate::feedback::warn(format!("⚠️ {msg}"));
                 warnings.push(msg);
             }
         }

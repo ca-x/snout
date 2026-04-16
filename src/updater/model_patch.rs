@@ -43,11 +43,11 @@ pub fn patch_model(rime_dir: &Path, schema: &Schema, lang: Lang) -> Result<()> {
 
     write_patch_doc(&patch_file, &doc)?;
 
-    println!(
+    crate::feedback::info(format!(
         "✅ {}: {}",
         t.t("patch.model.written"),
         patch_file.display()
-    );
+    ));
     Ok(())
 }
 
@@ -72,7 +72,7 @@ pub fn unpatch_model(rime_dir: &Path, schema: &Schema, lang: Lang) -> Result<()>
 
     write_patch_doc(&patch_file, &doc)?;
 
-    println!("✅ {}", t.t("patch.model.removed"));
+    crate::feedback::info(format!("✅ {}", t.t("patch.model.removed")));
     Ok(())
 }
 
@@ -84,7 +84,7 @@ pub fn is_model_patched(rime_dir: &Path, schema: &Schema, lang: Lang) -> bool {
     match load_patch_doc(&patch_file, &t) {
         Ok(doc) => has_model_patch(&doc, schema),
         Err(e) => {
-            eprintln!("⚠️ {}: {e}", t.t("patch.model.status_read_failed"));
+            crate::feedback::warn(format!("⚠️ {}: {e}", t.t("patch.model.status_read_failed")));
             false
         }
     }

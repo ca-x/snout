@@ -62,6 +62,47 @@ impl L10n {
         en.insert("menu.config", "Config");
         zh.insert("menu.quit", "退出");
         en.insert("menu.quit", "Quit");
+        zh.insert("menu.action_ready", "可执行");
+        en.insert("menu.action_ready", "Ready");
+        zh.insert(
+            "menu.desc.update_all",
+            "检查并更新方案、词库、模型，然后触发部署。",
+        );
+        en.insert(
+            "menu.desc.update_all",
+            "Check and update scheme, dictionary, and model, then deploy.",
+        );
+        zh.insert("menu.desc.update_scheme", "只更新当前选中方案。");
+        en.insert(
+            "menu.desc.update_scheme",
+            "Update the currently selected scheme only.",
+        );
+        zh.insert("menu.desc.update_dict", "只更新当前方案的独立词库。");
+        en.insert(
+            "menu.desc.update_dict",
+            "Update the current scheme's standalone dictionary only.",
+        );
+        zh.insert("menu.desc.update_model", "下载或更新语言模型文件。");
+        en.insert(
+            "menu.desc.update_model",
+            "Download or update the language model file.",
+        );
+        zh.insert("menu.desc.model_patch", "为当前方案启用或移除模型 patch。");
+        en.insert(
+            "menu.desc.model_patch",
+            "Enable or remove the model patch for the current scheme.",
+        );
+        zh.insert("menu.desc.skin_patch", "设置输入法主题或皮肤 patch。");
+        en.insert(
+            "menu.desc.skin_patch",
+            "Set the input method theme or skin patch.",
+        );
+        zh.insert("menu.desc.switch_scheme", "切换当前使用的输入方案。");
+        en.insert("menu.desc.switch_scheme", "Switch the active input scheme.");
+        zh.insert("menu.desc.config", "查看并调整运行时配置。");
+        en.insert("menu.desc.config", "View and adjust runtime configuration.");
+        zh.insert("menu.desc.quit", "退出程序。");
+        en.insert("menu.desc.quit", "Exit the program.");
 
         // ── 向导 ──
         zh.insert("wizard.title", "首次初始化向导");
@@ -218,6 +259,8 @@ impl L10n {
         en.insert("update.no_dict", "This scheme has no separate dict");
         zh.insert("update.progress", "进度");
         en.insert("update.progress", "Progress");
+        zh.insert("update.status_section", "当前步骤");
+        en.insert("update.status_section", "Current steps");
         zh.insert("update.deploying", "部署...");
         en.insert("update.deploying", "Deploying...");
         zh.insert("update.syncing", "同步引擎目录...");
@@ -405,6 +448,8 @@ impl L10n {
         en.insert("hint.back", "Back/Quit");
         zh.insert("hint.input", "输入");
         en.insert("hint.input", "Input");
+        zh.insert("hint.notice", "提示");
+        en.insert("hint.notice", "Notice");
         zh.insert("hint.wait", "处理中，请等待");
         en.insert("hint.wait", "Working, please wait");
         zh.insert("hint.cancel", "取消");
@@ -453,6 +498,11 @@ impl L10n {
         en.insert("config.edit_title", "Edit config");
         zh.insert("config.input_placeholder", "输入内容");
         en.insert("config.input_placeholder", "Enter value");
+        zh.insert("config.input_hint", "输入新值后按 Enter 保存");
+        en.insert(
+            "config.input_hint",
+            "Enter a new value and press Enter to save",
+        );
         zh.insert("config.model_patch_label", "自动模型 Patch");
         en.insert("config.model_patch_label", "Auto model patch");
         zh.insert("config.engine_sync_label", "多引擎同步");
@@ -523,8 +573,38 @@ impl L10n {
         en.insert("skin.wechat", "WeChat");
         zh.insert("skin.mac_light", "Mac 白");
         en.insert("skin.mac_light", "Mac Light");
+        zh.insert("skin.lumk_light", "鹿鸣 / Lumk light");
+        en.insert("skin.lumk_light", "Lumk light");
+        zh.insert("skin.amber_7", "淡白 / weasel");
+        en.insert("skin.amber_7", "Amber-7 / weasel");
+        zh.insert("skin.win10gray", "win10灰 / win10gray");
+        en.insert("skin.win10gray", "win10gray");
+        zh.insert("skin.mint_light_blue", "蓝水鸭 / Mint Light Blue");
+        en.insert("skin.mint_light_blue", "Mint Light Blue");
+        zh.insert("skin.ayaya", "文文 / Ayaya");
+        en.insert("skin.ayaya", "Ayaya");
+        zh.insert("skin.ayaya_dark", "文文 / Ayaya / 深色");
+        en.insert("skin.ayaya_dark", "Ayaya Dark");
         zh.insert("skin.reimu", "灵梦");
         en.insert("skin.reimu", "Reimu");
+        zh.insert("skin.reimu_dark", "灵梦 / Reimu / 深色");
+        en.insert("skin.reimu_dark", "Reimu Dark");
+        zh.insert("skin.apathy", "冷漠 / Apathy");
+        en.insert("skin.apathy", "Apathy");
+        zh.insert("skin.win10", "WIN10");
+        en.insert("skin.win10", "WIN10");
+        zh.insert("skin.win10_ayaya", "WIN10 / 文文 / Ayaya");
+        en.insert("skin.win10_ayaya", "WIN10 / Ayaya");
+        zh.insert("skin.macos12_light", "高仿亮色 macOS");
+        en.insert("skin.macos12_light", "macOS 12 Light");
+        zh.insert("skin.macos12_dark", "高仿暗色 macOS");
+        en.insert("skin.macos12_dark", "macOS 12 Dark");
+        zh.insert("skin.wechat_dark", "高仿暗色微信输入法");
+        en.insert("skin.wechat_dark", "WeChat Dark");
+        zh.insert("skin.macos14", "高仿 macOS 14");
+        en.insert("skin.macos14", "macOS 14");
+        zh.insert("skin.macos14_dark", "高仿暗色 macOS 14");
+        en.insert("skin.macos14_dark", "macOS 14 Dark");
         zh.insert("config.title", "配置信息");
         en.insert("config.title", "Config Info");
         zh.insert("config.back", "按 Esc 返回");
