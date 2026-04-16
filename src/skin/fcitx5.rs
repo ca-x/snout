@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
-use zbus::blocking::{Connection, Proxy};
+use zbus::{Connection, Proxy};
 
 include!(concat!(env!("OUT_DIR"), "/fcitx5_theme_manifest.rs"));
 
@@ -104,7 +104,7 @@ pub fn current_theme_selection() -> Result<ThemeSelection> {
     })
 }
 
-pub fn apply_theme_pair(
+pub async fn apply_theme_pair(
     light_theme: &str,
     dark_theme: &str,
     light_rounded: Option<bool>,
@@ -115,12 +115,12 @@ pub fn apply_theme_pair(
     if dark_theme != light_theme || dark_rounded != light_rounded {
         install_theme(dark_theme, dark_rounded)?;
     }
-    write_theme_setting_pair(light_theme, dark_theme)?;
-    reload_theme(lang)
+    write_theme_setting_pair(light_theme, dark_theme).await?;
+    reload_theme(lang).await
 }
 
-pub fn apply_theme(theme_name: &str, rounded: Option<bool>, lang: Lang) -> Result<()> {
-    apply_theme_pair(theme_name, theme_name, rounded, rounded, lang)
+pub async fn apply_theme(theme_name: &str, rounded: Option<bool>, lang: Lang) -> Result<()> {
+    apply_theme_pair(theme_name, theme_name, rounded, rounded, lang).await
 }
 
 pub fn theme_supports_optional_rounding(theme_name: &str) -> bool {
@@ -230,7 +230,7 @@ fn optional_rounding_state(content: &str) -> Option<bool> {
     }
 }
 
-fn write_theme_setting_pair(light_theme: &str, dark_theme: &str) -> Result<()> {
+async fn write_theme_setting_pair(light_theme: &str, dark_theme: &str) -> Result<()> {
     let config = FcitxThemeConfig::for_pair(light_theme, dark_theme);
     let config_path = fcitx_classicui_config_path()?;
     let content = if config_path.exists() {
@@ -245,12 +245,12 @@ fn write_theme_setting_pair(light_theme: &str, dark_theme: &str) -> Result<()> {
     }
     std::fs::write(config_path, updated).context("write classicui config")?;
 
-    let _ = set_theme_via_dbus(&config);
+    let _ = set_theme_via_dbus(&config).await;
     Ok(())
 }
 
-fn reload_theme(lang: Lang) -> Result<()> {
-    if reload_via_dbus().is_ok() {
+async fn reload_theme(lang: Lang) -> Result<()> {
+    if reload_via_dbus().await.is_ok() {
         return Ok(());
     }
     if reload_via_fcitx5_remote().is_ok() {
@@ -262,47 +262,54 @@ fn reload_theme(lang: Lang) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn fcitx5_proxy<'a>(connection: &'a Connection) -> Result<Proxy<'a>> {
+async fn fcitx5_proxy<'a>(connection: &'a Connection) -> Result<Proxy<'a>> {
     Proxy::new(
         connection,
         "org.fcitx.Fcitx5",
         "/controller",
         "org.fcitx.Fcitx.Controller1",
     )
+    .await
     .context("create fcitx5 dbus proxy")
 }
 
 #[cfg(target_os = "linux")]
-fn set_theme_via_dbus(config: &FcitxThemeConfig) -> Result<()> {
-    let connection = Connection::session().context("connect session dbus")?;
-    let proxy = fcitx5_proxy(&connection)?;
+async fn set_theme_via_dbus(config: &FcitxThemeConfig) -> Result<()> {
+    let connection = Connection::session()
+        .await
+        .context("connect session dbus")?;
+    let proxy = fcitx5_proxy(&connection).await?;
     let payload = config.to_json_payload();
     let _: () = proxy
         .call(
             "SetConfig",
             &("fcitx://config/addon/classicui/classicui", payload),
         )
+        .await
         .context("set fcitx theme via dbus")?;
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn set_theme_via_dbus(_config: &FcitxThemeConfig) -> Result<()> {
+async fn set_theme_via_dbus(_config: &FcitxThemeConfig) -> Result<()> {
     anyhow::bail!("dbus unavailable")
 }
 
 #[cfg(target_os = "linux")]
-fn reload_via_dbus() -> Result<()> {
-    let connection = Connection::session().context("connect session dbus")?;
-    let proxy = fcitx5_proxy(&connection)?;
+async fn reload_via_dbus() -> Result<()> {
+    let connection = Connection::session()
+        .await
+        .context("connect session dbus")?;
+    let proxy = fcitx5_proxy(&connection).await?;
     let _: () = proxy
         .call("ReloadAddonConfig", &("classicui",))
+        .await
         .context("reload classicui via dbus")?;
     Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn reload_via_dbus() -> Result<()> {
+async fn reload_via_dbus() -> Result<()> {
     anyhow::bail!("dbus unavailable")
 }
 

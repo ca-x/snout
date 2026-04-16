@@ -14,7 +14,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Tabs, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -392,14 +392,16 @@ async fn run_app(
                     AppScreen::Updating => handle_updating_key(app, key.code),
                     AppScreen::Result => handle_result_key(app, key.code),
                     AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
-                    AppScreen::SkinSelector => handle_skin_key(app, key.code, manager)?,
+                    AppScreen::SkinSelector => handle_skin_key(app, key.code, manager).await?,
                     AppScreen::Fcitx5LightThemeSelector => {
-                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Light)?
+                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Light).await?
                     }
                     AppScreen::Fcitx5DarkThemeSelector => {
-                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Dark)?
+                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Dark).await?
                     }
-                    AppScreen::SkinRoundPrompt => handle_skin_round_prompt_key(app, key.code)?,
+                    AppScreen::SkinRoundPrompt => {
+                        handle_skin_round_prompt_key(app, key.code).await?
+                    }
                     AppScreen::ConfigView => handle_config_key(app, key.code),
                     AppScreen::ConfigInput => handle_config_input_key(app, key.code),
                 }
@@ -584,7 +586,7 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
     Ok(())
 }
 
-fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()> {
+async fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()> {
     let skins = available_skin_choices(app);
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -610,7 +612,7 @@ fn handle_skin_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<()
                         return Ok(());
                     }
                     Some(target) => {
-                        apply_skin_selection(app, target, key, name, None);
+                        apply_skin_selection(app, target, key, name, None).await;
                     }
                     None => {
                         app.notify(app.t.t("skin.not_supported").to_string());
@@ -633,7 +635,11 @@ enum Fcitx5ThemePhase {
     Light,
 }
 
-fn handle_fcitx5_theme_key(app: &mut App, key: KeyCode, phase: Fcitx5ThemePhase) -> Result<()> {
+async fn handle_fcitx5_theme_key(
+    app: &mut App,
+    key: KeyCode,
+    phase: Fcitx5ThemePhase,
+) -> Result<()> {
     let skins = available_skin_choices(app);
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -673,7 +679,7 @@ fn handle_fcitx5_theme_key(app: &mut App, key: KeyCode, phase: Fcitx5ThemePhase)
                             });
                             app.screen = AppScreen::SkinRoundPrompt;
                         } else {
-                            apply_fcitx5_theme_pair(app, None);
+                            apply_fcitx5_theme_pair(app, None).await;
                             app.screen = AppScreen::Menu;
                         }
                     }
@@ -693,25 +699,30 @@ fn handle_fcitx5_theme_key(app: &mut App, key: KeyCode, phase: Fcitx5ThemePhase)
     Ok(())
 }
 
-fn apply_pending_skin_selection(app: &mut App) -> Result<()> {
+async fn apply_pending_skin_selection(app: &mut App) -> Result<()> {
     let Some(selection) = app.pending_skin_selection.clone() else {
         return Ok(());
     };
 
     match selection.target {
-        SkinMenuTarget::Fcitx5Theme => apply_fcitx5_theme_pair(app, Some(app.skin_round_choice)),
-        _ => apply_skin_selection(
-            app,
-            selection.target,
-            &selection.light_key,
-            &selection.dark_key,
-            Some(app.skin_round_choice),
-        ),
+        SkinMenuTarget::Fcitx5Theme => {
+            apply_fcitx5_theme_pair(app, Some(app.skin_round_choice)).await
+        }
+        _ => {
+            apply_skin_selection(
+                app,
+                selection.target,
+                &selection.light_key,
+                &selection.dark_key,
+                Some(app.skin_round_choice),
+            )
+            .await
+        }
     }
     Ok(())
 }
 
-fn apply_fcitx5_theme_pair(app: &mut App, rounded: Option<bool>) {
+async fn apply_fcitx5_theme_pair(app: &mut App, rounded: Option<bool>) {
     let light = app.fcitx5_light_selected.clone().unwrap_or_default();
     let dark = app
         .fcitx5_dark_selected
@@ -723,7 +734,7 @@ fn apply_fcitx5_theme_pair(app: &mut App, rounded: Option<bool>) {
     }
 
     if let Err(e) =
-        crate::skin::fcitx5::apply_theme_pair(&light, &dark, rounded, rounded, app.t.lang())
+        crate::skin::fcitx5::apply_theme_pair(&light, &dark, rounded, rounded, app.t.lang()).await
     {
         app.notify(format!("❌ {e}"));
         return;
@@ -755,7 +766,7 @@ fn current_skin_index(app: &App, key: Option<&str>) -> usize {
         .unwrap_or(0)
 }
 
-fn apply_skin_selection(
+async fn apply_skin_selection(
     app: &mut App,
     target: SkinMenuTarget,
     key: &str,
@@ -764,7 +775,7 @@ fn apply_skin_selection(
 ) {
     match target {
         SkinMenuTarget::Fcitx5Theme => {
-            if let Err(e) = crate::skin::fcitx5::apply_theme(key, rounded, app.t.lang()) {
+            if let Err(e) = crate::skin::fcitx5::apply_theme(key, rounded, app.t.lang()).await {
                 app.notify(format!("❌ {e}"));
             } else if crate::skin::fcitx5::theme_supports_optional_rounding(key) {
                 let round_state = if rounded.unwrap_or(false) {
@@ -794,12 +805,12 @@ fn apply_skin_selection(
     }
 }
 
-fn handle_skin_round_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
+async fn handle_skin_round_prompt_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Left | KeyCode::Char('h') => app.skin_round_choice = true,
         KeyCode::Right | KeyCode::Char('l') => app.skin_round_choice = false,
         KeyCode::Enter => {
-            apply_pending_skin_selection(app)?;
+            apply_pending_skin_selection(app).await?;
             app.pending_skin_selection = None;
             app.screen = AppScreen::Menu;
         }
@@ -1559,39 +1570,19 @@ fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
     f.render_widget(Clear, size);
 
+    let header_height = if size.width < 88 { 5 } else { 4 };
+
     // 主布局: header + body + footer
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // header
-            Constraint::Min(8),    // body
-            Constraint::Length(3), // footer
+            Constraint::Length(header_height), // header
+            Constraint::Min(8),                // body
+            Constraint::Length(3),             // footer
         ])
         .split(size);
 
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " snout ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("v{}  ", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::Gray),
-        ),
-        Span::styled(
-            app.schema.display_name_lang(app.t.lang()),
-            Style::default().fg(Color::Green),
-        ),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)),
-    )
-    .alignment(Alignment::Center);
-    f.render_widget(header, chunks[0]);
+    render_header(f, chunks[0], app);
 
     // Body - 根据屏幕渲染
     match app.screen {
@@ -1622,11 +1613,56 @@ fn ui(f: &mut Frame, app: &App) {
     // Footer
     let footer_text = vec![Span::styled(
         format!(" {}", app.current_hint()),
-        Style::default().fg(Color::White),
+        secondary_text(),
     )];
     let footer =
         Paragraph::new(Line::from(footer_text)).block(Block::default().borders(Borders::TOP));
     f.render_widget(footer, chunks[2]);
+}
+
+fn render_header(f: &mut Frame, area: Rect, app: &App) {
+    let chunks = if area.height >= 5 {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Length(3)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(area.height.saturating_sub(1)),
+            ])
+            .split(area)
+    };
+
+    let status = Paragraph::new(Line::from(vec![
+        Span::styled(" snout ", accent_text().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("v{}  ", env!("CARGO_PKG_VERSION")),
+            secondary_text(),
+        ),
+        Span::styled(app.schema.display_name_lang(app.t.lang()), primary_text()),
+    ]))
+    .alignment(Alignment::Center)
+    .block(Block::default().borders(Borders::BOTTOM));
+    f.render_widget(status, chunks[0]);
+
+    let tabs = Tabs::new(vec![
+        app.t.t("menu.update_all"),
+        app.t.t("menu.update_scheme"),
+        app.t.t("menu.config"),
+    ])
+    .select(match app.screen {
+        AppScreen::Updating | AppScreen::Result => 0,
+        AppScreen::ConfigView | AppScreen::ConfigInput => 2,
+        _ => 1,
+    })
+    .style(secondary_text())
+    .highlight_style(accent_text().add_modifier(Modifier::BOLD | Modifier::UNDERLINED))
+    .divider(" ")
+    .block(panel_block(app.t.t("app.name")));
+    f.render_widget(tabs, chunks[1]);
 }
 
 fn render_notification_popup(f: &mut Frame, area: Rect, message: &str, title: &str) {
@@ -1634,23 +1670,10 @@ fn render_notification_popup(f: &mut Frame, area: Rect, message: &str, title: &s
     let popup_height = if area.height < 8 { 3 } else { 5 };
     let popup_area = centered_rect(popup_width, popup_height, area);
     f.render_widget(Clear, popup_area);
-    let popup = Paragraph::new(Line::from(vec![Span::styled(
-        message,
-        Style::default().fg(Color::White),
-    )]))
-    .alignment(Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow))
-            .title(Span::styled(
-                format!(" {} ", title),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    )
-    .wrap(Wrap { trim: true });
+    let popup = Paragraph::new(Line::from(vec![Span::styled(message, primary_text())]))
+        .alignment(Alignment::Center)
+        .block(panel_block(title).border_style(Style::default().fg(color_warning())))
+        .wrap(Wrap { trim: true });
     f.render_widget(popup, popup_area);
 }
 
@@ -1662,18 +1685,18 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
     let yes_style = if app.skin_round_choice {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Green)
+            .bg(color_accent())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Green)
+        accent_text()
     };
     let no_style = if !app.skin_round_choice {
         Style::default()
             .fg(Color::Black)
-            .bg(Color::Yellow)
+            .bg(color_selection_bg())
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::Yellow)
+        secondary_text()
     };
     let popup_width = area.width.saturating_sub(2).clamp(36, 72);
     let popup_height = area.height.saturating_sub(2).clamp(6, 9);
@@ -1687,12 +1710,12 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
                 selection.light_key,
                 selection.dark_key
             ),
-            Style::default().fg(Color::White),
+            primary_text(),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
             app.t.t("skin.round_prompt_body"),
-            Style::default().fg(Color::White),
+            secondary_text(),
         )]),
         Line::from(""),
         Line::from(vec![
@@ -1702,17 +1725,9 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
         ]),
     ];
 
-    let popup = Paragraph::new(content).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("skin.round_prompt_title")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
+    let popup = Paragraph::new(content)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(app.t.t("skin.round_prompt_title")));
     f.render_widget(popup, popup_area);
 }
 
@@ -1736,6 +1751,89 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         .split(horizontal[1])[1]
 }
 
+fn color_primary() -> Color {
+    Color::Rgb(245, 245, 247)
+}
+
+fn color_secondary() -> Color {
+    Color::Rgb(174, 174, 178)
+}
+
+fn color_tertiary() -> Color {
+    Color::Rgb(99, 99, 102)
+}
+
+fn color_border() -> Color {
+    Color::Rgb(72, 72, 74)
+}
+
+fn color_accent() -> Color {
+    Color::Rgb(10, 132, 255)
+}
+
+fn color_selection_bg() -> Color {
+    Color::Rgb(44, 44, 46)
+}
+
+fn color_success() -> Color {
+    Color::Rgb(48, 209, 88)
+}
+
+fn color_warning() -> Color {
+    Color::Rgb(255, 159, 10)
+}
+
+fn color_danger() -> Color {
+    Color::Rgb(255, 69, 58)
+}
+
+fn primary_text() -> Style {
+    Style::default().fg(color_primary())
+}
+
+fn secondary_text() -> Style {
+    Style::default().fg(color_secondary())
+}
+
+fn tertiary_text() -> Style {
+    Style::default().fg(color_tertiary())
+}
+
+fn accent_text() -> Style {
+    Style::default().fg(color_accent())
+}
+
+fn section_title_text() -> Style {
+    Style::default()
+        .fg(color_secondary())
+        .add_modifier(Modifier::BOLD)
+}
+
+fn selection_style() -> Style {
+    Style::default()
+        .bg(color_selection_bg())
+        .fg(color_primary())
+        .add_modifier(Modifier::BOLD)
+}
+
+fn panel_block(title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color_border()))
+        .title(Span::styled(format!(" {} ", title), section_title_text()))
+}
+
+fn table_lines(rows: Vec<(&str, &str)>) -> Vec<Line<'static>> {
+    rows.into_iter()
+        .map(|(label, value)| {
+            Line::from(vec![
+                Span::styled(format!("  {label}: "), secondary_text()),
+                Span::styled(value.to_string(), primary_text()),
+            ])
+        })
+        .collect()
+}
+
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     let menu_items = app.menu_items();
     let chunks = if area.width < 90 {
@@ -1756,14 +1854,12 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             let idx = i + 1;
             let unavailable = menu_unavailable_reason(app, idx).is_some();
             let style = if unavailable {
-                Style::default().fg(Color::Gray)
-            } else if i == 5 || i == 6 {
-                Style::default().fg(Color::Magenta)
+                tertiary_text()
             } else {
-                Style::default().fg(Color::White)
+                primary_text()
             };
             let line = vec![
-                Span::styled(format!("  {key}. "), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("  {key}. "), accent_text()),
                 Span::styled(*label, style),
             ];
             ListItem::new(Line::from(line))
@@ -1771,22 +1867,8 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(Span::styled(
-                    format!(" {} ", app.t.t("menu.title")),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(panel_block(app.t.t("menu.title")))
+        .highlight_style(selection_style())
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -1802,86 +1884,65 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
             Line::from(vec![Span::styled(
                 app.t.t("hint.unavailable"),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(color_warning())
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
-            Line::from(reason),
+            Line::from(vec![Span::styled(reason, secondary_text())]),
         ]
     } else {
         let mut lines = vec![
             Line::from(vec![Span::styled(
-                app.t.t("hint.confirm"),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                menu_description(app, selected_idx),
+                secondary_text(),
             )]),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                app.t.t("menu.action_ready"),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(""),
-            Line::from(menu_description(app, selected_idx)),
             Line::from(""),
             Line::from(vec![Span::styled(
                 app.t.t("menu.installed_versions"),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                section_title_text(),
             )]),
-            Line::from(format!(
-                "  {}: {}",
-                app.t.t("config.scheme_status_label"),
-                app.config_status.installed_scheme_version
-            )),
-            Line::from(format!(
-                "  {}: {}",
-                app.t.t("config.dict_status_label"),
-                app.config_status.installed_dict_version
-            )),
-            Line::from(format!(
-                "  {}: {}",
-                app.t.t("config.model_status_label"),
-                app.config_status.installed_model_version
-            )),
-            Line::from(""),
-            Line::from(vec![Span::styled(
-                app.t.t("menu.current_settings"),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from(format!(
-                "  {}: {}",
-                app.t.t("config.candidate_page_size_label"),
-                app.config_status.candidate_page_size
-            )),
-            Line::from(format!(
-                "  {}: {}",
-                app.t.t("config.model_patch_status_label"),
-                app.config_status.model_patch_status
-            )),
         ];
+        lines.extend(table_lines(vec![
+            (
+                app.t.t("config.scheme_status_label"),
+                app.config_status.installed_scheme_version.as_str(),
+            ),
+            (
+                app.t.t("config.dict_status_label"),
+                app.config_status.installed_dict_version.as_str(),
+            ),
+            (
+                app.t.t("config.model_status_label"),
+                app.config_status.installed_model_version.as_str(),
+            ),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            app.t.t("menu.current_settings"),
+            section_title_text(),
+        )]));
+        lines.extend(table_lines(vec![
+            (
+                app.t.t("config.candidate_page_size_label"),
+                app.config_status.candidate_page_size.as_str(),
+            ),
+            (
+                app.t.t("config.model_patch_status_label"),
+                app.config_status.model_patch_status.as_str(),
+            ),
+        ]));
         if app.config_status_loading {
             lines.push(Line::from(""));
-            lines.push(Line::from(app.t.t("config.loading")));
+            lines.push(Line::from(vec![Span::styled(
+                app.t.t("config.loading"),
+                tertiary_text(),
+            )]));
         }
         lines
     };
-    let detail_panel = Paragraph::new(detail).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("menu.result")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
+    let detail_panel = Paragraph::new(detail)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(app.t.t("menu.result")));
     f.render_widget(detail_panel, chunks[1]);
 }
 
@@ -1891,14 +1952,14 @@ fn detail_lines(message: &str) -> Vec<Line<'static>> {
         .map(|line| {
             let style = if line.starts_with("⚠️") {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(color_warning())
                     .add_modifier(Modifier::BOLD)
             } else if line.trim_start().starts_with('•') {
-                Style::default().fg(Color::Cyan)
+                accent_text()
             } else if line.trim_start().starts_with('-') || line.trim_start().starts_with("http") {
-                Style::default().fg(Color::Gray)
+                tertiary_text()
             } else {
-                Style::default().fg(Color::White)
+                primary_text()
             };
             Line::from(vec![Span::styled(line.to_string(), style)])
         })
@@ -1916,22 +1977,15 @@ fn render_updating(f: &mut Frame, area: Rect, app: &App) {
         .split(area);
 
     let msg = Paragraph::new(Line::from(vec![
-        Span::styled("  ⏳ ", Style::default().fg(Color::Yellow)),
-        Span::styled(&app.update_msg, Style::default().fg(Color::White)),
+        Span::styled("  ● ", accent_text()),
+        Span::styled(&app.update_msg, primary_text()),
     ]))
-    .block(Block::default().borders(Borders::ALL).title(Span::styled(
-        format!(" {} ", app.t.t("update.checking")),
-        Style::default().fg(Color::Yellow),
-    )));
+    .block(panel_block(app.t.t("update.checking")));
     f.render_widget(msg, chunks[0]);
 
     let gauge = Gauge::default()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", app.t.t("update.progress"))),
-        )
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .block(panel_block(app.t.t("update.progress")))
+        .gauge_style(Style::default().fg(color_accent()).bg(color_selection_bg()))
         .ratio(app.update_pct)
         .label(format!("{:.0}%", app.update_pct * 100.0));
     f.render_widget(gauge, chunks[1]);
@@ -1939,30 +1993,22 @@ fn render_updating(f: &mut Frame, area: Rect, app: &App) {
     let stage_lines = if app.update_stage_lines.is_empty() {
         vec![Line::from(vec![Span::styled(
             format!("  {}", app.t.t("hint.wait")),
-            Style::default().fg(Color::Gray),
+            tertiary_text(),
         )])]
     } else {
         app.update_stage_lines
             .iter()
             .map(|stage| {
                 Line::from(vec![
-                    Span::styled("  • ", Style::default().fg(Color::Gray)),
-                    Span::styled(stage, Style::default().fg(Color::White)),
+                    Span::styled("  • ", tertiary_text()),
+                    Span::styled(stage, primary_text()),
                 ])
             })
             .collect()
     };
-    let stage_panel = Paragraph::new(stage_lines).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("update.status_section")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
+    let stage_panel = Paragraph::new(stage_lines)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(app.t.t("update.status_section")));
     f.render_widget(stage_panel, chunks[2]);
 }
 
@@ -1973,11 +2019,11 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
         format!(" {} ", app.t.t("menu.result"))
     };
     let (accent, status_color) = match app.update_outcome {
-        Some(UpdateOutcome::Success) => (Color::Green, Color::Green),
-        Some(UpdateOutcome::Partial) => (Color::Yellow, Color::Yellow),
-        Some(UpdateOutcome::Failure) => (Color::Red, Color::Red),
-        Some(UpdateOutcome::Cancelled) => (Color::DarkGray, Color::Yellow),
-        None => (Color::Yellow, Color::Yellow),
+        Some(UpdateOutcome::Success) => (color_border(), color_success()),
+        Some(UpdateOutcome::Partial) => (color_border(), color_warning()),
+        Some(UpdateOutcome::Failure) => (color_border(), color_danger()),
+        Some(UpdateOutcome::Cancelled) => (color_border(), color_warning()),
+        None => (color_border(), color_secondary()),
     };
 
     let mut lines = vec![
@@ -1996,23 +2042,18 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
     for r in &app.update_results {
         lines.push(Line::from(vec![
             Span::styled("  ", Style::default()),
-            Span::styled(r, Style::default().fg(Color::White)),
+            Span::styled(r, primary_text()),
         ]));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         format!("  {}", app.t.t("result.back_to_menu")),
-        Style::default().fg(Color::Gray),
+        tertiary_text(),
     )]));
 
     let p = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(accent))
-                .title(Span::styled(&title, Style::default().fg(accent))),
-        )
+        .block(panel_block(&title).border_style(Style::default().fg(accent)))
         .wrap(Wrap { trim: true });
     f.render_widget(p, area);
 }
@@ -2027,39 +2068,25 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
         .map(|s| {
             let prefix = if *s == app.schema { " ● " } else { " ○ " };
             let style = if s.is_wanxiang() {
-                Style::default().fg(Color::Cyan)
+                accent_text()
             } else {
-                Style::default().fg(Color::Green)
+                primary_text()
             };
             ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Yellow)),
+                Span::styled(prefix, secondary_text()),
                 Span::styled(s.display_name_lang(app.t.lang()), style),
             ]))
         })
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
-                .title(Span::styled(
-                    format!(
-                        " {} {}/{} ",
-                        app.t.t("scheme.select_prompt"),
-                        window.current_index,
-                        window.total_items.max(1)
-                    ),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(panel_block(&format!(
+            "{} {}/{}",
+            app.t.t("scheme.select_prompt"),
+            window.current_index,
+            window.total_items.max(1)
+        )))
+        .highlight_style(selection_style())
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -2087,13 +2114,13 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
         .map(|(key, name)| {
             let mut spans = vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(name.as_str(), Style::default().fg(Color::White)),
-                Span::styled(format!(" ({key})"), Style::default().fg(Color::Gray)),
+                Span::styled(name.as_str(), primary_text()),
+                Span::styled(format!(" ({key})"), tertiary_text()),
             ];
             if installed_linux_themes.contains(key) {
                 spans.push(Span::styled(
                     format!(" [{}]", app.t.t("skin.installed_marker")),
-                    Style::default().fg(Color::Cyan),
+                    accent_text(),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -2112,22 +2139,8 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
     );
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta))
-                .title(Span::styled(
-                    format!(" {} ", title),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(panel_block(&title))
+        .highlight_style(selection_style())
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -2164,19 +2177,19 @@ fn render_fcitx5_theme_selector(f: &mut Frame, area: Rect, app: &App, phase: Fci
         .map(|(key, name)| {
             let mut spans = vec![
                 Span::styled("  ", Style::default()),
-                Span::styled(name.as_str(), Style::default().fg(Color::White)),
-                Span::styled(format!(" ({key})"), Style::default().fg(Color::Gray)),
+                Span::styled(name.as_str(), primary_text()),
+                Span::styled(format!(" ({key})"), tertiary_text()),
             ];
             if current.light.as_deref() == Some(key.as_str()) {
                 spans.push(Span::styled(
                     format!(" [{}]", app.t.t("skin.current_light_marker")),
-                    Style::default().fg(Color::Cyan),
+                    accent_text(),
                 ));
             }
             if current.dark.as_deref() == Some(key.as_str()) {
                 spans.push(Span::styled(
                     format!(" [{}]", app.t.t("skin.current_dark_marker")),
-                    Style::default().fg(Color::Yellow),
+                    secondary_text(),
                 ));
             }
             ListItem::new(Line::from(spans))
@@ -2188,27 +2201,13 @@ fn render_fcitx5_theme_selector(f: &mut Frame, area: Rect, app: &App, phase: Fci
         Fcitx5ThemePhase::Light => "skin.fcitx5_light_select_prompt",
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Magenta))
-                .title(Span::styled(
-                    format!(
-                        " {} {}/{} ",
-                        app.t.t(title_key),
-                        window.current_index,
-                        window.total_items.max(1)
-                    ),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        )
-        .highlight_style(
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(panel_block(&format!(
+            "{} {}/{}",
+            app.t.t(title_key),
+            window.current_index,
+            window.total_items.max(1)
+        )))
+        .highlight_style(selection_style())
         .highlight_symbol("▸ ");
 
     let mut state = ratatui::widgets::ListState::default();
@@ -2250,17 +2249,9 @@ fn render_fcitx5_theme_selector(f: &mut Frame, area: Rect, app: &App, phase: Fci
                 .unwrap_or_else(|| app.t.t("config.none").into())
         )),
     ];
-    let summary_panel = Paragraph::new(summary).wrap(Wrap { trim: true }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("menu.result")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
+    let summary_panel = Paragraph::new(summary)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(app.t.t("menu.result")));
     f.render_widget(summary_panel, chunks[1]);
 }
 
@@ -2311,11 +2302,9 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
     );
     let selected_style = |selected: bool| {
         if selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            accent_text().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            secondary_text()
         }
     };
     let actions = config_actions(&config);
@@ -2324,10 +2313,10 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled(
                 format!("{} ", if selected { "▸" } else { " " }),
-                Style::default().fg(Color::Cyan),
+                accent_text(),
             ),
             Span::styled(label, selected_style(selected)),
-            Span::styled(value, Style::default().fg(Color::White)),
+            Span::styled(value, primary_text()),
         ])
     };
     let chunks = if area.width < 110 {
@@ -2345,9 +2334,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
     let left_lines = vec![
         Line::from(vec![Span::styled(
             format!("  {}:", app.t.t("config.features_section")),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            section_title_text(),
         )]),
         action_line(
             actions
@@ -2416,10 +2403,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
         if env_proxy_active {
             Line::from(vec![
                 Span::styled("   ", Style::default()),
-                Span::styled(
-                    app.t.t("config.proxy_env_readonly"),
-                    Style::default().fg(Color::Gray),
-                ),
+                Span::styled(app.t.t("config.proxy_env_readonly"), tertiary_text()),
             ])
         } else {
             Line::from("")
@@ -2484,187 +2468,99 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from(vec![Span::styled(
             format!("  {}", app.t.t("config.back")),
-            Style::default().fg(Color::Gray),
+            tertiary_text(),
         )]),
     ];
 
-    let right_lines = vec![
-        Line::from(vec![Span::styled(
-            format!("  {}:", app.t.t("config.runtime_section")),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.current_scheme")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                app.schema.display_name_lang(app.t.lang()),
-                Style::default().fg(Color::Cyan),
-            ),
+    let runtime_rows = vec![
+        Row::new(vec![
+            app.t.t("config.current_scheme").to_string(),
+            app.schema.display_name_lang(app.t.lang()),
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.detected_engines")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(engines, Style::default().fg(Color::White)),
+        Row::new(vec![
+            app.t.t("config.detected_engines").to_string(),
+            engines.clone(),
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.proxy_source_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                match effective_proxy.as_ref().map(|proxy| proxy.source) {
-                    Some(crate::api::ProxySource::Config) => app.t.t("config.proxy_source_config"),
-                    Some(crate::api::ProxySource::Environment) => {
-                        app.t.t("config.proxy_source_env")
-                    }
-                    None => app.t.t("config.none"),
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.proxy_source_label").to_string(),
+            match effective_proxy.as_ref().map(|proxy| proxy.source) {
+                Some(crate::api::ProxySource::Config) => {
+                    app.t.t("config.proxy_source_config").to_string()
+                }
+                Some(crate::api::ProxySource::Environment) => {
+                    app.t.t("config.proxy_source_env").to_string()
+                }
+                None => app.t.t("config.none").to_string(),
+            },
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.proxy_value_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                effective_proxy
-                    .as_ref()
-                    .map(|proxy| proxy.url.as_str())
-                    .unwrap_or_else(|| app.t.t("config.none")),
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.proxy_value_label").to_string(),
+            effective_proxy
+                .as_ref()
+                .map(|proxy| proxy.url.clone())
+                .unwrap_or_else(|| app.t.t("config.none").into()),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!("  {}:", app.t.t("config.status_section")),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.scheme_status_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                if app.config_status_loading {
-                    app.t.t("config.loading")
-                } else {
-                    &app.config_status.scheme_status
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.scheme_status_label").to_string(),
+            if app.config_status_loading {
+                app.t.t("config.loading").to_string()
+            } else {
+                app.config_status.scheme_status.clone()
+            },
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.dict_status_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                if app.config_status_loading {
-                    app.t.t("config.loading")
-                } else {
-                    &app.config_status.dict_status
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.dict_status_label").to_string(),
+            if app.config_status_loading {
+                app.t.t("config.loading").to_string()
+            } else {
+                app.config_status.dict_status.clone()
+            },
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.model_status_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                if app.config_status_loading {
-                    app.t.t("config.loading")
-                } else {
-                    &app.config_status.model_status
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.model_status_label").to_string(),
+            if app.config_status_loading {
+                app.t.t("config.loading").to_string()
+            } else {
+                app.config_status.model_status.clone()
+            },
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.model_patch_status_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                if app.config_status_loading {
-                    app.t.t("config.loading")
-                } else {
-                    &app.config_status.model_patch_status
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.model_patch_status_label").to_string(),
+            if app.config_status_loading {
+                app.t.t("config.loading").to_string()
+            } else {
+                app.config_status.model_patch_status.clone()
+            },
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.candidate_page_size_label")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(
-                if app.config_status_loading {
-                    app.t.t("config.loading")
-                } else {
-                    &app.config_status.candidate_page_size
-                },
-                Style::default().fg(Color::White),
-            ),
+        Row::new(vec![
+            app.t.t("config.candidate_page_size_label").to_string(),
+            if app.config_status_loading {
+                app.t.t("config.loading").to_string()
+            } else {
+                app.config_status.candidate_page_size.clone()
+            },
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!("  {}:", app.t.t("config.paths_section")),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.rime_dir")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(&app.rime_dir, Style::default().fg(Color::White)),
+        Row::new(vec![
+            app.t.t("config.rime_dir").to_string(),
+            app.rime_dir.clone(),
         ]),
-        Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.config_file")),
-                Style::default().fg(Color::Gray),
-            ),
-            Span::styled(&app.config_path, Style::default().fg(Color::White)),
+        Row::new(vec![
+            app.t.t("config.config_file").to_string(),
+            app.config_path.clone(),
         ]),
     ];
 
-    let left = Paragraph::new(left_lines).wrap(Wrap { trim: false }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Blue))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("config.title")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
-    let right = Paragraph::new(right_lines)
+    let left = Paragraph::new(left_lines)
         .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .title(Span::styled(
-                    format!(" {} ", app.t.t("menu.result")),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                )),
-        );
+        .block(panel_block(app.t.t("config.title")));
+    let right = Table::new(
+        runtime_rows,
+        [Constraint::Percentage(36), Constraint::Percentage(64)],
+    )
+    .column_spacing(1)
+    .block(panel_block(app.t.t("menu.result")))
+    .style(primary_text())
+    .row_highlight_style(selection_style());
     f.render_widget(left, chunks[0]);
     f.render_widget(right, chunks[1]);
 }
@@ -2682,12 +2578,10 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
     let text = vec![
         Line::from(vec![Span::styled(
             format!("{}:", title),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            section_title_text(),
         )]),
         Line::from(""),
-        Line::from(vec![Span::styled(hint, Style::default().fg(Color::Gray))]),
+        Line::from(vec![Span::styled(hint, tertiary_text())]),
         Line::from(""),
         Line::from(vec![Span::styled(
             if app.config_input_value.is_empty() {
@@ -2695,21 +2589,13 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
             } else {
                 &app.config_input_value
             },
-            Style::default().fg(Color::White),
+            primary_text(),
         )]),
     ];
 
-    let p = Paragraph::new(text).wrap(Wrap { trim: false }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(Span::styled(
-                format!(" {} ", app.t.t("config.edit_title")),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )),
-    );
+    let p = Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .block(panel_block(app.t.t("config.edit_title")));
     f.render_widget(p, area);
 }
 

@@ -211,7 +211,8 @@ async fn main() -> anyhow::Result<()> {
                         None
                     },
                     Lang::from_str(&manager.config.language),
-                )?;
+                )
+                .await?;
                 if !(cli.update || cli.scheme || cli.dict || cli.model) {
                     return Ok(());
                 }

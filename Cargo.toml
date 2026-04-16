@@ -1,6 +1,6 @@
 [package]
 name = "snout"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Rime input method init and update tool with Wanxiang, Ice, Frost, and Mint support"
 license = "MIT"
@@ -24,4 +24,4 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
