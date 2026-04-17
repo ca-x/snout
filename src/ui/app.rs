@@ -1802,10 +1802,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
         vec![
             Line::from(vec![
                 Span::styled(" snout ", accent_text().add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("v{}", env!("CARGO_PKG_VERSION")),
-                    secondary_text(),
-                ),
+                Span::styled(format!("v{}", env!("CARGO_PKG_VERSION")), secondary_text()),
             ]),
             Line::from(vec![
                 Span::styled(
