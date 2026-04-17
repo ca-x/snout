@@ -1803,7 +1803,11 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
 fn current_screen_label(app: &App) -> &str {
     match app.screen {
-        AppScreen::Menu => app.t.t("menu.title"),
+        AppScreen::Menu => app
+            .menu_items()
+            .get(app.menu_selected)
+            .map(|(_, label)| *label)
+            .unwrap_or_else(|| app.t.t("menu.title")),
         AppScreen::Updating | AppScreen::Result => app.t.t("menu.update_all"),
         AppScreen::SchemeSelector => app.t.t("menu.switch_scheme"),
         AppScreen::SkinSelector
