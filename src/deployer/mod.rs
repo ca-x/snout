@@ -2,6 +2,16 @@ use crate::i18n::{L10n, Lang};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
+/// 更新前准备（Windows 需要先停止占用 Rime 用户目录的 Weasel 进程）
+pub fn prepare_for_update(_lang: Lang) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        stop_weasel_processes()?;
+    }
+
+    Ok(())
+}
+
 /// 跨平台部署 Rime
 pub fn deploy(lang: Lang) -> Result<()> {
     let t = L10n::new(lang);
@@ -88,7 +98,10 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             if let Some(weasel) = windows_deployer_executable() {
-                std::process::Command::new(weasel).arg("/deploy").spawn()?;
+                let status = std::process::Command::new(weasel).arg("/deploy").status()?;
+                if !status.success() {
+                    anyhow::bail!("WeaselDeployer exited with status {status}");
+                }
                 crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.weasel")));
             }
         }
@@ -433,6 +446,43 @@ fn windows_deployer_executable() -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn stop_weasel_processes() -> Result<()> {
+    if !graceful_stop_weasel() {
+        hard_stop_weasel();
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn graceful_stop_weasel() -> bool {
+    let Some(server) = windows_server_executable() else {
+        return false;
+    };
+
+    match std::process::Command::new(server).arg("/q").status() {
+        Ok(status) if status.success() => {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hard_stop_weasel() {
+    for _ in 0..3 {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/IM", "WeaselServer.exe", "/F"])
+            .status();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/IM", "WeaselDeployer.exe", "/F"])
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
 #[cfg(unix)]
 fn sync_via_symlink(src: &Path, target: &Path) -> Result<()> {
     if target.exists() || target.is_symlink() {
@@ -519,6 +569,11 @@ mod tests {
         let t = L10n::new(Lang::Zh);
         assert!(finalize_deploy_result(1, Vec::new(), &t).is_ok());
         assert!(finalize_deploy_result(1, vec!["ibus: failed".into()], &t).is_ok());
+    }
+
+    #[test]
+    fn prepare_for_update_returns_ok() {
+        assert!(prepare_for_update(Lang::En).is_ok());
     }
 
     #[cfg(target_os = "linux")]

@@ -456,6 +456,7 @@ impl WanxiangUpdater {
             progress: 0.15,
             detail: t.t("update.download_model").into(),
         });
+        crate::deployer::prepare_for_update(Lang::from_str(&config.language))?;
         let dl_client = crate::api::Client::new_download_client(config)?;
         dl_client
             .download_file(&info.url, &target, config, cancel, |dl, total| {

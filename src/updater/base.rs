@@ -186,6 +186,7 @@ impl BaseUpdater {
             progress: 0.85,
             detail: t.t("update.extracting").into(),
         });
+        crate::deployer::prepare_for_update(self.lang)?;
         std::fs::create_dir_all(extract_dest)?;
         fileutil::extract::extract_zip(&zip_path, extract_dest)?;
 

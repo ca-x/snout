@@ -1,6 +1,6 @@
 [package]
 name = "snout"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Rime input method init and update tool with Wanxiang, Ice, Frost, and Mint support"
 license = "MIT"
