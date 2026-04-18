@@ -1,5 +1,6 @@
 use crate::api::Client;
 use crate::fileutil;
+use crate::fileutil::extract::UserDataBehavior;
 use crate::i18n::{L10n, Lang};
 use crate::types::*;
 use crate::updater::{UpdateComponent, UpdateEvent, UpdatePhase};
@@ -188,7 +189,11 @@ impl BaseUpdater {
         });
         crate::deployer::prepare_for_update(self.lang)?;
         std::fs::create_dir_all(extract_dest)?;
-        fileutil::extract::extract_zip(&zip_path, extract_dest)?;
+        fileutil::extract::extract_zip(
+            &zip_path,
+            extract_dest,
+            user_data_behavior_for_config(config),
+        )?;
 
         Ok(())
     }
@@ -261,6 +266,13 @@ impl BaseUpdater {
             success: false,
             message: msg.into(),
         }
+    }
+}
+
+fn user_data_behavior_for_config(config: &Config) -> UserDataBehavior {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => UserDataBehavior::Discard,
+        _ => UserDataBehavior::Preserve,
     }
 }
 

@@ -287,6 +287,8 @@ impl Engine {
 #[serde(default)]
 pub struct Config {
     pub schema: Schema,
+    pub tui_theme_mode: String,   // "auto" | "light" | "dark"
+    pub user_data_policy: String, // "prompt" | "preserve" | "discard"
     pub use_mirror: bool,
     pub download_threads: usize,
     pub github_token: String,
@@ -309,6 +311,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             schema: Schema::WanxiangBase,
+            tui_theme_mode: "auto".into(),
+            user_data_policy: "prompt".into(),
             use_mirror: false,
             download_threads: 4,
             github_token: String::new(),

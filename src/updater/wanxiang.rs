@@ -140,9 +140,11 @@ impl WanxiangUpdater {
         // 处理 CNB 嵌套目录
         let mut warnings = Vec::new();
         if self.base.client.use_mirror() {
-            if let Err(e) =
-                crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name)
-            {
+            if let Err(e) = crate::fileutil::extract::handle_nested_dir(
+                &self.base.rime_dir,
+                &info.name,
+                user_data_behavior_for_config(config),
+            ) {
                 let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
                 crate::feedback::warn(format!("⚠️ {msg}"));
                 warnings.push(msg);
@@ -318,7 +320,11 @@ impl WanxiangUpdater {
 
         let mut warnings = Vec::new();
         if self.base.client.use_mirror() {
-            if let Err(e) = crate::fileutil::extract::handle_nested_dir(&dict_dir, &info.name) {
+            if let Err(e) = crate::fileutil::extract::handle_nested_dir(
+                &dict_dir,
+                &info.name,
+                user_data_behavior_for_config(config),
+            ) {
                 let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
                 crate::feedback::warn(format!("⚠️ {msg}"));
                 warnings.push(msg);
@@ -526,6 +532,15 @@ impl WanxiangUpdater {
             success: true,
             message: t.t("update.complete").into(),
         })
+    }
+}
+
+fn user_data_behavior_for_config(
+    config: &crate::types::Config,
+) -> crate::fileutil::extract::UserDataBehavior {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => crate::fileutil::extract::UserDataBehavior::Discard,
+        _ => crate::fileutil::extract::UserDataBehavior::Preserve,
     }
 }
 

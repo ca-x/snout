@@ -1,7 +1,17 @@
 use std::path::Path;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserDataBehavior {
+    Preserve,
+    Discard,
+}
+
 /// 解压 ZIP 文件到目标目录
-pub fn extract_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
+pub fn extract_zip(
+    zip_path: &Path,
+    dest: &Path,
+    user_data_behavior: UserDataBehavior,
+) -> anyhow::Result<()> {
     let file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -17,7 +27,7 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
         if entry.is_dir() {
             std::fs::create_dir_all(&outpath)?;
         } else {
-            if outpath.exists() && should_preserve_existing(&outpath) {
+            if outpath.exists() && should_preserve_existing(&outpath, user_data_behavior) {
                 continue;
             }
             if let Some(parent) = outpath.parent() {
@@ -41,7 +51,11 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> anyhow::Result<()> {
 }
 
 /// 处理 CNB 镜像的嵌套目录 (解压后可能多一层目录)
-pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
+pub fn handle_nested_dir(
+    base: &Path,
+    _zip_name: &str,
+    user_data_behavior: UserDataBehavior,
+) -> anyhow::Result<()> {
     let entries: Vec<_> = std::fs::read_dir(base)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().is_dir())
@@ -62,7 +76,7 @@ pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
                 let from = entry.path();
                 let to = base.join(entry.file_name());
                 if to.exists() {
-                    if should_preserve_existing(&to) {
+                    if should_preserve_existing(&to, user_data_behavior) {
                         if from.is_dir() {
                             std::fs::remove_dir_all(&from)?;
                         } else {
@@ -85,12 +99,20 @@ pub fn handle_nested_dir(base: &Path, _zip_name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn should_preserve_existing(path: &Path) -> bool {
+fn should_preserve_existing(path: &Path, user_data_behavior: UserDataBehavior) -> bool {
+    if matches!(user_data_behavior, UserDataBehavior::Discard) {
+        return false;
+    }
+
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
 
-    file_name.ends_with(".custom.yaml") || matches!(file_name, "installation.yaml" | "user.yaml")
+    file_name.ends_with(".custom.yaml")
+        || file_name.ends_with(".userdb")
+        || file_name.contains(".userdb.")
+        || file_name == "custom_phrase.txt"
+        || matches!(file_name, "installation.yaml" | "user.yaml")
 }
 
 #[cfg(test)]
@@ -130,7 +152,7 @@ mod tests {
         );
 
         let dest = tmp.join("output");
-        extract_zip(&zip_path, &dest).unwrap();
+        extract_zip(&zip_path, &dest, UserDataBehavior::Preserve).unwrap();
 
         let hello = std::fs::read_to_string(dest.join("hello.txt")).unwrap();
         assert_eq!(hello, "hello world");
@@ -154,7 +176,7 @@ mod tests {
         std::fs::write(wrapper.join("lua/test.lua"), "test").unwrap();
         std::fs::write(wrapper.join("schema.yaml"), "schema").unwrap();
 
-        handle_nested_dir(&tmp, "test.zip").unwrap();
+        handle_nested_dir(&tmp, "test.zip", UserDataBehavior::Preserve).unwrap();
 
         assert!(tmp.join("lua/test.lua").exists());
         assert!(tmp.join("schema.yaml").exists());
@@ -176,7 +198,7 @@ mod tests {
         std::fs::create_dir_all(&dest).unwrap();
         std::fs::write(dest.join("weasel.custom.yaml"), "user").unwrap();
 
-        extract_zip(&zip_path, &dest).unwrap();
+        extract_zip(&zip_path, &dest, UserDataBehavior::Preserve).unwrap();
 
         let content = std::fs::read_to_string(dest.join("weasel.custom.yaml")).unwrap();
         assert_eq!(content, "user");
@@ -200,7 +222,7 @@ mod tests {
         std::fs::write(wrapper.join("squirrel.custom.yaml"), "archive").unwrap();
         std::fs::write(wrapper.join("schema.yaml"), "schema").unwrap();
 
-        handle_nested_dir(&tmp, "test.zip").unwrap();
+        handle_nested_dir(&tmp, "test.zip", UserDataBehavior::Preserve).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(tmp.join("squirrel.custom.yaml")).unwrap(),
@@ -209,6 +231,74 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(tmp.join("schema.yaml")).unwrap(),
             "schema"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_extract_zip_preserves_user_learning_data_files() {
+        let tmp = std::env::temp_dir().join("snout-test-preserve-userdb");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = create_test_zip(
+            &tmp,
+            &[
+                ("terra_pinyin.userdb.txt", b"archive-userdb"),
+                ("custom_phrase.txt", b"archive-phrases"),
+            ],
+        );
+        let dest = tmp.join("output");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("terra_pinyin.userdb.txt"), "user-userdb").unwrap();
+        std::fs::write(dest.join("custom_phrase.txt"), "user-phrases").unwrap();
+
+        extract_zip(&zip_path, &dest, UserDataBehavior::Preserve).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("terra_pinyin.userdb.txt")).unwrap(),
+            "user-userdb"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("custom_phrase.txt")).unwrap(),
+            "user-phrases"
+        );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_extract_zip_can_discard_existing_user_learning_data_files() {
+        let tmp = std::env::temp_dir().join("snout-test-discard-userdb");
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).unwrap();
+        }
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let zip_path = create_test_zip(
+            &tmp,
+            &[
+                ("terra_pinyin.userdb.txt", b"archive-userdb"),
+                ("custom_phrase.txt", b"archive-phrases"),
+            ],
+        );
+        let dest = tmp.join("output");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("terra_pinyin.userdb.txt"), "user-userdb").unwrap();
+        std::fs::write(dest.join("custom_phrase.txt"), "user-phrases").unwrap();
+
+        extract_zip(&zip_path, &dest, UserDataBehavior::Discard).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dest.join("terra_pinyin.userdb.txt")).unwrap(),
+            "archive-userdb"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("custom_phrase.txt")).unwrap(),
+            "archive-phrases"
         );
 
         std::fs::remove_dir_all(&tmp).ok();

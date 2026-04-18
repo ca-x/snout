@@ -192,9 +192,7 @@ fn detect_schema_from_files(config: &Config, rime_dir: &Path) -> Option<Schema> 
         }
     }
 
-    if config.schema.is_wanxiang()
-        && schema_record_matches_files(config.schema, rime_dir)
-    {
+    if config.schema.is_wanxiang() && schema_record_matches_files(config.schema, rime_dir) {
         return Some(config.schema);
     }
 

@@ -101,7 +101,11 @@ impl MintUpdater {
             )
             .await?;
 
-        crate::fileutil::extract::handle_nested_dir(&self.base.rime_dir, &info.name)?;
+        crate::fileutil::extract::handle_nested_dir(
+            &self.base.rime_dir,
+            &info.name,
+            user_data_behavior_for_config(config),
+        )?;
         filter_mint_distribution(&self.base.rime_dir)?;
 
         if let Some(signal) = cancel {
@@ -143,6 +147,15 @@ impl MintUpdater {
             success: true,
             message: t.t("update.complete").into(),
         })
+    }
+}
+
+fn user_data_behavior_for_config(
+    config: &crate::types::Config,
+) -> crate::fileutil::extract::UserDataBehavior {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => crate::fileutil::extract::UserDataBehavior::Discard,
+        _ => crate::fileutil::extract::UserDataBehavior::Preserve,
     }
 }
 

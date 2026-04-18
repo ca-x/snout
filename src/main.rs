@@ -89,6 +89,14 @@ struct Cli {
     #[arg(long)]
     lang: Option<String>,
 
+    /// TUI 主题模式 / TUI theme mode (auto|light|dark)
+    #[arg(long, value_parser = ["auto", "light", "dark"])]
+    tui_theme: Option<String>,
+
+    /// 用户数据保留策略 / User data policy (prompt|preserve|discard)
+    #[arg(long, value_parser = ["prompt", "preserve", "discard"])]
+    user_data_policy: Option<String>,
+
     /// 启用多引擎同步 / Enable multi-engine sync
     #[arg(long, action = ArgAction::SetTrue)]
     engine_sync: bool,
@@ -183,6 +191,12 @@ async fn main() -> anyhow::Result<()> {
             custom::set_candidate_page_size(&rime_dir, schema, None)?;
         } else if let Some(page_size) = cli.candidate_page_size {
             custom::set_candidate_page_size(&rime_dir, schema, Some(page_size))?;
+        }
+
+        if cli.update || cli.scheme {
+            println!("ℹ️  {}", user_data_policy_notice(&manager.config, &t));
+            println!("   {}", user_data_policy_detail(&manager.config, &t));
+            println!("   {}", t.t("update.preserve_user_data_scope"));
         }
 
         #[cfg(target_os = "linux")]
@@ -362,6 +376,12 @@ fn apply_cli_overrides(config: &mut types::Config, cli: &Cli) {
     if let Some(ref lang) = cli.lang {
         config.language = lang.clone();
     }
+    if let Some(ref tui_theme) = cli.tui_theme {
+        config.tui_theme_mode = tui_theme.clone();
+    }
+    if let Some(ref user_data_policy) = cli.user_data_policy {
+        config.user_data_policy = user_data_policy.clone();
+    }
     if cli.patch_model {
         config.model_patch_enabled = true;
     }
@@ -400,5 +420,19 @@ fn apply_cli_overrides(config: &mut types::Config, cli: &Cli) {
     }
     if let Some(ref skin_key) = cli.skin_patch_key {
         config.skin_patch_key = skin_key.clone();
+    }
+}
+
+fn user_data_policy_notice<'a>(config: &types::Config, t: &'a L10n) -> &'a str {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => t.t("update.discard_user_data_notice"),
+        _ => t.t("update.preserve_user_data_notice"),
+    }
+}
+
+fn user_data_policy_detail<'a>(config: &types::Config, t: &'a L10n) -> &'a str {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => t.t("update.discard_user_data_detail"),
+        _ => t.t("update.preserve_user_data_detail"),
     }
 }

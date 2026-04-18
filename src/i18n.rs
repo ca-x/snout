@@ -143,6 +143,59 @@ impl L10n {
         // ── 更新 ──
         zh.insert("update.checking", "检查更新...");
         en.insert("update.checking", "Checking for updates...");
+        zh.insert("update.confirm_all_title", "确认更新全部组件");
+        en.insert("update.confirm_all_title", "Confirm full update");
+        zh.insert("update.confirm_scheme_title", "确认更新当前方案");
+        en.insert("update.confirm_scheme_title", "Confirm scheme update");
+        zh.insert("update.confirm_dict_title", "确认更新词库");
+        en.insert("update.confirm_dict_title", "Confirm dictionary update");
+        zh.insert("update.confirm_model_title", "确认更新模型");
+        en.insert("update.confirm_model_title", "Confirm model update");
+        zh.insert(
+            "update.discard_user_data_notice",
+            "将不保留用户输入习惯和组词数据。",
+        );
+        en.insert(
+            "update.discard_user_data_notice",
+            "Learned input habits and phrase data will not be preserved.",
+        );
+        zh.insert(
+            "update.preserve_user_data_notice",
+            "将保留用户输入习惯和组词数据。",
+        );
+        en.insert(
+            "update.preserve_user_data_notice",
+            "Your learned input habits and phrase data will be preserved.",
+        );
+        zh.insert(
+            "update.preserve_user_data_detail",
+            "更新方案时，snout 会保留现有 .userdb*、custom_phrase.txt、*.custom.yaml 和 user.yaml，避免覆盖用户学习数据与自定义配置。",
+        );
+        en.insert(
+            "update.preserve_user_data_detail",
+            "During scheme updates, snout preserves existing .userdb*, custom_phrase.txt, *.custom.yaml, and user.yaml files so learned data and custom configuration are not overwritten.",
+        );
+        zh.insert(
+            "update.discard_user_data_detail",
+            "当前策略是不保留：更新方案时允许覆盖现有 .userdb*、custom_phrase.txt、*.custom.yaml 和 user.yaml。请仅在你明确想重置用户数据时使用。",
+        );
+        en.insert(
+            "update.discard_user_data_detail",
+            "Current policy is discard: scheme updates may overwrite existing .userdb*, custom_phrase.txt, *.custom.yaml, and user.yaml files. Use this only when you explicitly want to reset user data.",
+        );
+        zh.insert(
+            "update.preserve_user_data_scope",
+            "提示：不同方案的用户词频不一定互通，但已有学习数据文件会继续留在 Rime 用户目录中。",
+        );
+        en.insert(
+            "update.preserve_user_data_scope",
+            "Note: user frequency data may not transfer across different schemas, but the existing learning data files stay in your Rime user directory.",
+        );
+        zh.insert("update.confirm_continue", "Enter 继续更新 / Esc 返回");
+        en.insert(
+            "update.confirm_continue",
+            "Press Enter to continue / Esc to go back",
+        );
         zh.insert("update.downloading", "下载中");
         en.insert("update.downloading", "Downloading");
         zh.insert("update.verifying", "校验文件...");
@@ -589,6 +642,31 @@ impl L10n {
         );
         zh.insert("config.model_patch_label", "自动模型 Patch");
         en.insert("config.model_patch_label", "Auto model patch");
+        zh.insert("config.tui_theme_label", "TUI 主题");
+        en.insert("config.tui_theme_label", "TUI theme");
+        zh.insert("config.user_data_policy_label", "用户数据保留");
+        en.insert("config.user_data_policy_label", "User data policy");
+        zh.insert("config.user_data_policy_discard_title", "确认切换为不保留");
+        en.insert(
+            "config.user_data_policy_discard_title",
+            "Confirm discard policy",
+        );
+        zh.insert(
+            "config.user_data_policy_discard_notice",
+            "该设置会允许后续更新覆盖学习数据。",
+        );
+        en.insert(
+            "config.user_data_policy_discard_notice",
+            "This setting allows future updates to overwrite learned data.",
+        );
+        zh.insert(
+            "config.user_data_policy_discard_detail",
+            "包括 .userdb*、custom_phrase.txt、*.custom.yaml 和 user.yaml。仅当你明确希望重置用户数据时才建议继续。",
+        );
+        en.insert(
+            "config.user_data_policy_discard_detail",
+            "This includes .userdb*, custom_phrase.txt, *.custom.yaml, and user.yaml. Continue only if you explicitly want future updates to reset user data.",
+        );
         zh.insert("config.candidate_page_size_label", "候选词数量");
         en.insert("config.candidate_page_size_label", "Candidate count");
         zh.insert("config.engine_sync_label", "多引擎同步");

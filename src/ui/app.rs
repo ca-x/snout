@@ -17,6 +17,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap},
     Frame, Terminal,
 };
+use std::env;
 use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -27,6 +28,8 @@ pub enum AppScreen {
     Menu,
     Updating,
     Result,
+    UpdateConfirm,
+    UserDataPolicyConfirm,
     SchemeSelector,
     SkinSelector,
     ThemePatchPresetSelector,
@@ -82,12 +85,23 @@ pub struct App {
     // 通知
     notification: Option<Notification>,
     pending_skin_selection: Option<PendingSkinSelection>,
+    pending_update_mode: Option<UpdateMode>,
+    pending_user_data_policy: Option<String>,
+    update_user_data_policy_summary: Option<String>,
 }
 
 #[derive(Debug)]
 enum UpdateTaskError {
     Cancelled,
     Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UpdateMode {
+    All,
+    Scheme,
+    Dict,
+    Model,
 }
 
 #[derive(Debug)]
@@ -109,6 +123,54 @@ struct PendingSkinSelection {
     target: SkinMenuTarget,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalTheme {
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UiPalette {
+    primary: Color,
+    secondary: Color,
+    tertiary: Color,
+    border: Color,
+    accent: Color,
+    selection_bg: Color,
+    success: Color,
+    warning: Color,
+    danger: Color,
+}
+
+impl UiPalette {
+    fn for_theme(theme: TerminalTheme) -> Self {
+        match theme {
+            TerminalTheme::Dark => Self {
+                primary: Color::Rgb(245, 245, 247),
+                secondary: Color::Rgb(174, 174, 178),
+                tertiary: Color::Rgb(99, 99, 102),
+                border: Color::Rgb(72, 72, 74),
+                accent: Color::Rgb(10, 132, 255),
+                selection_bg: Color::Rgb(44, 44, 46),
+                success: Color::Rgb(48, 209, 88),
+                warning: Color::Rgb(255, 159, 10),
+                danger: Color::Rgb(255, 69, 58),
+            },
+            TerminalTheme::Light => Self {
+                primary: Color::Rgb(28, 28, 30),
+                secondary: Color::Rgb(58, 58, 60),
+                tertiary: Color::Rgb(110, 110, 115),
+                border: Color::Rgb(198, 198, 200),
+                accent: Color::Rgb(0, 102, 204),
+                selection_bg: Color::Rgb(229, 241, 255),
+                success: Color::Rgb(36, 138, 61),
+                warning: Color::Rgb(178, 106, 0),
+                danger: Color::Rgb(192, 53, 43),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct ConfigStatusSnapshot {
     scheme_status: String,
@@ -123,6 +185,8 @@ struct ConfigStatusSnapshot {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ConfigAction {
+    TuiTheme,
+    UserDataPolicy,
     Mirror,
     DownloadThreads,
     Language,
@@ -194,6 +258,9 @@ impl App {
             config_input_value: String::new(),
             notification: None,
             pending_skin_selection: None,
+            pending_update_mode: None,
+            pending_user_data_policy: None,
+            update_user_data_policy_summary: None,
         }
     }
 
@@ -234,6 +301,16 @@ impl App {
                 "{}  q/Esc {}",
                 self.t.t("hint.wait"),
                 self.t.t("hint.cancel")
+            ),
+            AppScreen::UpdateConfirm => format!(
+                "Enter {}  Esc {}",
+                self.t.t("hint.confirm"),
+                self.t.t("hint.back")
+            ),
+            AppScreen::UserDataPolicyConfirm => format!(
+                "Enter {}  Esc {}",
+                self.t.t("hint.confirm"),
+                self.t.t("hint.back")
             ),
             AppScreen::Result => format!("Enter/Esc {}", self.t.t("hint.back")),
             AppScreen::SchemeSelector
@@ -401,6 +478,12 @@ async fn run_app(
                     AppScreen::Menu => handle_menu_key(app, key.code, manager).await?,
                     AppScreen::Updating => handle_updating_key(app, key.code),
                     AppScreen::Result => handle_result_key(app, key.code),
+                    AppScreen::UpdateConfirm => {
+                        handle_update_confirm_key(app, key.code, manager).await?
+                    }
+                    AppScreen::UserDataPolicyConfirm => {
+                        handle_user_data_policy_confirm_key(app, key.code)?
+                    }
                     AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
                     AppScreen::SkinSelector => handle_skin_key(app, key.code, manager).await?,
                     AppScreen::ThemePatchPresetSelector => {
@@ -460,8 +543,8 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
                 return Ok(());
             }
             match idx {
-                1 => start_update(app, manager, UpdateMode::All).await?,
-                2 => start_update(app, manager, UpdateMode::Scheme).await?,
+                1 => begin_update_flow(app, manager, UpdateMode::All).await?,
+                2 => begin_update_flow(app, manager, UpdateMode::Scheme).await?,
                 3 => start_update(app, manager, UpdateMode::Dict).await?,
                 4 => start_update(app, manager, UpdateMode::Model).await?,
                 5 => {
@@ -542,6 +625,63 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
     Ok(())
 }
 
+async fn handle_update_confirm_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<()> {
+    match key {
+        KeyCode::Enter => {
+            if let Some(mode) = app.pending_update_mode.take() {
+                start_update(app, manager, mode).await?;
+            } else {
+                app.screen = AppScreen::Menu;
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.pending_update_mode = None;
+            app.screen = AppScreen::Menu;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_user_data_policy_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
+    match key {
+        KeyCode::Enter => {
+            if let Some(policy) = app.pending_user_data_policy.take() {
+                if let Ok(mut manager) = Manager::new() {
+                    manager.config.user_data_policy = policy;
+                    let _ = manager.save();
+                    app.notify(app.t.t("config.saved").to_string());
+                }
+            }
+            app.screen = AppScreen::ConfigView;
+            refresh_config_status(app);
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.pending_user_data_policy = None;
+            app.screen = AppScreen::ConfigView;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn begin_update_flow(app: &mut App, manager: &Manager, mode: UpdateMode) -> Result<()> {
+    match manager
+        .config
+        .user_data_policy
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "preserve" | "discard" => start_update(app, manager, mode).await,
+        _ => {
+            app.pending_update_mode = Some(mode);
+            app.screen = AppScreen::UpdateConfirm;
+            Ok(())
+        }
+    }
+}
+
 fn handle_result_key(app: &mut App, key: KeyCode) {
     match key {
         KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
@@ -554,6 +694,7 @@ fn handle_result_key(app: &mut App, key: KeyCode) {
             app.result_rx = None;
             app.update_task = None;
             app.cancel_signal = None;
+            app.update_user_data_policy_summary = None;
         }
         _ => {}
     }
@@ -592,6 +733,10 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
         KeyCode::Enter => {
             if let Some(s) = schemas.get(app.scheme_selected) {
                 app.schema = *s;
+                if let Ok(mut manager) = Manager::new() {
+                    manager.config.schema = *s;
+                    let _ = manager.save();
+                }
                 refresh_config_status(app);
                 app.notify(format!(
                     "{}: {}",
@@ -962,6 +1107,18 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     .copied()
                     .unwrap_or(ConfigAction::Refresh)
                 {
+                    ConfigAction::TuiTheme => {
+                        manager.config.tui_theme_mode = next_tui_theme_mode(&manager.config);
+                    }
+                    ConfigAction::UserDataPolicy => {
+                        let next_policy = next_user_data_policy(&manager.config);
+                        if next_policy == "discard" {
+                            app.pending_user_data_policy = Some(next_policy);
+                            app.screen = AppScreen::UserDataPolicyConfirm;
+                            return;
+                        }
+                        manager.config.user_data_policy = next_policy;
+                    }
                     ConfigAction::Mirror => manager.config.use_mirror = !manager.config.use_mirror,
                     ConfigAction::DownloadThreads => {
                         app.config_input_field = Some(ConfigInputField::DownloadThreads);
@@ -1129,6 +1286,8 @@ fn enter_config_view(app: &mut App) {
 
 fn config_actions(config: &crate::types::Config) -> Vec<ConfigAction> {
     let mut actions = vec![
+        ConfigAction::TuiTheme,
+        ConfigAction::UserDataPolicy,
         ConfigAction::Mirror,
         ConfigAction::DownloadThreads,
         ConfigAction::Language,
@@ -1371,13 +1530,6 @@ fn available_skin_choices(app: &App) -> Vec<(String, String)> {
 
 // ── 更新调度 ──
 
-enum UpdateMode {
-    All,
-    Scheme,
-    Dict,
-    Model,
-}
-
 async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Result<()> {
     app.screen = AppScreen::Updating;
     app.update_msg = app.t.t("update.checking").into();
@@ -1389,6 +1541,8 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
     app.update_stage_lines.clear();
     app.update_task = None;
     app.cancel_signal = None;
+    app.update_user_data_policy_summary =
+        Some(effective_user_data_policy_label(&manager.config, app.t.lang()).to_string());
 
     let context = match resolve_update_context(app, manager, &mode) {
         Ok(context) => context,
@@ -1726,6 +1880,8 @@ fn ui(f: &mut Frame, app: &App) {
         AppScreen::Menu => render_menu(f, chunks[1], app),
         AppScreen::Updating => render_updating(f, chunks[1], app),
         AppScreen::Result => render_result(f, chunks[1], app),
+        AppScreen::UpdateConfirm => render_menu(f, chunks[1], app),
+        AppScreen::UserDataPolicyConfirm => render_config(f, chunks[1], app),
         AppScreen::SchemeSelector => render_scheme_selector(f, chunks[1], app),
         AppScreen::SkinSelector => render_skin_selector(f, chunks[1], app),
         AppScreen::ThemePatchPresetSelector => {
@@ -1753,13 +1909,24 @@ fn ui(f: &mut Frame, app: &App) {
         render_skin_round_prompt(f, size, app);
     }
 
+    if matches!(app.screen, AppScreen::UpdateConfirm) {
+        render_update_confirmation_popup(f, size, app);
+    }
+
+    if matches!(app.screen, AppScreen::UserDataPolicyConfirm) {
+        render_user_data_policy_confirmation_popup(f, size, app);
+    }
+
     // Footer
     let footer_text = vec![Span::styled(
         format!(" {}", app.current_hint()),
         secondary_text(),
     )];
-    let footer =
-        Paragraph::new(Line::from(footer_text)).block(Block::default().borders(Borders::TOP));
+    let footer = Paragraph::new(Line::from(footer_text)).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(color_border())),
+    );
     f.render_widget(footer, chunks[2]);
 }
 
@@ -1863,7 +2030,10 @@ fn current_screen_label(app: &App) -> &str {
             .get(app.menu_selected)
             .map(|(_, label)| *label)
             .unwrap_or_else(|| app.t.t("menu.title")),
-        AppScreen::Updating | AppScreen::Result => app.t.t("menu.update_all"),
+        AppScreen::Updating | AppScreen::Result | AppScreen::UpdateConfirm => {
+            app.t.t("menu.update_all")
+        }
+        AppScreen::UserDataPolicyConfirm => app.t.t("menu.config"),
         AppScreen::SchemeSelector => app.t.t("menu.switch_scheme"),
         AppScreen::SkinSelector
         | AppScreen::ThemePatchPresetSelector
@@ -1894,7 +2064,7 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
 
     let yes_style = if app.skin_round_choice {
         Style::default()
-            .fg(Color::Black)
+            .fg(contrast_color(color_accent()))
             .bg(color_accent())
             .add_modifier(Modifier::BOLD)
     } else {
@@ -1902,7 +2072,7 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
     };
     let no_style = if !app.skin_round_choice {
         Style::default()
-            .fg(Color::Black)
+            .fg(contrast_color(color_selection_bg()))
             .bg(color_selection_bg())
             .add_modifier(Modifier::BOLD)
     } else {
@@ -1941,6 +2111,88 @@ fn render_skin_round_prompt(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(popup, popup_area);
 }
 
+fn render_update_confirmation_popup(f: &mut Frame, area: Rect, app: &App) {
+    let mode = app.pending_update_mode.unwrap_or(UpdateMode::Scheme);
+    let popup_width = area.width.saturating_sub(2).clamp(42, 88);
+    let popup_height = area.height.saturating_sub(2).clamp(8, 12);
+    let popup_area = centered_rect(popup_width, popup_height, area);
+    f.render_widget(Clear, popup_area);
+
+    let title = match mode {
+        UpdateMode::All => app.t.t("update.confirm_all_title"),
+        UpdateMode::Scheme => app.t.t("update.confirm_scheme_title"),
+        UpdateMode::Dict => app.t.t("update.confirm_dict_title"),
+        UpdateMode::Model => app.t.t("update.confirm_model_title"),
+    };
+    let notice = if let Ok(manager) = Manager::new() {
+        update_notice_text(&manager.config, &app.t)
+    } else {
+        app.t.t("update.preserve_user_data_notice")
+    };
+    let detail = if let Ok(manager) = Manager::new() {
+        update_detail_text(&manager.config, &app.t)
+    } else {
+        app.t.t("update.preserve_user_data_detail")
+    };
+
+    let content = vec![
+        Line::from(vec![Span::styled(
+            notice,
+            primary_text().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(detail, secondary_text())]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("update.preserve_user_data_scope"),
+            tertiary_text(),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("update.confirm_continue"),
+            accent_text(),
+        )]),
+    ];
+
+    let popup = Paragraph::new(content)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(title));
+    f.render_widget(popup, popup_area);
+}
+
+fn render_user_data_policy_confirmation_popup(f: &mut Frame, area: Rect, app: &App) {
+    let popup_width = area.width.saturating_sub(2).clamp(42, 88);
+    let popup_height = area.height.saturating_sub(2).clamp(8, 12);
+    let popup_area = centered_rect(popup_width, popup_height, area);
+    f.render_widget(Clear, popup_area);
+
+    let content = vec![
+        Line::from(vec![Span::styled(
+            app.t.t("config.user_data_policy_discard_notice"),
+            Style::default()
+                .fg(color_warning())
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("config.user_data_policy_discard_detail"),
+            secondary_text(),
+        )]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            app.t.t("update.confirm_continue"),
+            accent_text(),
+        )]),
+    ];
+
+    let popup = Paragraph::new(content)
+        .wrap(Wrap { trim: true })
+        .block(panel_block(
+            app.t.t("config.user_data_policy_discard_title"),
+        ));
+    f.render_widget(popup, popup_area);
+}
+
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let horizontal = Layout::default()
         .direction(Direction::Horizontal)
@@ -1962,39 +2214,39 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn color_primary() -> Color {
-    Color::Rgb(245, 245, 247)
+    palette().primary
 }
 
 fn color_secondary() -> Color {
-    Color::Rgb(174, 174, 178)
+    palette().secondary
 }
 
 fn color_tertiary() -> Color {
-    Color::Rgb(99, 99, 102)
+    palette().tertiary
 }
 
 fn color_border() -> Color {
-    Color::Rgb(72, 72, 74)
+    palette().border
 }
 
 fn color_accent() -> Color {
-    Color::Rgb(10, 132, 255)
+    palette().accent
 }
 
 fn color_selection_bg() -> Color {
-    Color::Rgb(44, 44, 46)
+    palette().selection_bg
 }
 
 fn color_success() -> Color {
-    Color::Rgb(48, 209, 88)
+    palette().success
 }
 
 fn color_warning() -> Color {
-    Color::Rgb(255, 159, 10)
+    palette().warning
 }
 
 fn color_danger() -> Color {
-    Color::Rgb(255, 69, 58)
+    palette().danger
 }
 
 fn primary_text() -> Style {
@@ -2022,7 +2274,7 @@ fn section_title_text() -> Style {
 fn selection_style() -> Style {
     Style::default()
         .bg(color_selection_bg())
-        .fg(color_primary())
+        .fg(contrast_color(color_selection_bg()))
         .add_modifier(Modifier::BOLD)
 }
 
@@ -2248,6 +2500,17 @@ fn render_result(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(""),
     ];
+
+    if let Some(policy) = &app.update_user_data_policy_summary {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {}: ", app.t.t("config.user_data_policy_label")),
+                secondary_text(),
+            ),
+            Span::styled(policy.clone(), primary_text()),
+        ]));
+        lines.push(Line::from(""));
+    }
 
     for r in &app.update_results {
         lines.push(Line::from(vec![
@@ -2678,8 +2941,24 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
         action_line(
             actions
                 .iter()
-                .position(|action| *action == ConfigAction::Mirror)
+                .position(|action| *action == ConfigAction::TuiTheme)
                 .unwrap_or(0),
+            format!("{}: ", app.t.t("config.tui_theme_label")),
+            tui_theme_mode_label(&config.tui_theme_mode, app.t.lang()).to_string(),
+        ),
+        action_line(
+            actions
+                .iter()
+                .position(|action| *action == ConfigAction::UserDataPolicy)
+                .unwrap_or(1),
+            format!("{}: ", app.t.t("config.user_data_policy_label")),
+            user_data_policy_label(&config.user_data_policy, app.t.lang()).to_string(),
+        ),
+        action_line(
+            actions
+                .iter()
+                .position(|action| *action == ConfigAction::Mirror)
+                .unwrap_or(2),
             format!("{}: ", app.t.t("config.mirror_label")),
             if config.use_mirror {
                 app.t.t("config.enabled").into()
@@ -2691,7 +2970,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::DownloadThreads)
-                .unwrap_or(1),
+                .unwrap_or(3),
             format!("{}: ", app.t.t("config.download_threads_label")),
             config.download_threads.to_string(),
         ),
@@ -2699,7 +2978,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::Language)
-                .unwrap_or(2),
+                .unwrap_or(4),
             format!("{}: ", app.t.t("config.language_label")),
             language.to_string(),
         ),
@@ -2707,7 +2986,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::ProxyEnabled)
-                .unwrap_or(3),
+                .unwrap_or(5),
             format!("{}: ", app.t.t("config.proxy_label")),
             if config.proxy_enabled || effective_proxy.is_some() {
                 app.t.t("config.enabled").into()
@@ -2720,7 +2999,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                 actions
                     .iter()
                     .position(|action| *action == ConfigAction::ProxyType)
-                    .unwrap_or(3),
+                    .unwrap_or(5),
                 format!("{}: ", app.t.t("config.proxy_type_label")),
                 if config.proxy_type == "http" {
                     app.t.t("config.proxy_type_http").into()
@@ -2736,7 +3015,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
                 actions
                     .iter()
                     .position(|action| *action == ConfigAction::ProxyAddress)
-                    .unwrap_or(4),
+                    .unwrap_or(6),
                 format!("{}: ", app.t.t("config.proxy_address_label")),
                 if config.proxy_address.trim().is_empty() {
                     app.t.t("config.none").into()
@@ -2759,7 +3038,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::ModelPatch)
-                .unwrap_or(5),
+                .unwrap_or(7),
             format!("{}: ", app.t.t("config.model_patch_label")),
             if config.model_patch_enabled {
                 app.t.t("config.enabled").into()
@@ -2771,7 +3050,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::CandidatePageSize)
-                .unwrap_or(6),
+                .unwrap_or(8),
             format!("{}: ", app.t.t("config.candidate_page_size_label")),
             if app.config_status_loading {
                 app.t.t("config.loading").into()
@@ -2783,7 +3062,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::EngineSync)
-                .unwrap_or(7),
+                .unwrap_or(9),
             format!("{}: ", app.t.t("config.engine_sync_label")),
             if config.engine_sync_enabled {
                 app.t.t("config.enabled").into()
@@ -2795,7 +3074,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::SyncStrategy)
-                .unwrap_or(8),
+                .unwrap_or(10),
             format!("{}: ", app.t.t("config.sync_strategy_label")),
             if config.engine_sync_use_link {
                 app.t.t("config.sync_link").into()
@@ -2808,7 +3087,7 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             actions
                 .iter()
                 .position(|action| *action == ConfigAction::Refresh)
-                .unwrap_or(9),
+                .unwrap_or(11),
             format!("{}: ", app.t.t("hint.refresh")),
             app.t.t("hint.confirm").into(),
         ),
@@ -2824,6 +3103,11 @@ fn render_config(f: &mut Frame, area: Rect, app: &App) {
             app.t.t("config.current_scheme").to_string(),
             app.schema.display_name_lang(app.t.lang()),
         ]),
+        Row::new(vec![
+            app.t.t("config.user_data_policy_label").to_string(),
+            user_data_policy_label(&config.user_data_policy, app.t.lang()).to_string(),
+        ])
+        .style(user_data_policy_row_style(&config.user_data_policy)),
         Row::new(vec![
             app.t.t("config.detected_engines").to_string(),
             engines.clone(),
@@ -2963,6 +3247,183 @@ fn menu_description(app: &App, idx: usize) -> String {
     }
 }
 
+fn palette() -> UiPalette {
+    UiPalette::for_theme(detect_terminal_theme())
+}
+
+fn detect_terminal_theme() -> TerminalTheme {
+    let configured_mode = Manager::new()
+        .ok()
+        .and_then(|manager| parse_theme_override(Some(&manager.config.tui_theme_mode)));
+    detect_terminal_theme_from_env_values(
+        env::var("SNOUT_TUI_THEME").ok().as_deref(),
+        env::var("COLORFGBG").ok().as_deref(),
+    )
+    .or(configured_mode)
+    .unwrap_or(TerminalTheme::Dark)
+}
+
+fn detect_terminal_theme_from_env_values(
+    theme_override: Option<&str>,
+    colorfgbg: Option<&str>,
+) -> Option<TerminalTheme> {
+    parse_theme_override(theme_override).or_else(|| parse_colorfgbg_theme(colorfgbg))
+}
+
+fn parse_theme_override(value: Option<&str>) -> Option<TerminalTheme> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "light" => Some(TerminalTheme::Light),
+        "dark" => Some(TerminalTheme::Dark),
+        _ => None,
+    }
+}
+
+fn parse_colorfgbg_theme(value: Option<&str>) -> Option<TerminalTheme> {
+    let bg = value?
+        .split([';', ':', ','])
+        .filter_map(|part| part.trim().parse::<u8>().ok())
+        .next_back()?;
+
+    Some(match bg {
+        0..=6 | 8 => TerminalTheme::Dark,
+        _ => TerminalTheme::Light,
+    })
+}
+
+fn next_user_data_policy(config: &crate::types::Config) -> String {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "prompt" => "preserve".into(),
+        "preserve" => "discard".into(),
+        _ => "prompt".into(),
+    }
+}
+
+fn tui_theme_mode_label<'a>(mode: &str, lang: Lang) -> &'a str {
+    let is_zh = matches!(lang, Lang::Zh);
+    match mode.trim().to_ascii_lowercase().as_str() {
+        "light" => {
+            if is_zh {
+                "浅色"
+            } else {
+                "Light"
+            }
+        }
+        "dark" => {
+            if is_zh {
+                "深色"
+            } else {
+                "Dark"
+            }
+        }
+        _ => {
+            if is_zh {
+                "自动"
+            } else {
+                "Auto"
+            }
+        }
+    }
+}
+
+fn user_data_policy_label<'a>(policy: &str, lang: Lang) -> &'a str {
+    let is_zh = matches!(lang, Lang::Zh);
+    match policy.trim().to_ascii_lowercase().as_str() {
+        "preserve" => {
+            if is_zh {
+                "保留（直接保留 userdb/custom）"
+            } else {
+                "Preserve (keep userdb/custom)"
+            }
+        }
+        "discard" => {
+            if is_zh {
+                "不保留（允许覆盖学习数据）"
+            } else {
+                "Discard (allow overwrite)"
+            }
+        }
+        _ => {
+            if is_zh {
+                "提示用户（更新前询问）"
+            } else {
+                "Prompt (ask before update)"
+            }
+        }
+    }
+}
+
+fn update_notice_text<'a>(config: &crate::types::Config, t: &'a L10n) -> &'a str {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => t.t("update.discard_user_data_notice"),
+        _ => t.t("update.preserve_user_data_notice"),
+    }
+}
+
+fn update_detail_text<'a>(config: &crate::types::Config, t: &'a L10n) -> &'a str {
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => t.t("update.discard_user_data_detail"),
+        _ => t.t("update.preserve_user_data_detail"),
+    }
+}
+
+fn user_data_policy_row_style(policy: &str) -> Style {
+    match policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => Style::default()
+            .fg(color_warning())
+            .add_modifier(Modifier::BOLD),
+        _ => primary_text(),
+    }
+}
+
+fn effective_user_data_policy_label<'a>(config: &crate::types::Config, lang: Lang) -> &'a str {
+    let is_zh = matches!(lang, Lang::Zh);
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "discard" => {
+            if is_zh {
+                "不保留（允许覆盖学习数据）"
+            } else {
+                "Discard (allow overwrite)"
+            }
+        }
+        "prompt" => {
+            if is_zh {
+                "保留（由提示确认）"
+            } else {
+                "Preserve (confirmed by prompt)"
+            }
+        }
+        _ => {
+            if is_zh {
+                "保留（直接保留 userdb/custom）"
+            } else {
+                "Preserve (keep userdb/custom)"
+            }
+        }
+    }
+}
+
+fn contrast_color(color: Color) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => {
+            let luma = (299u32 * r as u32 + 587u32 * g as u32 + 114u32 * b as u32) / 1000;
+            if luma >= 140 {
+                Color::Black
+            } else {
+                Color::White
+            }
+        }
+        _ => Color::White,
+    }
+}
+
+fn next_tui_theme_mode(config: &crate::types::Config) -> String {
+    match config.tui_theme_mode.trim().to_ascii_lowercase().as_str() {
+        "auto" => "light".into(),
+        "light" => "dark".into(),
+        _ => "auto".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3077,6 +3538,65 @@ mod tests {
         let rendered = buffer_to_string(terminal.backend());
         assert!(!rendered.contains("very-long-unique-result-line"));
         assert!(!rendered.contains("result-detail-marker"));
+    }
+
+    #[test]
+    fn terminal_theme_detection_prefers_explicit_override() {
+        assert_eq!(
+            detect_terminal_theme_from_env_values(Some("light"), Some("15;0")),
+            Some(TerminalTheme::Light)
+        );
+        assert_eq!(
+            detect_terminal_theme_from_env_values(Some("dark"), Some("0;15")),
+            Some(TerminalTheme::Dark)
+        );
+    }
+
+    #[test]
+    fn terminal_theme_detection_uses_colorfgbg_background() {
+        assert_eq!(
+            detect_terminal_theme_from_env_values(None, Some("15;0")),
+            Some(TerminalTheme::Dark)
+        );
+        assert_eq!(
+            detect_terminal_theme_from_env_values(None, Some("0;15")),
+            Some(TerminalTheme::Light)
+        );
+        assert_eq!(
+            detect_terminal_theme_from_env_values(None, Some("default;default")),
+            None
+        );
+    }
+
+    #[test]
+    fn palette_switches_to_dark_text_for_light_terminals() {
+        let light = UiPalette::for_theme(TerminalTheme::Light);
+        let dark = UiPalette::for_theme(TerminalTheme::Dark);
+
+        assert_eq!(light.primary, Color::Rgb(28, 28, 30));
+        assert_eq!(dark.primary, Color::Rgb(245, 245, 247));
+        assert_eq!(contrast_color(light.selection_bg), Color::Black);
+        assert_eq!(contrast_color(dark.selection_bg), Color::White);
+    }
+
+    #[test]
+    fn next_tui_theme_mode_cycles_expected_values() {
+        let mut config = crate::types::Config::default();
+        assert_eq!(next_tui_theme_mode(&config), "light");
+        config.tui_theme_mode = "light".into();
+        assert_eq!(next_tui_theme_mode(&config), "dark");
+        config.tui_theme_mode = "dark".into();
+        assert_eq!(next_tui_theme_mode(&config), "auto");
+    }
+
+    #[test]
+    fn next_user_data_policy_cycles_expected_values() {
+        let mut config = crate::types::Config::default();
+        assert_eq!(next_user_data_policy(&config), "preserve");
+        config.user_data_policy = "preserve".into();
+        assert_eq!(next_user_data_policy(&config), "discard");
+        config.user_data_policy = "discard".into();
+        assert_eq!(next_user_data_policy(&config), "prompt");
     }
 
     fn buffer_to_string(backend: &TestBackend) -> String {
