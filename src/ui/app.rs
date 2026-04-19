@@ -1,6 +1,17 @@
 use crate::config::{self, Manager};
 use crate::i18n::{L10n, Lang};
 use crate::types::Schema;
+use crate::ui::config_logic::{
+    build_config_status_snapshot, config_actions, effective_user_data_policy_label,
+    next_language_value, next_proxy_type_value, next_tui_theme_mode, next_user_data_policy,
+    update_detail_text, update_notice_text, ConfigAction, ConfigStatusSnapshot,
+};
+use crate::ui::style::{
+    accent_text, color_accent, color_border, color_selection_bg, color_warning, contrast_color,
+    panel_block, primary_text, secondary_text, section_title_text, selection_style,
+    selector_highlight_symbol, tertiary_text,
+};
+use crate::ui::update_view::UpdateOutcome;
 use crate::updater;
 use crate::updater::{UpdateComponent, UpdateEvent, UpdatePhase};
 use anyhow::Result;
@@ -12,12 +23,11 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
 };
-use std::env;
 use std::io;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -41,14 +51,6 @@ pub enum AppScreen {
     ConfigInput,
     ExcludeRules,
     WanxiangDiagnosis,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum UpdateOutcome {
-    Success,
-    Partial,
-    Failure,
-    Cancelled,
 }
 
 pub struct App {
@@ -125,85 +127,6 @@ struct PendingSkinSelection {
     light_key: String,
     dark_key: String,
     target: SkinMenuTarget,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TerminalTheme {
-    Light,
-    Dark,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct UiPalette {
-    primary: Color,
-    secondary: Color,
-    tertiary: Color,
-    border: Color,
-    accent: Color,
-    selection_bg: Color,
-    success: Color,
-    warning: Color,
-    danger: Color,
-}
-
-impl UiPalette {
-    fn for_theme(theme: TerminalTheme) -> Self {
-        match theme {
-            TerminalTheme::Dark => Self {
-                primary: Color::Rgb(245, 245, 247),
-                secondary: Color::Rgb(174, 174, 178),
-                tertiary: Color::Rgb(99, 99, 102),
-                border: Color::Rgb(72, 72, 74),
-                accent: Color::Rgb(10, 132, 255),
-                selection_bg: Color::Rgb(44, 44, 46),
-                success: Color::Rgb(48, 209, 88),
-                warning: Color::Rgb(255, 159, 10),
-                danger: Color::Rgb(255, 69, 58),
-            },
-            TerminalTheme::Light => Self {
-                primary: Color::Rgb(28, 28, 30),
-                secondary: Color::Rgb(58, 58, 60),
-                tertiary: Color::Rgb(110, 110, 115),
-                border: Color::Rgb(198, 198, 200),
-                accent: Color::Rgb(0, 102, 204),
-                selection_bg: Color::Rgb(229, 241, 255),
-                success: Color::Rgb(36, 138, 61),
-                warning: Color::Rgb(178, 106, 0),
-                danger: Color::Rgb(192, 53, 43),
-            },
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct ConfigStatusSnapshot {
-    scheme_status: String,
-    dict_status: String,
-    model_status: String,
-    model_patch_status: String,
-    candidate_page_size: String,
-    installed_scheme_version: String,
-    installed_dict_version: String,
-    installed_model_version: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConfigAction {
-    TuiTheme,
-    UserDataPolicy,
-    ExcludeRules,
-    WanxiangDiagnosis,
-    Mirror,
-    DownloadThreads,
-    Language,
-    ProxyEnabled,
-    ProxyType,
-    ProxyAddress,
-    ModelPatch,
-    CandidatePageSize,
-    EngineSync,
-    SyncStrategy,
-    Refresh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1157,11 +1080,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                         return;
                     }
                     ConfigAction::Language => {
-                        manager.config.language = if manager.config.language.starts_with("zh") {
-                            "en".into()
-                        } else {
-                            "zh".into()
-                        };
+                        manager.config.language = next_language_value(&manager.config.language);
                         app.t = L10n::new(Lang::from_str(&manager.config.language));
                     }
                     ConfigAction::ProxyEnabled => {
@@ -1176,11 +1095,8 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                             app.notify(app.t.t("config.proxy_env_readonly").to_string());
                             return;
                         }
-                        manager.config.proxy_type = if manager.config.proxy_type == "http" {
-                            "socks5".into()
-                        } else {
-                            "http".into()
-                        };
+                        manager.config.proxy_type =
+                            next_proxy_type_value(&manager.config.proxy_type);
                     }
                     ConfigAction::ProxyAddress => {
                         if env_proxy_active {
@@ -1425,37 +1341,6 @@ fn enter_config_view(app: &mut App) {
     refresh_config_status(app);
 }
 
-fn config_actions(config: &crate::types::Config) -> Vec<ConfigAction> {
-    let mut actions = vec![
-        ConfigAction::TuiTheme,
-        ConfigAction::UserDataPolicy,
-        ConfigAction::ExcludeRules,
-    ];
-    if config.schema.is_wanxiang() {
-        actions.push(ConfigAction::WanxiangDiagnosis);
-    }
-    actions.extend([
-        ConfigAction::Mirror,
-        ConfigAction::DownloadThreads,
-        ConfigAction::Language,
-        ConfigAction::ProxyEnabled,
-    ]);
-    if config.proxy_enabled {
-        actions.push(ConfigAction::ProxyType);
-        actions.push(ConfigAction::ProxyAddress);
-    }
-    actions.extend([
-        ConfigAction::ModelPatch,
-        ConfigAction::CandidatePageSize,
-        ConfigAction::EngineSync,
-    ]);
-    if config.engine_sync_enabled {
-        actions.push(ConfigAction::SyncStrategy);
-    }
-    actions.push(ConfigAction::Refresh);
-    actions
-}
-
 fn refresh_config_status(app: &mut App) {
     app.config_status_loading = true;
     let (tx, rx) = mpsc::channel();
@@ -1467,202 +1352,6 @@ fn refresh_config_status(app: &mut App) {
         let snapshot = build_config_status_snapshot(schema, lang, rime_dir).await;
         let _ = tx.send(snapshot);
     });
-}
-
-async fn build_config_status_snapshot(
-    schema: Schema,
-    lang: Lang,
-    rime_dir: std::path::PathBuf,
-) -> ConfigStatusSnapshot {
-    let t = L10n::new(lang);
-    let manager = match Manager::new() {
-        Ok(manager) => manager,
-        Err(_) => {
-            return ConfigStatusSnapshot {
-                scheme_status: t.t("update.failed").into(),
-                dict_status: t.t("update.failed").into(),
-                model_status: t.t("update.failed").into(),
-                model_patch_status: t.t("update.failed").into(),
-                candidate_page_size: t.t("update.failed").into(),
-                installed_scheme_version: t.t("config.unknown").into(),
-                installed_dict_version: t.t("config.unknown").into(),
-                installed_model_version: t.t("config.unknown").into(),
-            };
-        }
-    };
-
-    let scheme_local = updater::BaseUpdater::load_record(&manager.scheme_record_path());
-    let dict_local = updater::BaseUpdater::load_record(&manager.dict_record_path());
-    let model_local = updater::BaseUpdater::load_record(&manager.model_record_path());
-    let model_patch_applied = updater::model_patch::is_model_patched(&rime_dir, &schema, lang);
-
-    let base = match updater::BaseUpdater::new(
-        &manager.config,
-        manager.cache_dir.clone(),
-        manager.rime_dir.clone(),
-    ) {
-        Ok(base) => base,
-        Err(_) => {
-            return ConfigStatusSnapshot {
-                scheme_status: local_status_text(&t, scheme_local.as_ref(), None),
-                dict_status: local_status_text(&t, dict_local.as_ref(), None),
-                model_status: local_status_text(&t, model_local.as_ref(), None),
-                model_patch_status: format!(
-                    "{} / {}",
-                    if manager.config.model_patch_enabled {
-                        t.t("config.enabled")
-                    } else {
-                        t.t("config.disabled")
-                    },
-                    if model_patch_applied {
-                        t.t("patch.model.enabled")
-                    } else {
-                        t.t("patch.model.disabled")
-                    }
-                ),
-                candidate_page_size: candidate_page_size_text(&rime_dir, schema, &t),
-                installed_scheme_version: installed_version_text(&t, scheme_local.as_ref()),
-                installed_dict_version: installed_dict_version_text(
-                    schema,
-                    &t,
-                    dict_local.as_ref(),
-                ),
-                installed_model_version: installed_version_text(&t, model_local.as_ref()),
-            };
-        }
-    };
-
-    let scheme_remote = if schema.is_wanxiang() {
-        updater::wanxiang::WanxiangUpdater { base }
-            .check_scheme_update(&schema, None)
-            .await
-            .ok()
-    } else if schema == Schema::Ice {
-        updater::ice::IceUpdater { base }
-            .check_scheme_update(None)
-            .await
-            .ok()
-    } else if schema == Schema::Frost {
-        updater::frost::FrostUpdater { base }
-            .check_scheme_update(None)
-            .await
-            .ok()
-    } else {
-        updater::mint::MintUpdater { base }
-            .check_scheme_update(None)
-            .await
-            .ok()
-    };
-
-    let base = updater::BaseUpdater::new(
-        &manager.config,
-        manager.cache_dir.clone(),
-        manager.rime_dir.clone(),
-    )
-    .ok();
-    let dict_remote = if let Some(base) = base {
-        if schema.is_wanxiang() {
-            updater::wanxiang::WanxiangUpdater { base }
-                .check_dict_update(&schema, None)
-                .await
-                .ok()
-        } else if schema == Schema::Ice {
-            updater::ice::IceUpdater { base }
-                .check_dict_update(None)
-                .await
-                .ok()
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let base = updater::BaseUpdater::new(
-        &manager.config,
-        manager.cache_dir.clone(),
-        manager.rime_dir.clone(),
-    )
-    .ok();
-    let model_remote = if let Some(base) = base {
-        updater::wanxiang::WanxiangUpdater { base }
-            .check_model_update(None)
-            .await
-            .ok()
-    } else {
-        None
-    };
-
-    ConfigStatusSnapshot {
-        scheme_status: local_status_text(&t, scheme_local.as_ref(), scheme_remote.as_ref()),
-        dict_status: if schema.dict_zip().is_none() {
-            t.t("config.na").into()
-        } else {
-            local_status_text(&t, dict_local.as_ref(), dict_remote.as_ref())
-        },
-        model_status: local_status_text(&t, model_local.as_ref(), model_remote.as_ref()),
-        model_patch_status: format!(
-            "{} / {}",
-            if manager.config.model_patch_enabled {
-                t.t("config.enabled")
-            } else {
-                t.t("config.disabled")
-            },
-            if model_patch_applied {
-                t.t("patch.model.enabled")
-            } else {
-                t.t("patch.model.disabled")
-            }
-        ),
-        candidate_page_size: candidate_page_size_text(&rime_dir, schema, &t),
-        installed_scheme_version: installed_version_text(&t, scheme_local.as_ref()),
-        installed_dict_version: installed_dict_version_text(schema, &t, dict_local.as_ref()),
-        installed_model_version: installed_version_text(&t, model_local.as_ref()),
-    }
-}
-
-fn local_status_text(
-    t: &L10n,
-    local: Option<&crate::types::UpdateRecord>,
-    remote: Option<&crate::types::UpdateInfo>,
-) -> String {
-    match (local, remote) {
-        (None, _) => t.t("status.not_installed").into(),
-        (Some(local), Some(remote)) => {
-            if crate::updater::BaseUpdater::needs_update(Some(local), remote) {
-                format!("{} -> {}", local.tag, remote.tag)
-            } else {
-                format!("{} ({})", local.tag, t.t("config.latest"))
-            }
-        }
-        (Some(local), None) => format!("{} ({})", local.tag, t.t("config.unknown")),
-    }
-}
-
-fn candidate_page_size_text(rime_dir: &std::path::Path, schema: Schema, t: &L10n) -> String {
-    match crate::custom::candidate_page_size(rime_dir, schema) {
-        Ok(Some(value)) => value.to_string(),
-        Ok(None) => t.t("config.default_value").into(),
-        Err(_) => t.t("config.unknown").into(),
-    }
-}
-
-fn installed_version_text(t: &L10n, local: Option<&crate::types::UpdateRecord>) -> String {
-    local
-        .map(|record| record.tag.clone())
-        .unwrap_or_else(|| t.t("status.not_installed").into())
-}
-
-fn installed_dict_version_text(
-    schema: Schema,
-    t: &L10n,
-    local: Option<&crate::types::UpdateRecord>,
-) -> String {
-    if schema.dict_zip().is_none() {
-        t.t("config.na").into()
-    } else {
-        installed_version_text(t, local)
-    }
 }
 
 fn available_skin_choices(app: &App) -> Vec<(String, String)> {
@@ -2025,10 +1714,30 @@ fn ui(f: &mut Frame, app: &App) {
     // Body - 根据屏幕渲染
     match app.screen {
         AppScreen::Menu => render_menu(f, chunks[1], app),
-        AppScreen::Updating => render_updating(f, chunks[1], app),
-        AppScreen::Result => render_result(f, chunks[1], app),
+        AppScreen::Updating => crate::ui::update_view::render_updating(
+            f,
+            chunks[1],
+            &app.t,
+            crate::ui::update_view::UpdatingViewData {
+                update_msg: &app.update_msg,
+                update_pct: app.update_pct,
+                update_stage_lines: &app.update_stage_lines,
+            },
+        ),
+        AppScreen::Result => crate::ui::update_view::render_result(
+            f,
+            chunks[1],
+            &app.t,
+            crate::ui::update_view::ResultViewData {
+                update_done: app.update_done,
+                update_outcome: app.update_outcome,
+                update_msg: &app.update_msg,
+                update_user_data_policy_summary: app.update_user_data_policy_summary.as_deref(),
+                update_results: &app.update_results,
+            },
+        ),
         AppScreen::UpdateConfirm => render_menu(f, chunks[1], app),
-        AppScreen::UserDataPolicyConfirm => render_config(f, chunks[1], app),
+        AppScreen::UserDataPolicyConfirm => render_config_screen(f, chunks[1], app),
         AppScreen::SchemeSelector => render_scheme_selector(f, chunks[1], app),
         AppScreen::SkinSelector => render_skin_selector(f, chunks[1], app),
         AppScreen::ThemePatchPresetSelector => {
@@ -2043,10 +1752,22 @@ fn ui(f: &mut Frame, app: &App) {
         AppScreen::Fcitx5LightThemeSelector => {
             render_fcitx5_theme_selector(f, chunks[1], app, Fcitx5ThemePhase::Light)
         }
-        AppScreen::ConfigView => render_config(f, chunks[1], app),
-        AppScreen::ConfigInput => render_config_input(f, chunks[1], app),
-        AppScreen::ExcludeRules => render_exclude_rules(f, chunks[1], app),
-        AppScreen::WanxiangDiagnosis => render_wanxiang_diagnosis(f, chunks[1], app),
+        AppScreen::ConfigView => render_config_screen(f, chunks[1], app),
+        AppScreen::ConfigInput => crate::ui::config_view::render_config_input(
+            f,
+            chunks[1],
+            build_config_input_view_data(app),
+        ),
+        AppScreen::ExcludeRules => crate::ui::config_view::render_exclude_rules(
+            f,
+            chunks[1],
+            build_exclude_rules_view_data(app),
+        ),
+        AppScreen::WanxiangDiagnosis => crate::ui::config_view::render_wanxiang_diagnosis(
+            f,
+            chunks[1],
+            build_wanxiang_diagnosis_view_data(app),
+        ),
         AppScreen::SkinRoundPrompt => render_menu(f, chunks[1], app),
     }
 
@@ -2126,7 +1847,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
                     secondary_text(),
                 ),
                 Span::styled(engine_text, primary_text()),
-                Span::styled("  • ", tertiary_text()),
+                Span::styled("  >>> ", tertiary_text()),
                 Span::styled(
                     format!("{}: ", app.t.t("config.current_scheme")),
                     secondary_text(),
@@ -2363,87 +2084,29 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
         .split(horizontal[1])[1]
 }
 
-fn color_primary() -> Color {
-    palette().primary
-}
-
-fn color_secondary() -> Color {
-    palette().secondary
-}
-
-fn color_tertiary() -> Color {
-    palette().tertiary
-}
-
-fn color_border() -> Color {
-    palette().border
-}
-
-fn color_accent() -> Color {
-    palette().accent
-}
-
-fn color_selection_bg() -> Color {
-    palette().selection_bg
-}
-
-fn color_success() -> Color {
-    palette().success
-}
-
-fn color_warning() -> Color {
-    palette().warning
-}
-
-fn color_danger() -> Color {
-    palette().danger
-}
-
-fn primary_text() -> Style {
-    Style::default().fg(color_primary())
-}
-
-fn secondary_text() -> Style {
-    Style::default().fg(color_secondary())
-}
-
-fn tertiary_text() -> Style {
-    Style::default().fg(color_tertiary())
-}
-
-fn accent_text() -> Style {
-    Style::default().fg(color_accent())
-}
-
-fn section_title_text() -> Style {
-    Style::default()
-        .fg(color_secondary())
-        .add_modifier(Modifier::BOLD)
-}
-
-fn selection_style() -> Style {
-    Style::default()
-        .bg(color_selection_bg())
-        .fg(contrast_color(color_selection_bg()))
-        .add_modifier(Modifier::BOLD)
-}
-
-fn panel_block(title: &str) -> Block<'static> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color_border()))
-        .title(Span::styled(format!(" {} ", title), section_title_text()))
-}
-
 fn table_lines(rows: Vec<(&str, &str)>) -> Vec<Line<'static>> {
     rows.into_iter()
         .map(|(label, value)| {
             Line::from(vec![
-                Span::styled(format!("  {label}: "), secondary_text()),
+                Span::styled(format!("  {label} // "), secondary_text()),
                 Span::styled(value.to_string(), primary_text()),
             ])
         })
         .collect()
+}
+
+fn selector_state(
+    selected: usize,
+    window_start: usize,
+    visible_len: usize,
+) -> ratatui::widgets::ListState {
+    let mut state = ratatui::widgets::ListState::default();
+    state.select(Some(
+        selected
+            .saturating_sub(window_start)
+            .min(visible_len.saturating_sub(1)),
+    ));
+    state
 }
 
 fn render_menu(f: &mut Frame, area: Rect, app: &App) {
@@ -2471,7 +2134,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
                 primary_text()
             };
             let line = vec![
-                Span::styled(format!("  {key}. "), accent_text()),
+                Span::styled(format!("  [{key}] "), accent_text()),
                 Span::styled(*label, style),
             ];
             ListItem::new(Line::from(line))
@@ -2481,7 +2144,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(panel_block(app.t.t("menu.title")))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
     let mut state = ratatui::widgets::ListState::default();
     state.select(Some(app.menu_selected));
@@ -2578,109 +2241,6 @@ fn detail_lines(message: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn render_updating(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Min(3),
-        ])
-        .split(area);
-
-    let msg = Paragraph::new(Line::from(vec![
-        Span::styled("  ● ", accent_text()),
-        Span::styled(&app.update_msg, primary_text()),
-    ]))
-    .block(panel_block(app.t.t("update.checking")));
-    f.render_widget(msg, chunks[0]);
-
-    let gauge = Gauge::default()
-        .block(panel_block(app.t.t("update.progress")))
-        .gauge_style(Style::default().fg(color_accent()).bg(color_selection_bg()))
-        .ratio(app.update_pct)
-        .label(format!("{:.0}%", app.update_pct * 100.0));
-    f.render_widget(gauge, chunks[1]);
-
-    let stage_lines = if app.update_stage_lines.is_empty() {
-        vec![Line::from(vec![Span::styled(
-            format!("  {}", app.t.t("hint.wait")),
-            tertiary_text(),
-        )])]
-    } else {
-        app.update_stage_lines
-            .iter()
-            .map(|stage| {
-                Line::from(vec![
-                    Span::styled("  • ", tertiary_text()),
-                    Span::styled(stage, primary_text()),
-                ])
-            })
-            .collect()
-    };
-    let stage_panel = Paragraph::new(stage_lines)
-        .wrap(Wrap { trim: true })
-        .block(panel_block(app.t.t("update.status_section")));
-    f.render_widget(stage_panel, chunks[2]);
-}
-
-fn render_result(f: &mut Frame, area: Rect, app: &App) {
-    let title = if app.update_done {
-        format!(" {} ", app.t.t("menu.done"))
-    } else {
-        format!(" {} ", app.t.t("menu.result"))
-    };
-    let (accent, status_color) = match app.update_outcome {
-        Some(UpdateOutcome::Success) => (color_border(), color_success()),
-        Some(UpdateOutcome::Partial) => (color_border(), color_warning()),
-        Some(UpdateOutcome::Failure) => (color_border(), color_danger()),
-        Some(UpdateOutcome::Cancelled) => (color_border(), color_warning()),
-        None => (color_border(), color_secondary()),
-    };
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                &app.update_msg,
-                Style::default()
-                    .fg(status_color)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-    ];
-
-    if let Some(policy) = &app.update_user_data_policy_summary {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {}: ", app.t.t("config.user_data_policy_label")),
-                secondary_text(),
-            ),
-            Span::styled(policy.clone(), primary_text()),
-        ]));
-        lines.push(Line::from(""));
-    }
-
-    for r in &app.update_results {
-        lines.push(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(r, primary_text()),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        format!("  {}", app.t.t("result.back_to_menu")),
-        tertiary_text(),
-    )]));
-
-    let p = Paragraph::new(lines)
-        .block(panel_block(&title).border_style(Style::default().fg(accent)))
-        .wrap(Wrap { trim: true });
-    f.render_widget(p, area);
-}
-
 fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
     let schemas = Schema::all();
     let visible_rows = area.height.saturating_sub(2) as usize;
@@ -2710,14 +2270,9 @@ fn render_scheme_selector(f: &mut Frame, area: Rect, app: &App) {
             window.total_items.max(1)
         )))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(
-        app.scheme_selected
-            .saturating_sub(window.start)
-            .min(visible_schemas.len().saturating_sub(1)),
-    ));
+    let mut state = selector_state(app.scheme_selected, window.start, visible_schemas.len());
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -2764,14 +2319,9 @@ fn render_skin_selector(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(panel_block(&title))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(
-        app.skin_selected
-            .saturating_sub(window.start)
-            .min(visible_skins.len().saturating_sub(1)),
-    ));
+    let mut state = selector_state(app.skin_selected, window.start, visible_skins.len());
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -2810,14 +2360,9 @@ fn render_theme_patch_preset_selector(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(panel_block(app.t.t("skin.theme_patch_preset_prompt")))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(
-        app.skin_selected
-            .saturating_sub(window.start)
-            .min(visible_skins.len().saturating_sub(1)),
-    ));
+    let mut state = selector_state(app.skin_selected, window.start, visible_skins.len());
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     let summary = vec![
@@ -2874,14 +2419,9 @@ fn render_theme_patch_default_selector(f: &mut Frame, area: Rect, app: &App) {
     let list = List::new(items)
         .block(panel_block(app.t.t("skin.theme_patch_default_prompt")))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(
-        app.skin_selected
-            .saturating_sub(window.start)
-            .min(visible_skins.len().saturating_sub(1)),
-    ));
+    let mut state = selector_state(app.skin_selected, window.start, visible_skins.len());
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     let summary = vec![
@@ -2960,14 +2500,9 @@ fn render_fcitx5_theme_selector(f: &mut Frame, area: Rect, app: &App, phase: Fci
             window.total_items.max(1)
         )))
         .highlight_style(selection_style())
-        .highlight_symbol("▸ ");
+        .highlight_symbol(selector_highlight_symbol());
 
-    let mut state = ratatui::widgets::ListState::default();
-    state.select(Some(
-        app.skin_selected
-            .saturating_sub(window.start)
-            .min(visible_skins.len().saturating_sub(1)),
-    ));
+    let mut state = selector_state(app.skin_selected, window.start, visible_skins.len());
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     let summary = vec![
@@ -3034,339 +2569,41 @@ fn sliding_window(selected: usize, total_items: usize, window_size: usize) -> Sl
     }
 }
 
-fn render_config(f: &mut Frame, area: Rect, app: &App) {
+fn render_config_screen(f: &mut Frame, area: Rect, app: &App) {
     let manager = Manager::new().ok();
-    let engines = manager
+    let detected_engines = manager
         .as_ref()
         .map(|_| crate::config::detect_installed_engines().join(", "))
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| app.t.t("config.none").into());
-    let language = if app.t.lang() == Lang::Zh {
-        app.t.t("config.lang.zh")
-    } else {
-        app.t.t("config.lang.en")
-    };
     let config = manager.map(|m| m.config).unwrap_or_default();
     let effective_proxy = crate::api::effective_proxy(&config).ok().flatten();
     let env_proxy_active = matches!(
         effective_proxy.as_ref().map(|proxy| proxy.source),
         Some(crate::api::ProxySource::Environment)
     );
-    let selected_style = |selected: bool| {
-        if selected {
-            accent_text().add_modifier(Modifier::BOLD)
-        } else {
-            secondary_text()
-        }
-    };
-    let actions = config_actions(&config);
-    let action_line = |index: usize, label: String, value: String| -> Line {
-        let selected = app.config_selected == index;
-        Line::from(vec![
-            Span::styled(
-                format!("{} ", if selected { "▸" } else { " " }),
-                accent_text(),
-            ),
-            Span::styled(label, selected_style(selected)),
-            Span::styled(value, primary_text()),
-        ])
-    };
-    let chunks = if area.width < 110 {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-            .split(area)
-    };
 
-    let left_lines = vec![
-        Line::from(vec![Span::styled(
-            format!("  {}:", app.t.t("config.features_section")),
-            section_title_text(),
-        )]),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::TuiTheme)
-                .unwrap_or(0),
-            format!("{}: ", app.t.t("config.tui_theme_label")),
-            tui_theme_mode_label(&config.tui_theme_mode, app.t.lang()).to_string(),
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::UserDataPolicy)
-                .unwrap_or(1),
-            format!("{}: ", app.t.t("config.user_data_policy_label")),
-            user_data_policy_label(&config.user_data_policy, app.t.lang()).to_string(),
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::ExcludeRules)
-                .unwrap_or(2),
-            format!("{}: ", app.t.t("config.exclude_rules_label")),
-            app.t.t("hint.edit").into(),
-        ),
-        if config.schema.is_wanxiang() {
-            action_line(
-                actions
-                    .iter()
-                    .position(|action| *action == ConfigAction::WanxiangDiagnosis)
-                    .unwrap_or(3),
-                format!("{}: ", app.t.t("config.wanxiang_diagnosis_label")),
-                app.t.t("hint.view").into(),
-            )
-        } else {
-            Line::from("")
+    crate::ui::config_view::render_config_screen(
+        f,
+        area,
+        &app.t,
+        crate::ui::config_view::ConfigScreenState {
+            selected_index: app.config_selected,
+            schema_name: app.schema.display_name_lang(app.t.lang()),
+            config: &config,
+            detected_engines,
+            effective_proxy: effective_proxy.as_ref(),
+            env_proxy_active,
+            config_status: &app.config_status,
+            is_loading: app.config_status_loading,
+            rime_dir: &app.rime_dir,
+            config_path: &app.config_path,
+            lang: app.t.lang(),
         },
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::Mirror)
-                .unwrap_or(4),
-            format!("{}: ", app.t.t("config.mirror_label")),
-            if config.use_mirror {
-                app.t.t("config.enabled").into()
-            } else {
-                app.t.t("config.disabled").into()
-            },
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::DownloadThreads)
-                .unwrap_or(3),
-            format!("{}: ", app.t.t("config.download_threads_label")),
-            config.download_threads.to_string(),
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::Language)
-                .unwrap_or(4),
-            format!("{}: ", app.t.t("config.language_label")),
-            language.to_string(),
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::ProxyEnabled)
-                .unwrap_or(5),
-            format!("{}: ", app.t.t("config.proxy_label")),
-            if config.proxy_enabled || effective_proxy.is_some() {
-                app.t.t("config.enabled").into()
-            } else {
-                app.t.t("config.disabled").into()
-            },
-        ),
-        if config.proxy_enabled {
-            action_line(
-                actions
-                    .iter()
-                    .position(|action| *action == ConfigAction::ProxyType)
-                    .unwrap_or(5),
-                format!("{}: ", app.t.t("config.proxy_type_label")),
-                if config.proxy_type == "http" {
-                    app.t.t("config.proxy_type_http").into()
-                } else {
-                    app.t.t("config.proxy_type_socks5").into()
-                },
-            )
-        } else {
-            Line::from("")
-        },
-        if config.proxy_enabled {
-            action_line(
-                actions
-                    .iter()
-                    .position(|action| *action == ConfigAction::ProxyAddress)
-                    .unwrap_or(6),
-                format!("{}: ", app.t.t("config.proxy_address_label")),
-                if config.proxy_address.trim().is_empty() {
-                    app.t.t("config.none").into()
-                } else {
-                    config.proxy_address.clone()
-                },
-            )
-        } else {
-            Line::from("")
-        },
-        if env_proxy_active {
-            Line::from(vec![
-                Span::styled("   ", Style::default()),
-                Span::styled(app.t.t("config.proxy_env_readonly"), tertiary_text()),
-            ])
-        } else {
-            Line::from("")
-        },
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::ModelPatch)
-                .unwrap_or(7),
-            format!("{}: ", app.t.t("config.model_patch_label")),
-            if config.model_patch_enabled {
-                app.t.t("config.enabled").into()
-            } else {
-                app.t.t("config.disabled").into()
-            },
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::CandidatePageSize)
-                .unwrap_or(8),
-            format!("{}: ", app.t.t("config.candidate_page_size_label")),
-            if app.config_status_loading {
-                app.t.t("config.loading").into()
-            } else {
-                app.config_status.candidate_page_size.clone()
-            },
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::EngineSync)
-                .unwrap_or(9),
-            format!("{}: ", app.t.t("config.engine_sync_label")),
-            if config.engine_sync_enabled {
-                app.t.t("config.enabled").into()
-            } else {
-                app.t.t("config.disabled").into()
-            },
-        ),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::SyncStrategy)
-                .unwrap_or(10),
-            format!("{}: ", app.t.t("config.sync_strategy_label")),
-            if config.engine_sync_use_link {
-                app.t.t("config.sync_link").into()
-            } else {
-                app.t.t("config.sync_copy").into()
-            },
-        ),
-        Line::from(""),
-        action_line(
-            actions
-                .iter()
-                .position(|action| *action == ConfigAction::Refresh)
-                .unwrap_or(11),
-            format!("{}: ", app.t.t("hint.refresh")),
-            app.t.t("hint.confirm").into(),
-        ),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            format!("  {}", app.t.t("config.back")),
-            tertiary_text(),
-        )]),
-    ];
-
-    let runtime_rows = vec![
-        Row::new(vec![
-            app.t.t("config.current_scheme").to_string(),
-            app.schema.display_name_lang(app.t.lang()),
-        ]),
-        Row::new(vec![
-            app.t.t("config.user_data_policy_label").to_string(),
-            user_data_policy_label(&config.user_data_policy, app.t.lang()).to_string(),
-        ])
-        .style(user_data_policy_row_style(&config.user_data_policy)),
-        Row::new(vec![
-            app.t.t("config.detected_engines").to_string(),
-            engines.clone(),
-        ]),
-        Row::new(vec![
-            app.t.t("config.proxy_source_label").to_string(),
-            match effective_proxy.as_ref().map(|proxy| proxy.source) {
-                Some(crate::api::ProxySource::Config) => {
-                    app.t.t("config.proxy_source_config").to_string()
-                }
-                Some(crate::api::ProxySource::Environment) => {
-                    app.t.t("config.proxy_source_env").to_string()
-                }
-                None => app.t.t("config.none").to_string(),
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.proxy_value_label").to_string(),
-            effective_proxy
-                .as_ref()
-                .map(|proxy| proxy.url.clone())
-                .unwrap_or_else(|| app.t.t("config.none").into()),
-        ]),
-        Row::new(vec![
-            app.t.t("config.scheme_status_label").to_string(),
-            if app.config_status_loading {
-                app.t.t("config.loading").to_string()
-            } else {
-                app.config_status.scheme_status.clone()
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.dict_status_label").to_string(),
-            if app.config_status_loading {
-                app.t.t("config.loading").to_string()
-            } else {
-                app.config_status.dict_status.clone()
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.model_status_label").to_string(),
-            if app.config_status_loading {
-                app.t.t("config.loading").to_string()
-            } else {
-                app.config_status.model_status.clone()
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.model_patch_status_label").to_string(),
-            if app.config_status_loading {
-                app.t.t("config.loading").to_string()
-            } else {
-                app.config_status.model_patch_status.clone()
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.candidate_page_size_label").to_string(),
-            if app.config_status_loading {
-                app.t.t("config.loading").to_string()
-            } else {
-                app.config_status.candidate_page_size.clone()
-            },
-        ]),
-        Row::new(vec![
-            app.t.t("config.rime_dir").to_string(),
-            app.rime_dir.clone(),
-        ]),
-        Row::new(vec![
-            app.t.t("config.config_file").to_string(),
-            app.config_path.clone(),
-        ]),
-    ];
-
-    let left = Paragraph::new(left_lines)
-        .wrap(Wrap { trim: false })
-        .block(panel_block(app.t.t("config.title")));
-    let right = Table::new(
-        runtime_rows,
-        [Constraint::Percentage(36), Constraint::Percentage(64)],
-    )
-    .column_spacing(1)
-    .block(panel_block(app.t.t("menu.result")))
-    .style(primary_text())
-    .row_highlight_style(selection_style());
-    f.render_widget(left, chunks[0]);
-    f.render_widget(right, chunks[1]);
+    );
 }
 
-fn render_exclude_rules(f: &mut Frame, area: Rect, app: &App) {
+fn build_exclude_rules_view_data(app: &App) -> crate::ui::config_view::ExcludeRulesViewData<'_> {
     let manager = Manager::new().ok();
     let patterns = manager
         .as_ref()
@@ -3389,169 +2626,69 @@ fn render_exclude_rules(f: &mut Frame, area: Rect, app: &App) {
             }
         })
         .unwrap_or_else(|| patterns.clone());
-    let mut lines: Vec<Line> = vec![
-        Line::from(vec![Span::styled(
-            app.t.t("config.exclude_help"),
-            secondary_text(),
-        )]),
-        Line::from(vec![Span::styled(
-            format!(
-                "{}: {}",
-                app.t.t("config.exclude_effective_count"),
-                patterns.len()
-            ),
-            tertiary_text(),
-        )]),
-        Line::from(""),
-    ];
-    lines.extend(descriptions.iter().enumerate().map(|(i, desc)| {
-        let prefix = if i == app.exclude_selected {
-            "▸ "
-        } else {
-            "  "
-        };
-        let style = if i == app.exclude_selected {
-            selection_style()
-        } else {
-            primary_text()
-        };
-        Line::from(vec![Span::styled(format!("{prefix}{desc}"), style)])
-    }));
-    lines.push(Line::from(""));
-    let add_index = patterns.len();
-    let reset_index = patterns.len() + 1;
-    lines.push(Line::from(vec![Span::styled(
-        format!(
-            "{}{}",
-            if app.exclude_selected == add_index {
-                "▸ "
-            } else {
-                "  "
-            },
-            app.t.t("config.exclude_add")
-        ),
-        if app.exclude_selected == add_index {
-            selection_style()
-        } else {
-            accent_text()
-        },
-    )]));
-    lines.push(Line::from(vec![Span::styled(
-        format!(
-            "{}{}",
-            if app.exclude_selected == reset_index {
-                "▸ "
-            } else {
-                "  "
-            },
-            app.t.t("config.exclude_reset")
-        ),
-        if app.exclude_selected == reset_index {
-            selection_style()
-        } else {
-            tertiary_text()
-        },
-    )]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![Span::styled(
-        app.t.t("config.exclude_examples"),
-        tertiary_text(),
-    )]));
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(panel_block(app.t.t("config.exclude_rules_title")));
-    f.render_widget(p, area);
+
+    crate::ui::config_view::ExcludeRulesViewData {
+        help_text: app.t.t("config.exclude_help"),
+        effective_count_label: app.t.t("config.exclude_effective_count"),
+        patterns_len: patterns.len(),
+        descriptions,
+        selected_index: app.exclude_selected,
+        add_label: app.t.t("config.exclude_add"),
+        reset_label: app.t.t("config.exclude_reset"),
+        examples_label: app.t.t("config.exclude_examples"),
+        title: app.t.t("config.exclude_rules_title"),
+    }
 }
 
-fn render_wanxiang_diagnosis(f: &mut Frame, area: Rect, app: &App) {
+fn build_wanxiang_diagnosis_view_data(
+    app: &App,
+) -> crate::ui::config_view::WanxiangDiagnosisViewData<'_> {
     let manager = match Manager::new() {
         Ok(manager) => manager,
         Err(err) => {
-            let p = Paragraph::new(format!("{}: {err}", app.t.t("update.failed")))
-                .block(panel_block(app.t.t("config.wanxiang_diagnosis_title")));
-            f.render_widget(p, area);
-            return;
+            return crate::ui::config_view::WanxiangDiagnosisViewData {
+                title: app.t.t("config.wanxiang_diagnosis_title"),
+                failed_label: app.t.t("update.failed"),
+                current_scheme_label: app.t.t("config.current_scheme"),
+                markers_label: app.t.t("config.wanxiang_markers_label"),
+                error_message: Some(err.to_string()),
+                detected_schema: String::new(),
+                record_schema: String::new(),
+                config_schema: String::new(),
+                custom_patch_schema: String::new(),
+                marker_files: Vec::new(),
+            };
         }
     };
     let diagnosis =
         crate::config::diagnose_wanxiang(&manager.config, &manager.cache_dir, &manager.rime_dir);
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{}: ", app.t.t("config.current_scheme")),
-                secondary_text(),
-            ),
-            Span::styled(
-                diagnosis
-                    .detected_schema
-                    .map(|s| s.display_name_lang(app.t.lang()))
-                    .unwrap_or_else(|| app.t.t("config.none").into()),
-                primary_text(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Record: ", secondary_text()),
-            Span::styled(
-                diagnosis
-                    .record_schema
-                    .map(|s| s.display_name_lang(app.t.lang()))
-                    .unwrap_or_else(|| app.t.t("config.none").into()),
-                primary_text(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Config: ", secondary_text()),
-            Span::styled(
-                diagnosis
-                    .config_schema
-                    .map(|s| s.display_name_lang(app.t.lang()))
-                    .unwrap_or_else(|| app.t.t("config.none").into()),
-                primary_text(),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Custom: ", secondary_text()),
-            Span::styled(
-                diagnosis
-                    .custom_patch_schema
-                    .map(|s| s.display_name_lang(app.t.lang()))
-                    .unwrap_or_else(|| app.t.t("config.none").into()),
-                primary_text(),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            app.t.t("config.wanxiang_markers_label"),
-            section_title_text(),
-        )]),
-    ];
-    for (path, exists) in diagnosis.marker_files {
-        lines.push(Line::from(vec![
-            Span::styled(
-                if exists { "  ✓ " } else { "  · " },
-                if exists {
-                    accent_text()
-                } else {
-                    tertiary_text()
-                },
-            ),
-            Span::styled(
-                path,
-                if exists {
-                    primary_text()
-                } else {
-                    tertiary_text()
-                },
-            ),
-        ]));
+    crate::ui::config_view::WanxiangDiagnosisViewData {
+        title: app.t.t("config.wanxiang_diagnosis_title"),
+        failed_label: app.t.t("update.failed"),
+        current_scheme_label: app.t.t("config.current_scheme"),
+        markers_label: app.t.t("config.wanxiang_markers_label"),
+        error_message: None,
+        detected_schema: diagnosis
+            .detected_schema
+            .map(|s| s.display_name_lang(app.t.lang()))
+            .unwrap_or_else(|| app.t.t("config.none").into()),
+        record_schema: diagnosis
+            .record_schema
+            .map(|s| s.display_name_lang(app.t.lang()))
+            .unwrap_or_else(|| app.t.t("config.none").into()),
+        config_schema: diagnosis
+            .config_schema
+            .map(|s| s.display_name_lang(app.t.lang()))
+            .unwrap_or_else(|| app.t.t("config.none").into()),
+        custom_patch_schema: diagnosis
+            .custom_patch_schema
+            .map(|s| s.display_name_lang(app.t.lang()))
+            .unwrap_or_else(|| app.t.t("config.none").into()),
+        marker_files: diagnosis.marker_files,
     }
-    let p = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(panel_block(app.t.t("config.wanxiang_diagnosis_title")));
-    f.render_widget(p, area);
 }
 
-fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
+fn build_config_input_view_data(app: &App) -> crate::ui::config_view::ConfigInputViewData<'_> {
     let title = match app.config_input_field {
         Some(ConfigInputField::ProxyAddress) => app.t.t("config.proxy_address_label"),
         Some(ConfigInputField::CandidatePageSize) => app.t.t("config.candidate_page_size_label"),
@@ -3565,28 +2702,14 @@ fn render_config_input(f: &mut Frame, area: Rect, app: &App) {
         Some(ConfigInputField::ExcludePattern) => app.t.t("config.input_hint_exclude_rule"),
         _ => app.t.t("config.input_hint"),
     };
-    let text = vec![
-        Line::from(vec![Span::styled(
-            format!("{}:", title),
-            section_title_text(),
-        )]),
-        Line::from(""),
-        Line::from(vec![Span::styled(hint, tertiary_text())]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            if app.config_input_value.is_empty() {
-                app.t.t("config.input_placeholder")
-            } else {
-                &app.config_input_value
-            },
-            primary_text(),
-        )]),
-    ];
 
-    let p = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .block(panel_block(app.t.t("config.edit_title")));
-    f.render_widget(p, area);
+    crate::ui::config_view::ConfigInputViewData {
+        title,
+        hint,
+        value: &app.config_input_value,
+        placeholder: app.t.t("config.input_placeholder"),
+        edit_title: app.t.t("config.edit_title"),
+    }
 }
 
 fn menu_description(app: &App, idx: usize) -> String {
@@ -3601,183 +2724,6 @@ fn menu_description(app: &App, idx: usize) -> String {
         8 => app.t.t("menu.desc.config").into(),
         9 => app.t.t("menu.desc.quit").into(),
         _ => String::new(),
-    }
-}
-
-fn palette() -> UiPalette {
-    UiPalette::for_theme(detect_terminal_theme())
-}
-
-fn detect_terminal_theme() -> TerminalTheme {
-    let configured_mode = Manager::new()
-        .ok()
-        .and_then(|manager| parse_theme_override(Some(&manager.config.tui_theme_mode)));
-    detect_terminal_theme_from_env_values(
-        env::var("SNOUT_TUI_THEME").ok().as_deref(),
-        env::var("COLORFGBG").ok().as_deref(),
-    )
-    .or(configured_mode)
-    .unwrap_or(TerminalTheme::Dark)
-}
-
-fn detect_terminal_theme_from_env_values(
-    theme_override: Option<&str>,
-    colorfgbg: Option<&str>,
-) -> Option<TerminalTheme> {
-    parse_theme_override(theme_override).or_else(|| parse_colorfgbg_theme(colorfgbg))
-}
-
-fn parse_theme_override(value: Option<&str>) -> Option<TerminalTheme> {
-    match value?.trim().to_ascii_lowercase().as_str() {
-        "light" => Some(TerminalTheme::Light),
-        "dark" => Some(TerminalTheme::Dark),
-        _ => None,
-    }
-}
-
-fn parse_colorfgbg_theme(value: Option<&str>) -> Option<TerminalTheme> {
-    let bg = value?
-        .split([';', ':', ','])
-        .filter_map(|part| part.trim().parse::<u8>().ok())
-        .next_back()?;
-
-    Some(match bg {
-        0..=6 | 8 => TerminalTheme::Dark,
-        _ => TerminalTheme::Light,
-    })
-}
-
-fn next_user_data_policy(config: &crate::types::Config) -> String {
-    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
-        "prompt" => "preserve".into(),
-        "preserve" => "discard".into(),
-        _ => "prompt".into(),
-    }
-}
-
-fn tui_theme_mode_label<'a>(mode: &str, lang: Lang) -> &'a str {
-    let is_zh = matches!(lang, Lang::Zh);
-    match mode.trim().to_ascii_lowercase().as_str() {
-        "light" => {
-            if is_zh {
-                "浅色"
-            } else {
-                "Light"
-            }
-        }
-        "dark" => {
-            if is_zh {
-                "深色"
-            } else {
-                "Dark"
-            }
-        }
-        _ => {
-            if is_zh {
-                "自动"
-            } else {
-                "Auto"
-            }
-        }
-    }
-}
-
-fn user_data_policy_label<'a>(policy: &str, lang: Lang) -> &'a str {
-    let is_zh = matches!(lang, Lang::Zh);
-    match policy.trim().to_ascii_lowercase().as_str() {
-        "preserve" => {
-            if is_zh {
-                "保留（直接保留 userdb/custom）"
-            } else {
-                "Preserve (keep userdb/custom)"
-            }
-        }
-        "discard" => {
-            if is_zh {
-                "不保留（允许覆盖学习数据）"
-            } else {
-                "Discard (allow overwrite)"
-            }
-        }
-        _ => {
-            if is_zh {
-                "提示用户（更新前询问）"
-            } else {
-                "Prompt (ask before update)"
-            }
-        }
-    }
-}
-
-fn update_notice_text<'a>(config: &crate::types::Config, t: &'a L10n) -> &'a str {
-    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
-        "discard" => t.t("update.discard_user_data_notice"),
-        _ => t.t("update.preserve_user_data_notice"),
-    }
-}
-
-fn update_detail_text<'a>(config: &crate::types::Config, t: &'a L10n) -> &'a str {
-    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
-        "discard" => t.t("update.discard_user_data_detail"),
-        _ => t.t("update.preserve_user_data_detail"),
-    }
-}
-
-fn user_data_policy_row_style(policy: &str) -> Style {
-    match policy.trim().to_ascii_lowercase().as_str() {
-        "discard" => Style::default()
-            .fg(color_warning())
-            .add_modifier(Modifier::BOLD),
-        _ => primary_text(),
-    }
-}
-
-fn effective_user_data_policy_label<'a>(config: &crate::types::Config, lang: Lang) -> &'a str {
-    let is_zh = matches!(lang, Lang::Zh);
-    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
-        "discard" => {
-            if is_zh {
-                "不保留（允许覆盖学习数据）"
-            } else {
-                "Discard (allow overwrite)"
-            }
-        }
-        "prompt" => {
-            if is_zh {
-                "保留（由提示确认）"
-            } else {
-                "Preserve (confirmed by prompt)"
-            }
-        }
-        _ => {
-            if is_zh {
-                "保留（直接保留 userdb/custom）"
-            } else {
-                "Preserve (keep userdb/custom)"
-            }
-        }
-    }
-}
-
-fn contrast_color(color: Color) -> Color {
-    match color {
-        Color::Rgb(r, g, b) => {
-            let luma = (299u32 * r as u32 + 587u32 * g as u32 + 114u32 * b as u32) / 1000;
-            if luma >= 140 {
-                Color::Black
-            } else {
-                Color::White
-            }
-        }
-        _ => Color::White,
-    }
-}
-
-fn next_tui_theme_mode(config: &crate::types::Config) -> String {
-    match config.tui_theme_mode.trim().to_ascii_lowercase().as_str() {
-        "auto" => "light".into(),
-        "light" => "dark".into(),
-        _ => "auto".into(),
     }
 }
 
@@ -3900,40 +2846,48 @@ mod tests {
     #[test]
     fn terminal_theme_detection_prefers_explicit_override() {
         assert_eq!(
-            detect_terminal_theme_from_env_values(Some("light"), Some("15;0")),
-            Some(TerminalTheme::Light)
+            crate::ui::style::detect_terminal_theme_from_env_values(Some("light"), Some("15;0")),
+            Some(crate::ui::style::TerminalTheme::Light)
         );
         assert_eq!(
-            detect_terminal_theme_from_env_values(Some("dark"), Some("0;15")),
-            Some(TerminalTheme::Dark)
+            crate::ui::style::detect_terminal_theme_from_env_values(Some("dark"), Some("0;15")),
+            Some(crate::ui::style::TerminalTheme::Dark)
         );
     }
 
     #[test]
     fn terminal_theme_detection_uses_colorfgbg_background() {
         assert_eq!(
-            detect_terminal_theme_from_env_values(None, Some("15;0")),
-            Some(TerminalTheme::Dark)
+            crate::ui::style::detect_terminal_theme_from_env_values(None, Some("15;0")),
+            Some(crate::ui::style::TerminalTheme::Dark)
         );
         assert_eq!(
-            detect_terminal_theme_from_env_values(None, Some("0;15")),
-            Some(TerminalTheme::Light)
+            crate::ui::style::detect_terminal_theme_from_env_values(None, Some("0;15")),
+            Some(crate::ui::style::TerminalTheme::Light)
         );
         assert_eq!(
-            detect_terminal_theme_from_env_values(None, Some("default;default")),
+            crate::ui::style::detect_terminal_theme_from_env_values(None, Some("default;default")),
             None
         );
     }
 
     #[test]
     fn palette_switches_to_dark_text_for_light_terminals() {
-        let light = UiPalette::for_theme(TerminalTheme::Light);
-        let dark = UiPalette::for_theme(TerminalTheme::Dark);
+        let light = crate::ui::style::UiPalette::for_theme(crate::ui::style::TerminalTheme::Light);
+        let dark = crate::ui::style::UiPalette::for_theme(crate::ui::style::TerminalTheme::Dark);
 
-        assert_eq!(light.primary, Color::Rgb(28, 28, 30));
-        assert_eq!(dark.primary, Color::Rgb(245, 245, 247));
-        assert_eq!(contrast_color(light.selection_bg), Color::Black);
-        assert_eq!(contrast_color(dark.selection_bg), Color::White);
+        assert_eq!(light.primary, ratatui::style::Color::Rgb(5, 5, 5));
+        assert_eq!(dark.primary, ratatui::style::Color::Rgb(234, 234, 234));
+        assert_eq!(light.accent, ratatui::style::Color::Rgb(230, 25, 25));
+        assert_eq!(dark.accent, ratatui::style::Color::Rgb(230, 25, 25));
+        assert_eq!(
+            crate::ui::style::contrast_color(light.selection_bg),
+            ratatui::style::Color::Black
+        );
+        assert_eq!(
+            crate::ui::style::contrast_color(dark.selection_bg),
+            ratatui::style::Color::White
+        );
     }
 
     #[test]
@@ -3944,6 +2898,14 @@ mod tests {
         assert_eq!(next_tui_theme_mode(&config), "dark");
         config.tui_theme_mode = "dark".into();
         assert_eq!(next_tui_theme_mode(&config), "auto");
+    }
+
+    #[test]
+    fn framed_title_and_selector_tokens_match_tactical_telemetry_style() {
+        assert_eq!(crate::ui::style::framed_title("STATUS"), "[ STATUS ]");
+        assert_eq!(selector_highlight_symbol(), ">>> ");
+        assert_eq!(crate::ui::style::selector_prefix(true), ">>> ");
+        assert_eq!(crate::ui::style::selector_prefix(false), " ·  ");
     }
 
     #[test]

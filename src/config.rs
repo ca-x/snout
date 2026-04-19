@@ -885,8 +885,10 @@ mod tests {
         std::fs::write(rime_dir.join("wanxiang.schema.yaml"), "").expect("write base schema");
         std::fs::write(rime_dir.join("wanxiang_pro.schema.yaml"), "").expect("write pro schema");
 
-        let mut config = Config::default();
-        config.schema = Schema::WanxiangMoqi;
+        let config = Config {
+            schema: Schema::WanxiangMoqi,
+            ..Config::default()
+        };
 
         let schema = detect_authoritative_schema(&config, &cache_dir, &rime_dir);
 
