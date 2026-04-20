@@ -2878,8 +2878,8 @@ mod tests {
 
         assert_eq!(light.primary, ratatui::style::Color::Rgb(5, 5, 5));
         assert_eq!(dark.primary, ratatui::style::Color::Rgb(234, 234, 234));
-        assert_eq!(light.accent, ratatui::style::Color::Rgb(230, 25, 25));
-        assert_eq!(dark.accent, ratatui::style::Color::Rgb(230, 25, 25));
+        assert_eq!(light.accent, ratatui::style::Color::Rgb(176, 110, 12));
+        assert_eq!(dark.accent, ratatui::style::Color::Rgb(224, 163, 46));
         assert_eq!(
             crate::ui::style::contrast_color(light.selection_bg),
             ratatui::style::Color::Black

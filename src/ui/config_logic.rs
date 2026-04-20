@@ -242,7 +242,7 @@ fn local_status_text(
 fn candidate_page_size_text(rime_dir: &std::path::Path, schema: Schema, t: &L10n) -> String {
     match crate::custom::candidate_page_size(rime_dir, schema) {
         Ok(Some(size)) => size.to_string(),
-        Ok(None) => t.t("config.default").into(),
+        Ok(None) => t.t("config.default_value").into(),
         Err(_) => t.t("config.unknown").into(),
     }
 }

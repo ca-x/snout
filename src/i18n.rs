@@ -754,6 +754,14 @@ impl L10n {
         en.insert("config.sync_link", "Symlink");
         zh.insert("config.sync_copy", "复制");
         en.insert("config.sync_copy", "Copy");
+        zh.insert("config.installed", "已安装");
+        en.insert("config.installed", "Installed");
+        zh.insert("config.not_installed", "未安装");
+        en.insert("config.not_installed", "Not installed");
+        zh.insert("config.update_available", "可更新");
+        en.insert("config.update_available", "Update available");
+        zh.insert("config.proxy_address_label", "代理地址");
+        en.insert("config.proxy_address_label", "Proxy address");
         zh.insert("config.default_value", "默认");
         en.insert("config.default_value", "Default");
         zh.insert("config.latest", "最新");
@@ -866,5 +874,58 @@ impl L10n {
     #[allow(dead_code)]
     pub fn lang(&self) -> Lang {
         self.lang
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn all_i18n_keys_used_in_source_are_defined() {
+        let source_files = [
+            "src/main.rs",
+            "src/api/mod.rs",
+            "src/api/releases.rs",
+            "src/updater/base.rs",
+            "src/updater/frost.rs",
+            "src/updater/ice.rs",
+            "src/updater/mint.rs",
+            "src/updater/model_patch.rs",
+            "src/updater/wanxiang.rs",
+            "src/ui/app.rs",
+            "src/ui/config_logic.rs",
+            "src/ui/config_view.rs",
+            "src/ui/update_view.rs",
+        ];
+
+        let mut used = BTreeSet::new();
+        for path in source_files {
+            let text = std::fs::read_to_string(path).expect("read source");
+            let mut start = 0usize;
+            while let Some(idx) = text[start..].find("t.t(\"") {
+                let absolute = start + idx + 5;
+                if let Some(end) = text[absolute..].find("\")") {
+                    used.insert(text[absolute..absolute + end].to_string());
+                    start = absolute + end + 2;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let zh = L10n::new(Lang::Zh);
+        let en = L10n::new(Lang::En);
+        let missing: Vec<String> = used
+            .into_iter()
+            .filter(|key| zh.t(key) == key || en.t(key) == key)
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "missing i18n keys: {}",
+            missing.join(", ")
+        );
     }
 }
