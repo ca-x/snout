@@ -324,11 +324,8 @@ fn skin_menu_target(app: &App) -> Option<SkinMenuTarget> {
         .map(SkinMenuTarget::ThemePatch)
 }
 
-fn resolve_update_context(
-    app: &App,
-    manager: &Manager,
-    mode: &UpdateMode,
-) -> anyhow::Result<ResolvedUpdateContext> {
+fn resolve_update_context(app: &App, mode: &UpdateMode) -> anyhow::Result<ResolvedUpdateContext> {
+    let manager = Manager::new()?;
     let schema = app.schema;
     if matches!(mode, UpdateMode::Model) && !model_update_supported(schema) {
         anyhow::bail!("{}", app.t.t("update.model_not_supported"));
@@ -417,12 +414,10 @@ async fn run_app(
                     continue;
                 }
                 match app.screen {
-                    AppScreen::Menu => handle_menu_key(app, key.code, manager).await?,
+                    AppScreen::Menu => handle_menu_key(app, key.code).await?,
                     AppScreen::Updating => handle_updating_key(app, key.code),
                     AppScreen::Result => handle_result_key(app, key.code),
-                    AppScreen::UpdateConfirm => {
-                        handle_update_confirm_key(app, key.code, manager).await?
-                    }
+                    AppScreen::UpdateConfirm => handle_update_confirm_key(app, key.code).await?,
                     AppScreen::UserDataPolicyConfirm => {
                         handle_user_data_policy_confirm_key(app, key.code)?
                     }
@@ -469,7 +464,7 @@ async fn run_app(
 
 // ── 按键处理 ──
 
-async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<()> {
+async fn handle_menu_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
             app.menu_selected = app.menu_selected.saturating_sub(1);
@@ -487,10 +482,10 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
                 return Ok(());
             }
             match idx {
-                1 => begin_update_flow(app, manager, UpdateMode::All).await?,
-                2 => begin_update_flow(app, manager, UpdateMode::Scheme).await?,
-                3 => start_update(app, manager, UpdateMode::Dict).await?,
-                4 => start_update(app, manager, UpdateMode::Model).await?,
+                1 => begin_update_flow(app, UpdateMode::All).await?,
+                2 => begin_update_flow(app, UpdateMode::Scheme).await?,
+                3 => start_update(app, UpdateMode::Dict).await?,
+                4 => start_update(app, UpdateMode::Model).await?,
                 5 => {
                     // Model patch toggle
                     app.screen = AppScreen::Result;
@@ -569,11 +564,11 @@ async fn handle_menu_key(app: &mut App, key: KeyCode, manager: &Manager) -> Resu
     Ok(())
 }
 
-async fn handle_update_confirm_key(app: &mut App, key: KeyCode, manager: &Manager) -> Result<()> {
+async fn handle_update_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
         KeyCode::Enter => {
             if let Some(mode) = app.pending_update_mode.take() {
-                start_update(app, manager, mode).await?;
+                start_update(app, mode).await?;
             } else {
                 app.screen = AppScreen::Menu;
             }
@@ -609,15 +604,12 @@ fn handle_user_data_policy_confirm_key(app: &mut App, key: KeyCode) -> Result<()
     Ok(())
 }
 
-async fn begin_update_flow(app: &mut App, manager: &Manager, mode: UpdateMode) -> Result<()> {
-    match manager
-        .config
-        .user_data_policy
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "preserve" | "discard" => start_update(app, manager, mode).await,
+async fn begin_update_flow(app: &mut App, mode: UpdateMode) -> Result<()> {
+    let config = Manager::new()
+        .map(|manager| manager.config)
+        .unwrap_or_default();
+    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
+        "preserve" | "discard" => start_update(app, mode).await,
         _ => {
             app.pending_update_mode = Some(mode);
             app.screen = AppScreen::UpdateConfirm;
@@ -1366,7 +1358,7 @@ fn available_skin_choices(app: &App) -> Vec<(String, String)> {
 
 // ── 更新调度 ──
 
-async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Result<()> {
+async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
     app.screen = AppScreen::Updating;
     app.update_msg = app.t.t("update.checking").into();
     app.update_pct = 0.0;
@@ -1377,10 +1369,7 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
     app.update_stage_lines.clear();
     app.update_task = None;
     app.cancel_signal = None;
-    app.update_user_data_policy_summary =
-        Some(effective_user_data_policy_label(&manager.config, app.t.lang()).to_string());
-
-    let context = match resolve_update_context(app, manager, &mode) {
+    let context = match resolve_update_context(app, &mode) {
         Ok(context) => context,
         Err(e) => {
             app.update_results.push(format!("❌ {}", e));
@@ -1393,6 +1382,8 @@ async fn start_update(app: &mut App, manager: &Manager, mode: UpdateMode) -> Res
             return Ok(());
         }
     };
+    app.update_user_data_policy_summary =
+        Some(effective_user_data_policy_label(&context.config, app.t.lang()).to_string());
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -2814,7 +2805,7 @@ mod tests {
         let mut app = App::new(&manager);
         app.menu_selected = app.menu_items().len() - 1;
 
-        handle_menu_key(&mut app, KeyCode::Enter, &manager)
+        handle_menu_key(&mut app, KeyCode::Enter)
             .await
             .expect("menu key");
 
@@ -2927,6 +2918,25 @@ mod tests {
         config.schema = Schema::Ice;
         let actions = config_actions(&config);
         assert!(!actions.contains(&ConfigAction::WanxiangDiagnosis));
+    }
+
+    #[test]
+    fn resolve_update_context_reloads_latest_saved_config() {
+        let manager = Manager::new().expect("manager");
+        let original = manager.config.model_patch_enabled;
+        let mut app = App::new(&manager);
+        app.schema = manager.config.schema;
+
+        let mut updated = Manager::new().expect("reload manager");
+        updated.config.model_patch_enabled = !original;
+        updated.save().expect("save updated config");
+
+        let context = resolve_update_context(&app, &UpdateMode::All).expect("update context");
+        assert_eq!(context.config.model_patch_enabled, !original);
+
+        let mut restore = Manager::new().expect("restore manager");
+        restore.config.model_patch_enabled = original;
+        restore.save().expect("restore config");
     }
 
     fn buffer_to_string(backend: &TestBackend) -> String {
