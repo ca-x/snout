@@ -1268,17 +1268,15 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
             app.config_input_value.clear();
             app.screen = AppScreen::ConfigInput;
         }
-        KeyCode::Char('d') => {
-            if app.exclude_selected < patterns.len() {
-                if let Ok(mut manager) = Manager::new() {
-                    if let Err(err) = manager.remove_exclude_pattern(app.exclude_selected) {
-                        app.notify(format!("❌ {err}"));
-                    } else {
-                        app.notify(app.t.t("config.saved").to_string());
-                        app.exclude_selected = app
-                            .exclude_selected
-                            .min(manager.config.exclude_files.len().saturating_sub(1));
-                    }
+        KeyCode::Char('d') if app.exclude_selected < patterns.len() => {
+            if let Ok(mut manager) = Manager::new() {
+                if let Err(err) = manager.remove_exclude_pattern(app.exclude_selected) {
+                    app.notify(format!("❌ {err}"));
+                } else {
+                    app.notify(app.t.t("config.saved").to_string());
+                    app.exclude_selected = app
+                        .exclude_selected
+                        .min(manager.config.exclude_files.len().saturating_sub(1));
                 }
             }
         }
