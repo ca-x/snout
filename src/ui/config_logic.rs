@@ -30,17 +30,18 @@ pub(crate) enum ConfigAction {
     ProxyAddress,
     ModelPatch,
     CandidatePageSize,
+    RimeAutoSetup,
     EngineSync,
     SyncStrategy,
     Refresh,
 }
 
 pub(crate) fn config_actions(config: &crate::types::Config) -> Vec<ConfigAction> {
-    let mut actions = vec![
-        ConfigAction::TuiTheme,
-        ConfigAction::UserDataPolicy,
-        ConfigAction::ExcludeRules,
-    ];
+    let mut actions = vec![ConfigAction::TuiTheme];
+    if cfg!(target_os = "linux") {
+        actions.push(ConfigAction::RimeAutoSetup);
+    }
+    actions.extend([ConfigAction::UserDataPolicy, ConfigAction::ExcludeRules]);
     if config.schema.is_wanxiang() {
         actions.push(ConfigAction::WanxiangDiagnosis);
     }

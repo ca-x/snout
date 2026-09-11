@@ -300,11 +300,12 @@ pub struct Config {
     pub auto_update_countdown: i32,
     pub pre_update_hook: String,
     pub post_update_hook: String,
-    pub language: String,           // "zh" | "en"
-    pub engine_sync_enabled: bool,  // 是否同步到其他已安装引擎目录
-    pub engine_sync_use_link: bool, // 使用软链接还是复制
-    pub model_patch_enabled: bool,  // 是否自动 patch 模型
-    pub skin_patch_key: String,     // 内置皮肤 key, 为空表示不 patch
+    pub language: String,              // "zh" | "en"
+    pub rime_auto_setup: Option<bool>, // None: 尚未询问；仅 Some(true) 自动检查/添加
+    pub engine_sync_enabled: bool,     // 是否同步到其他已安装引擎目录
+    pub engine_sync_use_link: bool,    // 使用软链接还是复制
+    pub model_patch_enabled: bool,     // 是否自动 patch 模型
+    pub skin_patch_key: String,        // 内置皮肤 key, 为空表示不 patch
 }
 
 impl Default for Config {
@@ -325,6 +326,7 @@ impl Default for Config {
             pre_update_hook: String::new(),
             post_update_hook: String::new(),
             language: "zh".into(),
+            rime_auto_setup: None,
             engine_sync_enabled: false,
             engine_sync_use_link: true,
             model_patch_enabled: false,
@@ -571,6 +573,22 @@ mod tests {
         assert!(!config.proxy_enabled);
         assert!(!config.model_patch_enabled);
         assert_eq!(config.language, "zh");
+    }
+
+    #[test]
+    fn rime_auto_setup_requires_explicit_opt_in_and_round_trips() {
+        let legacy: Config = serde_json::from_str(r#"{"engine_sync_enabled": true}"#).unwrap();
+        assert_eq!(legacy.rime_auto_setup, None);
+        assert!(legacy.engine_sync_enabled);
+        for choice in [None, Some(false), Some(true)] {
+            let config = Config {
+                rime_auto_setup: choice,
+                ..Config::default()
+            };
+            let restored: Config =
+                serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+            assert_eq!(restored.rime_auto_setup, choice);
+        }
     }
 
     #[test]

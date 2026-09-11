@@ -257,36 +257,8 @@ pub async fn update_all(
         ));
     }
 
-    // Register Rime for both the setup wizard and CLI/TUI full updates.
-    #[cfg(target_os = "linux")]
-    if crate::deployer::detect_engines()
-        .iter()
-        .any(|e| e == "fcitx5")
-    {
-        cancel.checkpoint()?;
-        emit(UpdateEvent {
-            component: UpdateComponent::Deploy,
-            phase: UpdatePhase::Applying,
-            progress: 0.94,
-            detail: t.t("fcitx5.setup.configuring").into(),
-        });
-        let component = t.t("fcitx5.setup.component");
-        match crate::deployer::fcitx5::ensure_rime(t.lang()).await {
-            Ok(added) => {
-                let message = t.t(if added {
-                    "fcitx5.setup.added"
-                } else {
-                    "fcitx5.setup.already_added"
-                });
-                crate::feedback::info(message);
-                results.push(BaseUpdater::success_result(component, "-", "-", message));
-            }
-            Err(error) => {
-                let message = format!("{}: {error:#}", t.t("fcitx5.setup.failed"));
-                crate::feedback::warn(&message);
-                results.push(BaseUpdater::error_result(component, &message));
-            }
-        }
+    if let Some(result) = setup_rime(config, &cancel, &mut emit).await? {
+        results.push(result);
     }
 
     // 4. 多引擎同步 (Linux/macOS/windows: 仅在检测到多个引擎时执行)
@@ -340,4 +312,110 @@ pub async fn update_all(
         detail: t.t("update.complete").into(),
     });
     Ok(results)
+}
+
+/// Only an explicit opt-in may access the session bus or change input method groups.
+pub async fn setup_rime(
+    config: &Config,
+    cancel: &CancelSignal,
+    mut progress: impl FnMut(UpdateEvent),
+) -> Result<Option<UpdateResult>> {
+    if config.rime_auto_setup != Some(true) {
+        return Ok(None);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        cancel.checkpoint()?;
+        let t = L10n::new(Lang::from_str(&config.language));
+        progress(UpdateEvent {
+            component: UpdateComponent::Deploy,
+            phase: UpdatePhase::Applying,
+            progress: 0.94,
+            detail: t.t("fcitx5.setup.configuring").into(),
+        });
+        let component = t.t("fcitx5.setup.component");
+        let result = match crate::deployer::fcitx5::ensure_rime(t.lang()).await {
+            Ok(added) => {
+                let message = t.t(if added {
+                    "fcitx5.setup.added"
+                } else {
+                    "fcitx5.setup.already_added"
+                });
+                crate::feedback::info(message);
+                BaseUpdater::success_result(component, "-", "-", message)
+            }
+            Err(error) => {
+                let message = format!("{}: {error:#}", t.t("fcitx5.setup.failed"));
+                crate::feedback::warn(&message);
+                BaseUpdater::error_result(component, &message)
+            }
+        };
+        Ok(Some(result))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (cancel, &mut progress);
+        Ok(None)
+    }
+}
+
+pub fn should_prompt_rime_setup(config: &Config) -> bool {
+    config.rime_auto_setup.is_none()
+        && cfg!(target_os = "linux")
+        && crate::deployer::detect_engines()
+            .iter()
+            .any(|engine| engine == "fcitx5")
+}
+
+#[cfg(test)]
+mod rime_setup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_or_undecided_setup_skips_all_work() {
+        for choice in [None, Some(false)] {
+            let config = Config {
+                rime_auto_setup: choice,
+                ..Config::default()
+            };
+            let cancel = CancelSignal::new();
+            cancel.cancel();
+            let started = std::time::Instant::now();
+            let result = setup_rime(&config, &cancel, |_| {
+                panic!("disabled setup emitted progress")
+            })
+            .await
+            .unwrap();
+            eprintln!("Disabled Rime setup ({choice:?}): {:?}", started.elapsed());
+            assert!(result.is_none());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn enabled_setup_respects_cancellation_before_accessing_bus() {
+        let config = Config {
+            rime_auto_setup: Some(true),
+            ..Config::default()
+        };
+        let cancel = CancelSignal::new();
+        cancel.cancel();
+        assert!(setup_rime(&config, &cancel, |_| panic!(
+            "cancelled setup emitted progress"
+        ))
+        .await
+        .unwrap_err()
+        .is::<UpdateCancelled>());
+    }
+
+    #[test]
+    fn saved_choice_never_prompts_again() {
+        for choice in [Some(false), Some(true)] {
+            let config = Config {
+                rime_auto_setup: choice,
+                ..Config::default()
+            };
+            assert!(!should_prompt_rime_setup(&config));
+        }
+    }
 }

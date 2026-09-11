@@ -62,8 +62,11 @@ snout --init
 
 引导选择方案、词库，自动下载并部署。
 
-Linux 使用 Fcitx5 时，初始化和一键更新（`snout --update` 或 TUI 中的“一键更新”）
-会自动将 Rime 添加到当前输入法组并保存，保留已有输入法、顺序和键盘布局，重复运行不会重复添加。
+Linux 使用 Fcitx5 时，首次通过 `snout --init` 或 TUI 一键更新成功安装后，
+会询问是否启用“自动检查并添加 Rime”，默认关闭。选择启用后立即添加，
+并在后续一键更新（`snout --update` 或 TUI）结束后检查；关闭时跳过此步骤，减少等待。
+可以随时在 TUI 设置中更改。已有配置未设置该选项时也默认关闭，在下一次交互式安装成功后询问。
+自动添加会保留当前输入法组中已有的输入法、顺序和键盘布局，重复运行不会重复添加。
 添加后可通过 Fcitx5 输入法快捷键切换到 Rime，更新不会主动切换当前输入法。
 需先安装 `fcitx5-rime` 并在当前桌面会话中启动 Fcitx5；未满足条件时会显示原因和重试方法。
 此步骤不安装软件包，也不设置桌面输入法框架或自启动。
@@ -204,12 +207,15 @@ snout --lang en --update
   "exclude_files": [".DS_Store", ".git"],
   "auto_update": false,
   "language": "zh",
+  "rime_auto_setup": null,
   "engine_sync_enabled": false,
   "engine_sync_use_link": true,
   "model_patch_enabled": false,
   "skin_patch_key": ""
 }
 ```
+
+`rime_auto_setup` 为 `true` 时自动检查并添加 Rime，`false` 时跳过；`null` 表示尚未选择，询问前也不会执行。
 
 ## 架构
 
@@ -283,9 +289,13 @@ A Rime input method initialization & update tool. Rust rewrite of [rime-wanxiang
 - 🔌 **Proxy**: SOCKS5 / HTTP support
 - ⚡ **Cross-platform**: Windows / macOS / Linux
 
-On Linux with Fcitx5, setup (`snout --init`) and full updates (`snout --update` or the TUI)
-automatically add Rime to the current input method group and save it, preserving existing
-input methods, their order and keyboard layouts. Repeated runs do not add duplicates or
+On Linux with Fcitx5, the first successful setup (`snout --init` or a TUI full update) asks
+whether to enable automatic Rime checks and setup, defaulting to disabled. Enabling adds
+Rime immediately and checks again after subsequent full updates (`snout --update` or the TUI).
+Disabling skips this step to avoid waiting. Change the preference in TUI Settings at any time.
+Existing configurations without a choice also default to disabled and prompt after the next
+successful interactive setup. Automatic setup preserves existing input methods, their order
+and keyboard layouts in the current group. Repeated runs do not add duplicates or
 explicitly switch the active input method. Use your Fcitx5 shortcut to switch to Rime.
 Install `fcitx5-rime` and start Fcitx5 in your desktop session first; setup reports missing
 prerequisites with retry instructions. It does not install packages or configure the desktop

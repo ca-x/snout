@@ -123,6 +123,16 @@ pub(crate) fn build_config_view_data<'a>(
             format!("{}: ", t.t("config.tui_theme_label")),
             tui_theme_mode_label(&state.config.tui_theme_mode, state.lang).to_string(),
         ),
+        if cfg!(target_os = "linux") {
+            action_line(
+                state.selected_index
+                    == config_action_index(&actions, ConfigAction::RimeAutoSetup, usize::MAX),
+                format!("{}: ", t.t("config.rime_auto_setup")),
+                config_enabled_label(state.config.rime_auto_setup == Some(true), t),
+            )
+        } else {
+            Line::from("")
+        },
         action_line(
             state.selected_index == config_action_index(&actions, ConfigAction::UserDataPolicy, 1),
             format!("{}: ", t.t("config.user_data_policy_label")),

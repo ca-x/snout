@@ -40,6 +40,7 @@ pub enum AppScreen {
     Result,
     UpdateConfirm,
     UserDataPolicyConfirm,
+    RimeSetupPrompt,
     SchemeSelector,
     SkinSelector,
     ThemePatchPresetSelector,
@@ -77,6 +78,7 @@ pub struct App {
     pub update_stage_lines: Vec<String>,
     update_outcome: Option<UpdateOutcome>,
     update_in_progress: bool,
+    offer_rime_setup: bool,
     progress_rx: Option<mpsc::Receiver<UpdateEvent>>,
     result_rx: Option<mpsc::Receiver<UpdateTaskResult>>,
     update_task: Option<JoinHandle<()>>,
@@ -105,6 +107,7 @@ enum UpdateTaskError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UpdateMode {
     All,
+    RimeSetup,
     Scheme,
     Dict,
     Model,
@@ -177,6 +180,7 @@ impl App {
             update_stage_lines: Vec::new(),
             update_outcome: None,
             update_in_progress: false,
+            offer_rime_setup: false,
             progress_rx: None,
             result_rx: None,
             update_task: None,
@@ -244,6 +248,7 @@ impl App {
                 self.t.t("hint.confirm"),
                 self.t.t("hint.back")
             ),
+            AppScreen::RimeSetupPrompt => self.t.t("rime.setup.hint").into(),
             AppScreen::Result => format!("Enter/Esc {}", self.t.t("hint.back")),
             AppScreen::SchemeSelector
             | AppScreen::SkinSelector
@@ -417,6 +422,7 @@ async fn run_app(
                     AppScreen::Menu => handle_menu_key(app, key.code).await?,
                     AppScreen::Updating => handle_updating_key(app, key.code),
                     AppScreen::Result => handle_result_key(app, key.code),
+                    AppScreen::RimeSetupPrompt => handle_rime_setup_key(app, key.code).await?,
                     AppScreen::UpdateConfirm => handle_update_confirm_key(app, key.code).await?,
                     AppScreen::UserDataPolicyConfirm => {
                         handle_user_data_policy_confirm_key(app, key.code)?
@@ -634,6 +640,34 @@ fn handle_result_key(app: &mut App, key: KeyCode) {
         }
         _ => {}
     }
+}
+
+async fn handle_rime_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
+    let enabled = match key {
+        KeyCode::Char('y' | 'Y') => true,
+        KeyCode::Char('n' | 'N') | KeyCode::Enter => false,
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.screen = AppScreen::Result;
+            return Ok(());
+        }
+        _ => return Ok(()),
+    };
+    let save = (|| -> Result<()> {
+        let mut manager = Manager::new()?;
+        manager.config.rime_auto_setup = Some(enabled);
+        manager.save()
+    })();
+    if let Err(error) = save {
+        app.notify(format!("❌ {error}"));
+        return Ok(());
+    }
+    app.offer_rime_setup = false;
+    if enabled {
+        start_update(app, UpdateMode::RimeSetup).await?;
+    } else {
+        app.screen = AppScreen::Result;
+    }
+    Ok(())
 }
 
 fn set_model_patch_enabled(
@@ -1160,6 +1194,10 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                         app.screen = AppScreen::ConfigInput;
                         return;
                     }
+                    ConfigAction::RimeAutoSetup => {
+                        manager.config.rime_auto_setup =
+                            Some(manager.config.rime_auto_setup != Some(true));
+                    }
                     ConfigAction::EngineSync => {
                         manager.config.engine_sync_enabled = !manager.config.engine_sync_enabled
                     }
@@ -1168,7 +1206,10 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     }
                     ConfigAction::Refresh => {}
                 }
-                let _ = manager.save();
+                if let Err(error) = manager.save() {
+                    app.notify(format!("❌ {error}"));
+                    return;
+                }
                 if matches!(
                     actions
                         .get(app.config_selected)
@@ -1425,8 +1466,13 @@ async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
             return Ok(());
         }
     };
-    app.update_user_data_policy_summary =
-        Some(effective_user_data_policy_label(&context.config, app.t.lang()).to_string());
+    app.offer_rime_setup =
+        matches!(mode, UpdateMode::All) && updater::should_prompt_rime_setup(&context.config);
+    app.update_user_data_policy_summary = if matches!(mode, UpdateMode::RimeSetup) {
+        None
+    } else {
+        Some(effective_user_data_policy_label(&context.config, app.t.lang()).to_string())
+    };
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -1465,6 +1511,10 @@ async fn run_update_task(
 ) -> Result<Vec<updater::UpdateResult>> {
     let t = L10n::new(lang);
     match mode {
+        UpdateMode::RimeSetup => Ok(updater::setup_rime(&context.config, &cancel, &mut progress)
+            .await?
+            .into_iter()
+            .collect()),
         UpdateMode::All => {
             updater::update_all(
                 &context.schema,
@@ -1637,7 +1687,12 @@ fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, Upda
     app.update_pct = 1.0;
     app.update_done = true;
     app.update_in_progress = false;
-    app.screen = AppScreen::Result;
+    app.screen = if app.offer_rime_setup && app.update_outcome == Some(UpdateOutcome::Success) {
+        AppScreen::RimeSetupPrompt
+    } else {
+        AppScreen::Result
+    };
+    app.offer_rime_setup = false;
     app.progress_rx = None;
     app.result_rx = None;
     app.update_task = None;
@@ -1758,7 +1813,7 @@ fn ui(f: &mut Frame, app: &App) {
                 update_stage_lines: &app.update_stage_lines,
             },
         ),
-        AppScreen::Result => crate::ui::update_view::render_result(
+        AppScreen::Result | AppScreen::RimeSetupPrompt => crate::ui::update_view::render_result(
             f,
             chunks[1],
             &app.t,
@@ -1819,6 +1874,23 @@ fn ui(f: &mut Frame, app: &App) {
 
     if matches!(app.screen, AppScreen::UserDataPolicyConfirm) {
         render_user_data_policy_confirmation_popup(f, size, app);
+    }
+
+    if matches!(app.screen, AppScreen::RimeSetupPrompt) {
+        let popup_area = centered_rect(
+            size.width.saturating_sub(4).min(76),
+            size.height.saturating_sub(4).min(10),
+            size,
+        );
+        f.render_widget(Clear, popup_area);
+        let popup = Paragraph::new(vec![
+            Line::from(app.t.t("rime.setup.detail")),
+            Line::from(""),
+            Line::from(app.t.t("rime.setup.hint")),
+        ])
+        .wrap(Wrap { trim: true })
+        .block(panel_block(app.t.t("rime.setup.prompt")));
+        f.render_widget(popup, popup_area);
     }
 
     // Footer
@@ -1934,9 +2006,10 @@ fn current_screen_label(app: &App) -> &str {
             .get(app.menu_selected)
             .map(|(_, label)| *label)
             .unwrap_or_else(|| app.t.t("menu.title")),
-        AppScreen::Updating | AppScreen::Result | AppScreen::UpdateConfirm => {
-            app.t.t("menu.update_all")
-        }
+        AppScreen::Updating
+        | AppScreen::Result
+        | AppScreen::RimeSetupPrompt
+        | AppScreen::UpdateConfirm => app.t.t("menu.update_all"),
         AppScreen::UserDataPolicyConfirm => app.t.t("menu.config"),
         AppScreen::ExcludeRules | AppScreen::WanxiangDiagnosis => app.t.t("menu.config"),
         AppScreen::SchemeSelector => app.t.t("menu.switch_scheme"),
@@ -2024,6 +2097,7 @@ fn render_update_confirmation_popup(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, popup_area);
 
     let title = match mode {
+        UpdateMode::RimeSetup => app.t.t("rime.setup.prompt"),
         UpdateMode::All => app.t.t("update.confirm_all_title"),
         UpdateMode::Scheme => app.t.t("update.confirm_scheme_title"),
         UpdateMode::Dict => app.t.t("update.confirm_dict_title"),
@@ -2766,6 +2840,85 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    #[tokio::test]
+    async fn rime_setup_prompt_only_follows_successful_eligible_install() {
+        let manager = Manager::new().expect("manager");
+        for (eligible, results, expect_prompt) in [
+            (
+                true,
+                Ok(vec![updater::BaseUpdater::success_result(
+                    "scheme",
+                    "-",
+                    "v1",
+                    "installed",
+                )]),
+                true,
+            ),
+            (
+                false,
+                Ok(vec![updater::BaseUpdater::success_result(
+                    "scheme",
+                    "-",
+                    "v1",
+                    "installed",
+                )]),
+                false,
+            ),
+            (
+                true,
+                Ok(vec![updater::BaseUpdater::error_result("scheme", "failed")]),
+                false,
+            ),
+            (true, Err(UpdateTaskError::Cancelled), false),
+        ] {
+            let mut app = App::new(&manager);
+            app.offer_rime_setup = eligible;
+            finish_update(&mut app, results);
+            assert_eq!(
+                matches!(app.screen, AppScreen::RimeSetupPrompt),
+                expect_prompt
+            );
+            if expect_prompt {
+                for lang in [Lang::Zh, Lang::En] {
+                    app.t = L10n::new(lang);
+                    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                    terminal.draw(|f| ui(f, &app)).unwrap();
+                    let rendered = buffer_to_string(terminal.backend());
+                    assert!(
+                        rendered.contains(app.t.t("rime.setup.prompt")),
+                        "{lang:?}: {rendered}"
+                    );
+                    assert!(rendered.contains(app.t.t("rime.setup.hint")));
+                }
+                handle_rime_setup_key(&mut app, KeyCode::Esc).await.unwrap();
+                assert!(matches!(app.screen, AppScreen::Result));
+                assert!(!app.update_results.is_empty());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rime_setup_setting_is_visible_in_small_terminal() {
+        let manager = Manager::new().unwrap();
+        let mut app = App::new(&manager);
+        app.screen = AppScreen::ConfigView;
+        app.config_selected = config_actions(&manager.config)
+            .iter()
+            .position(|action| *action == ConfigAction::RimeAutoSetup)
+            .unwrap();
+        for lang in [Lang::Zh, Lang::En] {
+            app.t = L10n::new(lang);
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            terminal.draw(|f| ui(f, &app)).unwrap();
+            let rendered = buffer_to_string(terminal.backend());
+            assert!(
+                rendered.contains(app.t.t("config.rime_auto_setup")),
+                "{lang:?}: {rendered}"
+            );
+        }
+    }
+
     #[test]
     fn model_update_supported_for_all_supported_schemas() {
         assert!(model_update_supported(Schema::WanxiangBase));
@@ -3031,12 +3184,16 @@ mod tests {
     }
 
     fn buffer_to_string(backend: &TestBackend) -> String {
-        backend
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<Vec<_>>()
-            .join("")
+        let mut text = String::new();
+        let mut continuation_cells = 0;
+        for cell in backend.buffer().content() {
+            if continuation_cells > 0 {
+                continuation_cells -= 1;
+                continue;
+            }
+            text.push_str(cell.symbol());
+            continuation_cells = Span::raw(cell.symbol()).width().saturating_sub(1);
+        }
+        text
     }
 }

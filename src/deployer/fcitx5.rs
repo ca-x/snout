@@ -29,6 +29,14 @@ async fn ensure_rime_with_connection(connection: &Connection, t: &L10n) -> Resul
         t.t("fcitx5.setup.not_running")
     );
     let proxy = ControllerProxy::new(connection).await?;
+
+    let group = proxy.current_input_method_group().await?;
+    ensure!(!group.is_empty(), "{}", t.t("fcitx5.setup.no_group"));
+    let (layout, mut entries) = proxy.input_method_group_info(&group).await?;
+    if entries.iter().any(|(name, _)| name == "rime") {
+        return Ok(false);
+    }
+
     ensure!(
         proxy
             .available_input_methods()
@@ -38,13 +46,6 @@ async fn ensure_rime_with_connection(connection: &Connection, t: &L10n) -> Resul
         "{}",
         t.t("fcitx5.setup.rime_missing")
     );
-
-    let group = proxy.current_input_method_group().await?;
-    ensure!(!group.is_empty(), "{}", t.t("fcitx5.setup.no_group"));
-    let (layout, mut entries) = proxy.input_method_group_info(&group).await?;
-    if entries.iter().any(|(name, _)| name == "rime") {
-        return Ok(false);
-    }
 
     entries.push(("rime".into(), String::new()));
     let entries: Vec<_> = entries
@@ -135,6 +136,8 @@ mod tests {
         current: String,
         groups: HashMap<String, Group>,
         rime_available: bool,
+        available_queries: usize,
+        available_delay: Duration,
         reject_write: bool,
         ignore_write: bool,
         writes: usize,
@@ -161,6 +164,8 @@ mod tests {
                     ),
                 ]),
                 rime_available: true,
+                available_queries: 0,
+                available_delay: Duration::ZERO,
                 reject_write: false,
                 ignore_write: false,
                 writes: 0,
@@ -172,7 +177,13 @@ mod tests {
 
     #[zbus::interface(name = "org.fcitx.Fcitx.Controller1")]
     impl Controller {
-        fn available_input_methods(&self) -> Vec<AvailableMethod> {
+        async fn available_input_methods(&self) -> Vec<AvailableMethod> {
+            let delay = {
+                let mut state = self.0.lock().unwrap();
+                state.available_queries += 1;
+                state.available_delay
+            };
+            tokio::time::sleep(delay).await;
             if self.0.lock().unwrap().rime_available {
                 vec![(
                     "rime".into(),
@@ -258,7 +269,10 @@ mod tests {
     #[tokio::test]
     async fn existing_rime_keeps_its_position_and_layout_without_writing() {
         let bus = TestBus::new();
-        let mut initial = State::default();
+        let mut initial = State {
+            available_delay: Duration::from_millis(120),
+            ..State::default()
+        };
         initial
             .groups
             .get_mut("工作")
@@ -268,14 +282,20 @@ mod tests {
         let original = initial.groups.clone();
         let state = Arc::new(Mutex::new(initial));
         let _server = serve(&bus, state.clone()).await;
+        let started = std::time::Instant::now();
         assert!(
             !ensure_rime_with_connection(&bus.connect().await, &L10n::new(Lang::Zh))
                 .await
                 .unwrap()
         );
         let state = state.lock().unwrap();
+        eprintln!("Existing Rime check: {:?}", started.elapsed());
         assert_eq!(state.groups, original);
         assert_eq!(state.writes, 0);
+        assert_eq!(
+            state.available_queries, 0,
+            "existing Rime must skip enumeration"
+        );
     }
 
     #[tokio::test]

@@ -242,6 +242,20 @@ impl L10n {
         en.insert("deploy.failed", "Deploy failed");
         zh.insert("deploy.reloaded.fcitx5", "Fcitx5 已重载");
         en.insert("deploy.reloaded.fcitx5", "Fcitx5 reloaded");
+        zh.insert("config.rime_auto_setup", "自动检查并添加 Rime（Fcitx5）");
+        en.insert("config.rime_auto_setup", "Auto-check and add Rime (Fcitx5)");
+        zh.insert("rime.setup.prompt", "是否启用自动检查并添加 Rime？");
+        en.insert(
+            "rime.setup.prompt",
+            "Enable automatic Rime checks and setup?",
+        );
+        zh.insert("rime.setup.detail", "启用后立即将 Rime 添加到 Fcitx5，并在每次一键更新后检查。关闭可跳过此步骤，减少等待。以后可在设置中更改。");
+        en.insert("rime.setup.detail", "Enable to add Rime to Fcitx5 now and check after each full update. Disable to skip this step and avoid waiting. You can change this in Settings later.");
+        zh.insert("rime.setup.hint", "Y 启用  N/Enter 关闭  Esc 稍后选择");
+        en.insert(
+            "rime.setup.hint",
+            "Y Enable  N/Enter Disable  Esc Decide later",
+        );
         zh.insert("fcitx5.setup.component", "Fcitx5 输入法配置");
         en.insert("fcitx5.setup.component", "Fcitx5 input method setup");
         zh.insert(

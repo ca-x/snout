@@ -62,7 +62,7 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
     let cache_dir = manager.cache_dir.clone();
     let rime_dir = manager.rime_dir.clone();
 
-    updater::update_all(
+    let results = updater::update_all(
         &schema,
         &manager.config,
         cache_dir,
@@ -75,8 +75,84 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
     )
     .await?;
 
+    if !results.iter().all(|result| result.success) {
+        for result in results.iter().filter(|result| !result.success) {
+            eprintln!("\n❌ {}: {}", result.component, result.message);
+        }
+        return Ok(());
+    }
     println!("\n✅ {}!\n", t.t("wizard.complete"));
+    // The updater may have persisted a newly selected schema.
+    manager = Manager::new()?;
+    if updater::should_prompt_rime_setup(&manager.config) {
+        if let Some(enabled) =
+            prompt_rime_auto_setup(&mut std::io::stdin().lock(), &mut std::io::stdout(), &t)?
+        {
+            manager.config.rime_auto_setup = Some(enabled);
+            manager.save()?;
+            updater::setup_rime(
+                &manager.config,
+                &crate::types::CancelSignal::new(),
+                |event| {
+                    println!("{}", event.detail);
+                },
+            )
+            .await?;
+        }
+    }
     println!("{}", t.t("wizard.open_tui"));
 
     Ok(())
+}
+
+fn prompt_rime_auto_setup(
+    input: &mut impl std::io::BufRead,
+    output: &mut impl std::io::Write,
+    t: &L10n,
+) -> Result<Option<bool>> {
+    writeln!(output, "{}", t.t("rime.setup.detail"))?;
+    loop {
+        write!(output, "{} (y/N): ", t.t("rime.setup.prompt"))?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0 {
+            return Ok(None);
+        }
+        match answer.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(Some(true)),
+            "" | "n" | "no" => return Ok(Some(false)),
+            _ => continue,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setup_prompt_requires_yes_and_keeps_eof_undecided() {
+        for lang in [Lang::Zh, Lang::En] {
+            for (answer, expected) in [
+                ("y\n", Some(true)),
+                (" YES \n", Some(true)),
+                ("n\n", Some(false)),
+                ("No\n", Some(false)),
+                ("\n", Some(false)),
+                ("", None),
+                ("typo\ny\n", Some(true)),
+            ] {
+                let t = L10n::new(lang);
+                let mut output = Vec::new();
+                assert_eq!(
+                    prompt_rime_auto_setup(&mut answer.as_bytes(), &mut output, &t).unwrap(),
+                    expected
+                );
+                let text = String::from_utf8(output).unwrap();
+                assert!(text.contains(t.t("rime.setup.prompt")));
+                assert!(text.contains(t.t("rime.setup.detail")));
+                assert!(!text.contains("rime.setup."));
+            }
+        }
+    }
 }
