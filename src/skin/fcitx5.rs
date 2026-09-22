@@ -318,7 +318,7 @@ fn reload_via_fcitx5_remote() -> Result<()> {
         anyhow::bail!("fcitx5-remote unavailable");
     }
 
-    let status = std::process::Command::new("fcitx5-remote")
+    let status = crate::feedback::command("fcitx5-remote")
         .arg("-r")
         .status()
         .context("run fcitx5-remote")?;

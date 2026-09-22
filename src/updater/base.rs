@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 /// 更新结果
 #[derive(Debug)]
 pub struct UpdateResult {
+    pub kind: UpdateComponent,
     pub component: String,
     #[allow(dead_code)]
     pub old_version: String,
@@ -237,8 +238,15 @@ impl BaseUpdater {
     }
 
     /// 构建成功结果
-    pub fn success_result(component: &str, old: &str, new: &str, msg: &str) -> UpdateResult {
+    pub fn success_result(
+        kind: UpdateComponent,
+        component: &str,
+        old: &str,
+        new: &str,
+        msg: &str,
+    ) -> UpdateResult {
         UpdateResult {
+            kind,
             component: component.into(),
             old_version: old.into(),
             new_version: new.into(),
@@ -248,8 +256,9 @@ impl BaseUpdater {
     }
 
     /// 构建失败结果
-    pub fn fail_result(component: &str, e: &anyhow::Error) -> UpdateResult {
+    pub fn fail_result(kind: UpdateComponent, component: &str, e: &anyhow::Error) -> UpdateResult {
         UpdateResult {
+            kind,
             component: component.into(),
             old_version: "?".into(),
             new_version: "?".into(),
@@ -259,8 +268,9 @@ impl BaseUpdater {
     }
 
     /// 构建错误结果 (自定义消息)
-    pub fn error_result(component: &str, msg: &str) -> UpdateResult {
+    pub fn error_result(kind: UpdateComponent, component: &str, msg: &str) -> UpdateResult {
         UpdateResult {
+            kind,
             component: component.into(),
             old_version: "-".into(),
             new_version: "-".into(),

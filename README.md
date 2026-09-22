@@ -14,6 +14,7 @@ Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](
 - 🧠 **模型 Patch**: 自动下载万象语法模型，并可按方案写入对应 schema patch
 - 🎭 **皮肤 Patch**: 内置 6 个主题一键切换
 - 🌍 **中英双语**: `--lang en` / `--lang zh`
+- 🤖 **脚本友好**：非交互 CLI、JSON 输出、zsh/fish 自动补全
 - 🪞 **CNB 镜像**: 国内加速下载
 - 🔐 **SHA256 校验**: 确保文件完整性
 - 💾 **断点续传**: 节省流量
@@ -94,6 +95,56 @@ snout --init
 
 # 或者先在配置 / TUI 中把当前方案切到 Mint，再执行：
 snout --scheme
+```
+
+### JSON 输出
+
+非交互更新命令可追加 `--json`，stdout 只输出一个 JSON 文档，进度和诊断不会混入其中。
+任一组件失败时 `ok` 为 `false`，进程退出码为非零，适合 shell、CI 和配置管理工具调用。
+
+```bash
+snout --update --json
+snout --scheme --json | jq '.results'
+```
+
+```json
+{
+  "schema_version": 1,
+  "ok": true,
+  "command": "scheme",
+  "schema": "WanxiangBase",
+  "results": [
+    {
+      "component": "scheme",
+      "display_name": "方案",
+      "old_version": "2026.09.01",
+      "new_version": "2026.09.22",
+      "success": true,
+      "message": "更新完成"
+    }
+  ],
+  "error": null
+}
+```
+
+`schema_version` 用于识别输出契约，`component` 是稳定的机器标识，`display_name` 和
+`message` 会随 `--lang` 改变。参数解析失败，以及尚未产生组件结果的运行时失败，也使用
+同一顶层结构并写入 `error`。组件执行失败则写入对应的 `results[].message`，此时顶层
+`error` 为 `null`。
+
+`--json` 不适用于交互式 `--init` 或默认 TUI。
+
+### Shell 自动补全
+
+```bash
+# zsh
+mkdir -p ~/.zfunc
+snout completions zsh > ~/.zfunc/_snout
+# 将 fpath=(~/.zfunc $fpath) 与 compinit 配置加入 ~/.zshrc
+
+# fish
+mkdir -p ~/.config/fish/completions
+snout completions fish > ~/.config/fish/completions/snout.fish
 ```
 
 ### 其他选项
@@ -283,6 +334,7 @@ A Rime input method initialization & update tool. Rust rewrite of [rime-wanxiang
 - 🧠 **Model patch**: Auto-download Wanxiang grammar models and write schema-specific patch files
 - 🎭 **Skin patch**: 6 built-in themes, one-click apply
 - 🌍 **i18n**: Chinese and English (`--lang en`)
+- 🤖 **Automation-friendly**: Non-interactive CLI, JSON output, and zsh/fish completions
 - 🪞 **CNB mirror**: Faster downloads in China
 - 🔐 **SHA256 verification**: File integrity guaranteed
 - 💾 **Cache reuse**: Skip re-downloading unchanged files
@@ -319,6 +371,37 @@ snout --update --mirror  # Use CNB mirror (China)
 snout --scheme --mirror  # Update current scheme with mirror support (including Mint)
 snout --update --proxy socks5://127.0.0.1:1080  # With proxy
 snout --lang en --update  # English interface
+```
+
+### JSON output
+
+Append `--json` to a non-interactive update command. stdout contains exactly one JSON
+document; progress and diagnostics stay out of the machine-readable stream. If any
+component fails, `ok` is `false` and the process exits non-zero.
+
+```bash
+snout --update --json
+snout --scheme --json | jq '.results'
+```
+
+`schema_version` identifies the output contract. `component` is a stable machine ID;
+`display_name` and `message` follow `--lang`. Parse failures and runtime failures that
+occur before a component result use the same top-level envelope and put their diagnostic
+in `error`. Component failures use `results[].message`, with top-level `error` set to null.
+
+`--json` is not available for the interactive `--init` wizard or the default TUI.
+
+### Shell completions
+
+```bash
+# zsh
+mkdir -p ~/.zfunc
+snout completions zsh > ~/.zfunc/_snout
+# Add fpath=(~/.zfunc $fpath) and compinit setup to ~/.zshrc
+
+# fish
+mkdir -p ~/.config/fish/completions
+snout completions fish > ~/.config/fish/completions/snout.fish
 ```
 
 To initialize Mint specifically, choose **Mint Input** in the setup wizard, then

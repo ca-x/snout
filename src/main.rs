@@ -10,17 +10,49 @@ mod types;
 mod ui;
 mod updater;
 
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, ArgGroup, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::{generate, shells};
 use i18n::{L10n, Lang};
+use serde::Serialize;
+use std::process::ExitCode;
 use types::Schema;
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// 生成 shell 自动补全 / Generate shell completions
+    Completions {
+        /// 目标 shell / Target shell
+        #[arg(value_enum)]
+        shell: CompletionShell,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompletionShell {
+    Zsh,
+    Fish,
+}
 
 #[derive(Parser, Debug)]
 #[command(
     name = "snout",
     version,
-    about = env!("CARGO_PKG_DESCRIPTION")
+    about = env!("CARGO_PKG_DESCRIPTION"),
+    args_conflicts_with_subcommands = true,
+    group(
+        ArgGroup::new("primary_action")
+            .args(["init", "update", "scheme", "dict", "model"])
+            .multiple(false)
+    )
 )]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+
+    /// 输出单个 JSON 文档 / Emit one JSON document
+    #[arg(long)]
+    json: bool,
+
     /// 首次初始化模式 / First-time setup mode
     #[arg(long)]
     init: bool,
@@ -142,11 +174,19 @@ struct Cli {
     skin_patch_key: Option<String>,
 
     /// Linux Fcitx5 亮色主题 / Linux Fcitx5 light theme
-    #[arg(long)]
+    #[arg(
+        long,
+        conflicts_with = "init",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     fcitx5_theme_light: Option<String>,
 
     /// Linux Fcitx5 暗色主题 / Linux Fcitx5 dark theme
-    #[arg(long)]
+    #[arg(
+        long,
+        conflicts_with = "init",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
     fcitx5_theme_dark: Option<String>,
 
     /// Linux Fcitx5 亮色主题启用圆角 / Enable rounded corners for Linux Fcitx5 light theme
@@ -166,9 +206,127 @@ struct Cli {
     clear_candidate_page_size: bool,
 }
 
+#[derive(Serialize)]
+struct CliReport {
+    schema_version: u8,
+    ok: bool,
+    command: &'static str,
+    schema: Option<Schema>,
+    results: Vec<CliResult>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CliResult {
+    component: &'static str,
+    display_name: String,
+    old_version: String,
+    new_version: String,
+    success: bool,
+    message: String,
+}
+
+impl From<updater::UpdateResult> for CliResult {
+    fn from(result: updater::UpdateResult) -> Self {
+        Self {
+            component: stable_component_id(result.kind),
+            display_name: result.component,
+            old_version: result.old_version,
+            new_version: result.new_version,
+            success: result.success,
+            message: result.message,
+        }
+    }
+}
+
+fn stable_component_id(component: updater::UpdateComponent) -> &'static str {
+    match component {
+        updater::UpdateComponent::Update => "update",
+        updater::UpdateComponent::Scheme => "scheme",
+        updater::UpdateComponent::Dict => "dict",
+        updater::UpdateComponent::Model => "model",
+        updater::UpdateComponent::ModelPatch => "model_patch",
+        updater::UpdateComponent::Deploy => "deploy",
+        updater::UpdateComponent::Fcitx5Theme => "fcitx5_theme",
+        updater::UpdateComponent::Fcitx5Setup => "fcitx5_setup",
+        updater::UpdateComponent::Sync => "sync",
+        updater::UpdateComponent::Hook => "hook",
+    }
+}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn main() -> ExitCode {
+    let json_requested = std::env::args_os().any(|arg| arg == std::ffi::OsStr::new("--json"));
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = error.exit_code();
+            if exit_code == 0 {
+                error.print().ok();
+                return ExitCode::SUCCESS;
+            }
+            if json_requested {
+                print_json_report(&CliReport {
+                    schema_version: 1,
+                    ok: false,
+                    command: "parse",
+                    schema: None,
+                    results: Vec::new(),
+                    error: Some(error.to_string()),
+                });
+            } else {
+                error.print().ok();
+            }
+            return ExitCode::from(u8::try_from(exit_code).unwrap_or(1));
+        }
+    };
+    let json = cli.json;
+    let command = cli.action_name();
+
+    match run(cli).await {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::from(1),
+        Err(error) => {
+            if json {
+                print_json_report(&CliReport {
+                    schema_version: 1,
+                    ok: false,
+                    command,
+                    schema: None,
+                    results: Vec::new(),
+                    error: Some(format!("{error:#}")),
+                });
+            } else {
+                eprintln!("Error: {error:#}");
+            }
+            ExitCode::from(1)
+        }
+    }
+}
+
+async fn run(cli: Cli) -> anyhow::Result<bool> {
+    if let Some(command) = &cli.command {
+        if cli.json {
+            anyhow::bail!("--json cannot be used with the completions command");
+        }
+        match command {
+            Commands::Completions { shell } => print_completions(*shell),
+        }
+        return Ok(true);
+    }
+
+    if cli.json && cli.init {
+        anyhow::bail!("--json cannot be used with the interactive --init wizard");
+    }
+    if cli.json && !cli.has_direct_action() {
+        anyhow::bail!("--json requires a non-interactive update or theme action");
+    }
+    #[cfg(not(target_os = "linux"))]
+    if cli.fcitx5_theme_light.is_some() || cli.fcitx5_theme_dark.is_some() {
+        anyhow::bail!("Fcitx5 theme commands are only supported on Linux");
+    }
+
+    feedback::set_json_active(cli.json);
 
     if cli.init {
         ui::wizard::run_init_wizard(cli.lang.as_deref()).await?;
@@ -186,6 +344,8 @@ async fn main() -> anyhow::Result<()> {
         let schema = manager.config.schema;
         let cache_dir = manager.cache_dir.clone();
         let rime_dir = manager.rime_dir.clone();
+        let command = cli.action_name();
+        let mut results = Vec::new();
 
         if cli.clear_candidate_page_size {
             custom::set_candidate_page_size(&rime_dir, schema, None)?;
@@ -193,7 +353,7 @@ async fn main() -> anyhow::Result<()> {
             custom::set_candidate_page_size(&rime_dir, schema, Some(page_size))?;
         }
 
-        if cli.update || cli.scheme {
+        if !cli.json && (cli.update || cli.scheme) {
             println!("ℹ️  {}", user_data_policy_notice(&manager.config, &t));
             println!("   {}", user_data_policy_detail(&manager.config, &t));
             println!("   {}", t.t("update.preserve_user_data_scope"));
@@ -215,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
                 .or(cli.fcitx5_theme_light.clone())
                 .unwrap_or_default();
             if !light_theme.is_empty() && !dark_theme.is_empty() {
-                crate::skin::fcitx5::apply_theme_pair(
+                let apply_result = crate::skin::fcitx5::apply_theme_pair(
                     &light_theme,
                     &dark_theme,
                     if cli.fcitx5_theme_light_round {
@@ -230,110 +390,287 @@ async fn main() -> anyhow::Result<()> {
                     },
                     Lang::from_str(&manager.config.language),
                 )
-                .await?;
+                .await;
+                match apply_result {
+                    Ok(()) => results.push(updater::BaseUpdater::success_result(
+                        updater::UpdateComponent::Fcitx5Theme,
+                        t.t("menu.fcitx5_theme"),
+                        "-",
+                        "-",
+                        t.t("skin.applied"),
+                    )),
+                    Err(error) => {
+                        results.push(updater::BaseUpdater::error_result(
+                            updater::UpdateComponent::Fcitx5Theme,
+                            t.t("menu.fcitx5_theme"),
+                            &error.to_string(),
+                        ));
+                        return finish_cli_action(cli.json, command, schema, results);
+                    }
+                }
                 if !(cli.update || cli.scheme || cli.dict || cli.model) {
-                    return Ok(());
+                    return finish_cli_action(cli.json, command, schema, results);
                 }
             }
         }
 
         if cli.update {
-            updater::update_all(
+            match updater::update_all(
                 &schema,
                 &manager.config,
                 cache_dir,
                 rime_dir,
                 types::CancelSignal::new(),
                 |event| {
-                    print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                    std::io::Write::flush(&mut std::io::stdout()).ok();
+                    print_progress(cli.json, event);
                 },
             )
-            .await?;
-            println!();
-        } else if cli.scheme {
-            let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir)?;
-            if schema.is_wanxiang() {
-                updater::wanxiang::WanxiangUpdater { base }
-                    .update_scheme(&schema, &manager.config, None, |event| {
-                        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    })
-                    .await?;
-            } else if schema == Schema::Ice {
-                updater::ice::IceUpdater { base }
-                    .update_scheme(&manager.config, None, |event| {
-                        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    })
-                    .await?;
-            } else if schema == Schema::Frost {
-                updater::frost::FrostUpdater { base }
-                    .update_scheme(&manager.config, None, |event| {
-                        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    })
-                    .await?;
-            } else {
-                updater::mint::MintUpdater { base }
-                    .update_scheme(&manager.config, None, |event| {
-                        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    })
-                    .await?;
+            .await
+            {
+                Ok(update_results) => results.extend(update_results),
+                Err(error) => results.push(updater::BaseUpdater::error_result(
+                    updater::UpdateComponent::Update,
+                    t.t("menu.update_all"),
+                    &error.to_string(),
+                )),
             }
-            println!();
+            print_progress_end(cli.json);
+        } else if cli.scheme {
+            let result = match updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir) {
+                Ok(base) if schema.is_wanxiang() => {
+                    updater::wanxiang::WanxiangUpdater { base }
+                        .update_scheme(&schema, &manager.config, None, |event| {
+                            print_progress(cli.json, event);
+                        })
+                        .await
+                }
+                Ok(base) if schema == Schema::Ice => {
+                    updater::ice::IceUpdater { base }
+                        .update_scheme(&manager.config, None, |event| {
+                            print_progress(cli.json, event);
+                        })
+                        .await
+                }
+                Ok(base) if schema == Schema::Frost => {
+                    updater::frost::FrostUpdater { base }
+                        .update_scheme(&manager.config, None, |event| {
+                            print_progress(cli.json, event);
+                        })
+                        .await
+                }
+                Ok(base) => {
+                    updater::mint::MintUpdater { base }
+                        .update_scheme(&manager.config, None, |event| {
+                            print_progress(cli.json, event);
+                        })
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(result) => results.push(result),
+                Err(error) => results.push(updater::BaseUpdater::fail_result(
+                    updater::UpdateComponent::Scheme,
+                    t.t("update.scheme"),
+                    &error,
+                )),
+            }
+            print_progress_end(cli.json);
         } else if cli.dict {
             if schema.dict_zip().is_some() {
-                let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir)?;
-                if schema.is_wanxiang() {
-                    updater::wanxiang::WanxiangUpdater { base }
-                        .update_dict(&schema, &manager.config, None, |event| {
-                            print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                            std::io::Write::flush(&mut std::io::stdout()).ok();
-                        })
-                        .await?;
-                } else {
-                    updater::ice::IceUpdater { base }
-                        .update_dict(&manager.config, None, |event| {
-                            print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                            std::io::Write::flush(&mut std::io::stdout()).ok();
-                        })
-                        .await?;
+                let result = match updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir) {
+                    Ok(base) if schema.is_wanxiang() => {
+                        updater::wanxiang::WanxiangUpdater { base }
+                            .update_dict(&schema, &manager.config, None, |event| {
+                                print_progress(cli.json, event);
+                            })
+                            .await
+                    }
+                    Ok(base) => {
+                        updater::ice::IceUpdater { base }
+                            .update_dict(&manager.config, None, |event| {
+                                print_progress(cli.json, event);
+                            })
+                            .await
+                    }
+                    Err(error) => Err(error),
+                };
+                match result {
+                    Ok(result) => results.push(result),
+                    Err(error) => results.push(updater::BaseUpdater::fail_result(
+                        updater::UpdateComponent::Dict,
+                        t.t("update.dict"),
+                        &error,
+                    )),
                 }
-                println!();
+                print_progress_end(cli.json);
             } else {
-                eprintln!("{}", t.t("update.no_dict"));
+                let message = t.t("update.no_dict");
+                if !cli.json {
+                    eprintln!("{message}");
+                }
+                results.push(updater::BaseUpdater::error_result(
+                    updater::UpdateComponent::Dict,
+                    t.t("update.dict"),
+                    message,
+                ));
             }
         } else if cli.model {
             if !schema.supports_model_patch() {
-                eprintln!("{}", t.t("update.model_not_supported"));
-                std::process::exit(1);
+                let message = t.t("update.model_not_supported");
+                if !cli.json {
+                    eprintln!("{message}");
+                }
+                results.push(updater::BaseUpdater::error_result(
+                    updater::UpdateComponent::Model,
+                    t.t("update.model"),
+                    message,
+                ));
             } else {
-                let base = updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir.clone())?;
-                updater::wanxiang::WanxiangUpdater { base }
-                    .update_model(&manager.config, None, |event| {
-                        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
-                        std::io::Write::flush(&mut std::io::stdout()).ok();
-                    })
-                    .await?;
+                let result =
+                    match updater::BaseUpdater::new(&manager.config, cache_dir, rime_dir.clone()) {
+                        Ok(base) => {
+                            updater::wanxiang::WanxiangUpdater { base }
+                                .update_model(&manager.config, None, |event| {
+                                    print_progress(cli.json, event);
+                                })
+                                .await
+                        }
+                        Err(error) => Err(error),
+                    };
+                let model_updated = match result {
+                    Ok(result) => {
+                        results.push(result);
+                        true
+                    }
+                    Err(error) => {
+                        results.push(updater::BaseUpdater::fail_result(
+                            updater::UpdateComponent::Model,
+                            t.t("update.model"),
+                            &error,
+                        ));
+                        false
+                    }
+                };
 
-                if cli.patch_model {
-                    updater::model_patch::patch_model(
+                if model_updated && cli.patch_model {
+                    match updater::model_patch::patch_model(
                         &rime_dir,
                         &schema,
                         Lang::from_str(&manager.config.language),
-                    )?;
+                    ) {
+                        Ok(()) => results.push(updater::BaseUpdater::success_result(
+                            updater::UpdateComponent::ModelPatch,
+                            t.t("update.component.model_patch"),
+                            "-",
+                            t.t("patch.model.enabled"),
+                            t.t("patch.model.enabled"),
+                        )),
+                        Err(error) => {
+                            if !cli.json {
+                                eprintln!("{error:#}");
+                            }
+                            results.push(updater::BaseUpdater::error_result(
+                                updater::UpdateComponent::ModelPatch,
+                                t.t("update.component.model_patch"),
+                                &error.to_string(),
+                            ));
+                        }
+                    }
                 }
-                println!();
+                print_progress_end(cli.json);
             }
         }
+        return finish_cli_action(cli.json, command, schema, results);
     } else {
         // 默认启动 TUI
         ui::app::run_tui().await?;
     }
 
-    Ok(())
+    Ok(true)
+}
+
+impl Cli {
+    fn action_name(&self) -> &'static str {
+        match self.command {
+            Some(Commands::Completions { .. }) => "completions",
+            None if self.init => "init",
+            None if self.update => "update",
+            None if self.scheme => "scheme",
+            None if self.dict => "dict",
+            None if self.model => "model",
+            None if self.fcitx5_theme_light.is_some() || self.fcitx5_theme_dark.is_some() => {
+                "fcitx5-theme"
+            }
+            None => "tui",
+        }
+    }
+
+    fn has_direct_action(&self) -> bool {
+        self.update
+            || self.scheme
+            || self.dict
+            || self.model
+            || self.fcitx5_theme_light.is_some()
+            || self.fcitx5_theme_dark.is_some()
+    }
+}
+
+fn print_completions(shell: CompletionShell) {
+    let mut stdout = std::io::stdout();
+    write_completions(shell, &mut stdout);
+}
+
+fn write_completions(shell: CompletionShell, output: &mut impl std::io::Write) {
+    let mut command = Cli::command();
+    match shell {
+        CompletionShell::Zsh => generate(shells::Zsh, &mut command, "snout", output),
+        CompletionShell::Fish => generate(shells::Fish, &mut command, "snout", output),
+    }
+}
+
+fn print_progress(json: bool, event: updater::UpdateEvent) {
+    if !json {
+        print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+    }
+}
+
+fn print_progress_end(json: bool) {
+    if !json {
+        println!();
+    }
+}
+
+fn finish_cli_action(
+    json: bool,
+    command: &'static str,
+    schema: Schema,
+    results: Vec<updater::UpdateResult>,
+) -> anyhow::Result<bool> {
+    let ok = results.iter().all(|result| result.success);
+    if json {
+        print_json_report(&CliReport {
+            schema_version: 1,
+            ok,
+            command,
+            schema: Some(schema),
+            results: results.into_iter().map(CliResult::from).collect(),
+            error: None,
+        });
+    } else {
+        for result in results.iter().filter(|result| !result.success) {
+            eprintln!("{}: {}", result.component, result.message);
+        }
+    }
+    Ok(ok)
+}
+
+fn print_json_report(report: &CliReport) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(report).expect("serializing a CLI report cannot fail")
+    );
 }
 
 fn apply_cli_overrides(config: &mut types::Config, cli: &Cli) {
@@ -434,5 +771,146 @@ fn user_data_policy_detail<'a>(config: &types::Config, t: &'a L10n) -> &'a str {
     match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
         "discard" => t.t("update.discard_user_data_detail"),
         _ => t.t("update.preserve_user_data_detail"),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn json_flag_selects_a_non_interactive_action() {
+        let cli = Cli::try_parse_from(["snout", "--update", "--json"]).expect("valid CLI");
+
+        assert!(cli.json);
+        assert!(cli.has_direct_action());
+        assert_eq!(cli.action_name(), "update");
+    }
+
+    #[test]
+    fn completion_subcommand_accepts_zsh_and_fish() {
+        for shell in ["zsh", "fish"] {
+            let cli = Cli::try_parse_from(["snout", "completions", shell]).expect("valid CLI");
+            assert_eq!(cli.action_name(), "completions");
+        }
+    }
+
+    #[test]
+    fn completion_subcommand_rejects_update_flags() {
+        let error = Cli::try_parse_from(["snout", "--update", "completions", "fish"])
+            .expect_err("actions and completion generation must not be combined");
+
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn primary_actions_are_mutually_exclusive() {
+        let actions = ["--init", "--update", "--scheme", "--dict", "--model"];
+        for (index, first) in actions.iter().enumerate() {
+            for second in &actions[index + 1..] {
+                let error = Cli::try_parse_from(["snout", *first, *second])
+                    .expect_err("primary actions must not be combined");
+                assert_eq!(error.exit_code(), 2, "{first} {second}");
+            }
+        }
+    }
+
+    #[test]
+    fn theme_names_cannot_be_empty() {
+        for flag in ["--fcitx5-theme-light", "--fcitx5-theme-dark"] {
+            let error = Cli::try_parse_from(["snout", flag, ""])
+                .expect_err("empty theme names must be rejected");
+            assert_eq!(error.exit_code(), 2, "{flag}");
+        }
+    }
+
+    #[test]
+    fn theme_actions_cannot_be_combined_with_init() {
+        let error = Cli::try_parse_from([
+            "snout",
+            "--init",
+            "--fcitx5-theme-light",
+            "catppuccin-latte-sky",
+        ])
+        .expect_err("interactive init must not ignore a theme action");
+
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    #[test]
+    fn generated_completions_include_json_and_update_flags() {
+        for shell in [CompletionShell::Zsh, CompletionShell::Fish] {
+            let mut output = Vec::new();
+            write_completions(shell, &mut output);
+            let output = String::from_utf8(output).expect("completion output is UTF-8");
+
+            let (json_flag, update_flag) = match shell {
+                CompletionShell::Zsh => ("--json", "--update"),
+                CompletionShell::Fish => ("-l json", "-l update"),
+            };
+            assert!(output.contains(json_flag));
+            assert!(output.contains(update_flag));
+            assert!(output.contains("completions"));
+        }
+    }
+
+    #[test]
+    fn json_report_exposes_status_command_schema_and_results() {
+        let report = CliReport {
+            schema_version: 1,
+            ok: true,
+            command: "scheme",
+            schema: Some(Schema::Ice),
+            results: vec![CliResult::from(updater::BaseUpdater::success_result(
+                updater::UpdateComponent::Scheme,
+                "scheme",
+                "old",
+                "new",
+                "updated",
+            ))],
+            error: None,
+        };
+        let value = serde_json::to_value(report).expect("serializable report");
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["command"], "scheme");
+        assert_eq!(value["schema"], "Ice");
+        assert_eq!(value["results"][0]["component"], "scheme");
+        assert_eq!(value["results"][0]["display_name"], "scheme");
+        assert_eq!(value["results"][0]["success"], true);
+        assert_eq!(value["results"][0]["new_version"], "new");
+    }
+
+    #[test]
+    fn json_error_uses_the_same_envelope() {
+        let report = CliReport {
+            schema_version: 1,
+            ok: false,
+            command: "parse",
+            schema: None,
+            results: Vec::new(),
+            error: Some("invalid argument".into()),
+        };
+        let value = serde_json::to_value(report).expect("serializable report");
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["ok"], false);
+        assert!(value["schema"].is_null());
+        assert_eq!(value["results"], serde_json::json!([]));
+        assert_eq!(value["error"], "invalid argument");
+    }
+
+    #[test]
+    fn stable_component_ids_do_not_depend_on_display_names() {
+        assert_eq!(stable_component_id(updater::UpdateComponent::Dict), "dict");
+        assert_eq!(
+            stable_component_id(updater::UpdateComponent::Fcitx5Theme),
+            "fcitx5_theme"
+        );
+        assert_eq!(
+            stable_component_id(updater::UpdateComponent::Fcitx5Setup),
+            "fcitx5_setup"
+        );
     }
 }

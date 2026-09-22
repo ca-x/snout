@@ -74,6 +74,7 @@ impl MintUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(BaseUpdater::success_result(
+                UpdateComponent::Scheme,
                 t.t("update.scheme"),
                 &info.tag,
                 &info.tag,
@@ -140,6 +141,7 @@ impl MintUpdater {
             detail: t.t("update.mint_scheme_done").into(),
         });
         Ok(UpdateResult {
+            kind: UpdateComponent::Scheme,
             component: t.t("update.scheme").into(),
             old_version: local
                 .map(|r| r.tag)

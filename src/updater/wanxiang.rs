@@ -102,6 +102,7 @@ impl WanxiangUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(BaseUpdater::success_result(
+                UpdateComponent::Scheme,
                 t.t("update.scheme"),
                 &info.tag,
                 &info.tag,
@@ -190,6 +191,7 @@ impl WanxiangUpdater {
             format!("{} ({})", t.t("update.complete"), warnings.join("; "))
         };
         Ok(UpdateResult {
+            kind: UpdateComponent::Scheme,
             component: t.t("update.scheme").into(),
             old_version: local
                 .map(|r| r.tag)
@@ -299,6 +301,7 @@ impl WanxiangUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(BaseUpdater::success_result(
+                UpdateComponent::Dict,
                 t.t("update.dict"),
                 &info.tag,
                 &info.tag,
@@ -364,6 +367,7 @@ impl WanxiangUpdater {
             format!("{} ({})", t.t("update.complete"), warnings.join("; "))
         };
         Ok(UpdateResult {
+            kind: UpdateComponent::Dict,
             component: t.t("update.dict").into(),
             old_version: local
                 .map(|r| r.tag)
@@ -449,6 +453,7 @@ impl WanxiangUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(UpdateResult {
+                kind: UpdateComponent::Model,
                 component: t.t("update.model").into(),
                 old_version: current_tag.clone(),
                 new_version: info.tag.clone(),
@@ -526,6 +531,7 @@ impl WanxiangUpdater {
             detail: t.t("update.model_done").into(),
         });
         Ok(UpdateResult {
+            kind: UpdateComponent::Model,
             component: t.t("update.model").into(),
             old_version: local
                 .map(|r| r.tag)

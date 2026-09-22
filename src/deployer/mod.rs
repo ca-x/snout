@@ -55,7 +55,10 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
                 }
             }
             let bin = find_binary("fcitx5-remote", t)?;
-            std::process::Command::new(bin).arg("-r").spawn()?;
+            let status = crate::feedback::command(bin).arg("-r").status()?;
+            if !status.success() {
+                anyhow::bail!("fcitx5-remote exited with status {status}");
+            }
             crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
         }
         #[cfg(target_os = "linux")]
@@ -64,7 +67,10 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
                 let _ = run_rime_deployer(&rime_dir);
             }
             let bin = find_binary("ibus-daemon", t).or_else(|_| find_binary("ibus", t))?;
-            std::process::Command::new(bin).args(["-drx"]).spawn()?;
+            let status = crate::feedback::command(bin).args(["-drx"]).status()?;
+            if !status.success() {
+                anyhow::bail!("ibus-daemon exited with status {status}");
+            }
             crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.ibus")));
         }
         #[cfg(target_os = "linux")]
@@ -77,31 +83,37 @@ pub fn deploy_to(engine: &str, t: &L10n) -> Result<()> {
         #[cfg(target_os = "macos")]
         "squirrel" => {
             if let Some(squirrel) = macos_squirrel_binary() {
-                std::process::Command::new(squirrel)
+                let status = crate::feedback::command(squirrel)
                     .arg("--reload")
-                    .spawn()?;
+                    .status()?;
+                if !status.success() {
+                    anyhow::bail!("Squirrel reload exited with status {status}");
+                }
                 crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.squirrel")));
             }
         }
         #[cfg(target_os = "macos")]
         "fcitx5" => {
             if let Some(fcitx5_curl) = macos_fcitx5_curl() {
-                std::process::Command::new(fcitx5_curl)
+                let status = crate::feedback::command(fcitx5_curl)
                     .args(["/config/addon/rime/deploy", "-X", "POST", "-d", "{}"])
-                    .spawn()?;
+                    .status()?;
+                if !status.success() {
+                    anyhow::bail!("fcitx5-curl exited with status {status}");
+                }
                 crate::feedback::info(format!("  ✅ {}", t.t("deploy.reloaded.fcitx5")));
             }
         }
         #[cfg(target_os = "windows")]
         "weasel" => {
             if let Some(server) = windows_server_executable() {
-                let _ = std::process::Command::new(&server).arg("/q").status();
+                let _ = crate::feedback::command(&server).arg("/q").status();
                 std::thread::sleep(std::time::Duration::from_millis(500));
-                let _ = std::process::Command::new(&server).spawn();
+                let _ = crate::feedback::command(&server).spawn();
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
             if let Some(weasel) = windows_deployer_executable() {
-                let status = std::process::Command::new(weasel).arg("/deploy").status()?;
+                let status = crate::feedback::command(weasel).arg("/deploy").status()?;
                 if !status.success() {
                     anyhow::bail!("WeaselDeployer exited with status {status}");
                 }
@@ -209,12 +221,18 @@ pub fn sync_to_engines(
         }
     }
 
+    finalize_sync_result(errors, &t)
+}
+
+fn finalize_sync_result(errors: Vec<String>, t: &L10n) -> Result<()> {
     if !errors.is_empty() {
-        crate::feedback::warn(format!(
-            "⚠️ {}: {}",
+        let message = format!(
+            "{}: {}",
             t.t("deploy.sync_partial_failed"),
             errors.join("; ")
-        ));
+        );
+        crate::feedback::warn(format!("⚠️ {message}"));
+        anyhow::bail!(message);
     }
     Ok(())
 }
@@ -257,18 +275,14 @@ pub fn run_hook(hook_path: &str, phase: &str, lang: Lang) -> Result<()> {
     let t = L10n::new(lang);
     let path = Path::new(hook_path);
     if !path.exists() {
-        crate::feedback::warn(format!(
-            "  ⚠️ {phase} {}: {hook_path}",
-            t.t("deploy.hook_missing")
-        ));
-        return Ok(());
+        anyhow::bail!("{phase} {}: {hook_path}", t.t("deploy.hook_missing"));
     }
 
     crate::feedback::info(format!(
         "  🔧 {phase} {}: {hook_path}",
         t.t("deploy.hook_running")
     ));
-    let status = std::process::Command::new("sh")
+    let status = crate::feedback::command("sh")
         .arg("-c")
         .arg(hook_path)
         .status()?;
@@ -318,7 +332,7 @@ fn deploy_with_qdbus6() -> Result<()> {
     if which("qdbus6").is_none() {
         anyhow::bail!("qdbus6 unavailable");
     }
-    std::process::Command::new("qdbus6")
+    let status = crate::feedback::command("qdbus6")
         .args([
             "org.fcitx.Fcitx5",
             "/controller",
@@ -327,6 +341,9 @@ fn deploy_with_qdbus6() -> Result<()> {
             "",
         ])
         .status()?;
+    if !status.success() {
+        anyhow::bail!("qdbus6 exited with status {status}");
+    }
     Ok(())
 }
 
@@ -346,7 +363,7 @@ fn run_rime_deployer(rime_dir: &Path) -> Result<()> {
         if !command.exists() && candidate != "rime_deployer" {
             continue;
         }
-        let status = std::process::Command::new(&command)
+        let status = crate::feedback::command(&command)
             .args(["--build", &rime_dir.display().to_string()])
             .status();
         if matches!(status, Ok(s) if s.success()) {
@@ -464,7 +481,7 @@ fn graceful_stop_weasel() -> bool {
         return false;
     };
 
-    match std::process::Command::new(server).arg("/q").status() {
+    match crate::feedback::command(server).arg("/q").status() {
         Ok(status) if status.success() => {
             std::thread::sleep(std::time::Duration::from_millis(500));
             true
@@ -476,10 +493,10 @@ fn graceful_stop_weasel() -> bool {
 #[cfg(target_os = "windows")]
 fn hard_stop_weasel() {
     for _ in 0..3 {
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::feedback::command("taskkill")
             .args(["/IM", "WeaselServer.exe", "/F"])
             .status();
-        let _ = std::process::Command::new("taskkill")
+        let _ = crate::feedback::command("taskkill")
             .args(["/IM", "WeaselDeployer.exe", "/F"])
             .status();
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -531,6 +548,11 @@ fn finalize_deploy_result(success_count: usize, failures: Vec<String>, t: &L10n)
             t.t("deploy.partial_engines_failed"),
             failures.join("; ")
         ));
+        anyhow::bail!(
+            "{}: {}",
+            t.t("deploy.partial_engines_failed"),
+            failures.join("; ")
+        );
     }
 
     Ok(())
@@ -568,10 +590,21 @@ mod tests {
     }
 
     #[test]
-    fn succeeds_when_at_least_one_deployment_succeeds() {
+    fn partial_deployment_failure_is_an_error() {
         let t = L10n::new(Lang::Zh);
         assert!(finalize_deploy_result(1, Vec::new(), &t).is_ok());
-        assert!(finalize_deploy_result(1, vec!["ibus: failed".into()], &t).is_ok());
+        let err = finalize_deploy_result(1, vec!["ibus: failed".into()], &t).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains(t.t("deploy.partial_engines_failed")));
+    }
+
+    #[test]
+    fn partial_sync_failure_is_an_error() {
+        let t = L10n::new(Lang::En);
+        assert!(finalize_sync_result(Vec::new(), &t).is_ok());
+        let err = finalize_sync_result(vec!["ibus: failed".into()], &t).unwrap_err();
+        assert!(err.to_string().contains(t.t("deploy.sync_partial_failed")));
     }
 
     #[test]
@@ -637,9 +670,9 @@ mod tests {
     }
 
     #[test]
-    fn run_hook_accepts_empty_and_missing_paths() {
+    fn run_hook_accepts_empty_and_rejects_missing_paths() {
         assert!(run_hook("", "pre-update", Lang::En).is_ok());
-        assert!(run_hook("/definitely/missing/hook.sh", "pre-update", Lang::En).is_ok());
+        assert!(run_hook("/definitely/missing/hook.sh", "pre-update", Lang::En).is_err());
     }
 
     #[cfg(unix)]

@@ -56,6 +56,7 @@ impl IceUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(BaseUpdater::success_result(
+                UpdateComponent::Scheme,
                 t.t("update.scheme"),
                 &info.tag,
                 &info.tag,
@@ -117,6 +118,7 @@ impl IceUpdater {
             detail: t.t("update.scheme_done").into(),
         });
         Ok(UpdateResult {
+            kind: UpdateComponent::Scheme,
             component: t.t("update.scheme").into(),
             old_version: local
                 .map(|r| r.tag)
@@ -167,6 +169,7 @@ impl IceUpdater {
                 detail: t.t("update.up_to_date").into(),
             });
             return Ok(BaseUpdater::success_result(
+                UpdateComponent::Dict,
                 t.t("update.dict"),
                 &info.tag,
                 &info.tag,
@@ -213,6 +216,7 @@ impl IceUpdater {
             detail: t.t("update.dict_done").into(),
         });
         Ok(UpdateResult {
+            kind: UpdateComponent::Dict,
             component: t.t("update.dict").into(),
             old_version: local
                 .map(|r| r.tag)

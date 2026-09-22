@@ -1559,6 +1559,7 @@ async fn run_update_task(
         UpdateMode::Dict => {
             if context.schema.dict_zip().is_none() {
                 Ok(vec![updater::UpdateResult {
+                    kind: UpdateComponent::Dict,
                     component: t.t("update.dict").into(),
                     old_version: "-".into(),
                     new_version: "-".into(),
@@ -1609,6 +1610,7 @@ async fn run_update_task(
                     updater::model_patch::patch_model(&context.rime_dir, &context.schema, lang)
                 {
                     v.push(updater::UpdateResult {
+                        kind: UpdateComponent::ModelPatch,
                         component: t.t("update.component.model_patch").into(),
                         old_version: "?".into(),
                         new_version: "?".into(),
@@ -1617,6 +1619,7 @@ async fn run_update_task(
                     });
                 } else {
                     v.push(updater::UpdateResult {
+                        kind: UpdateComponent::ModelPatch,
                         component: t.t("update.component.model_patch").into(),
                         old_version: "-".into(),
                         new_version: t.t("patch.model.enabled").into(),
@@ -1720,11 +1723,14 @@ fn upsert_stage_line(app: &mut App, event: &UpdateEvent) {
 
 fn component_label(app: &App, component: UpdateComponent) -> &str {
     match component {
+        UpdateComponent::Update => app.t.t("menu.update_all"),
         UpdateComponent::Scheme => app.t.t("update.scheme"),
         UpdateComponent::Dict => app.t.t("update.dict"),
         UpdateComponent::Model => app.t.t("update.model"),
         UpdateComponent::ModelPatch => app.t.t("update.component.model_patch"),
         UpdateComponent::Deploy => app.t.t("update.component.deploy"),
+        UpdateComponent::Fcitx5Theme => app.t.t("menu.fcitx5_theme"),
+        UpdateComponent::Fcitx5Setup => app.t.t("fcitx5.setup.component"),
         UpdateComponent::Sync => app.t.t("update.component.sync"),
         UpdateComponent::Hook => app.t.t("update.component.hook"),
     }
@@ -2847,6 +2853,7 @@ mod tests {
             (
                 true,
                 Ok(vec![updater::BaseUpdater::success_result(
+                    UpdateComponent::Scheme,
                     "scheme",
                     "-",
                     "v1",
@@ -2857,6 +2864,7 @@ mod tests {
             (
                 false,
                 Ok(vec![updater::BaseUpdater::success_result(
+                    UpdateComponent::Scheme,
                     "scheme",
                     "-",
                     "v1",
@@ -2866,7 +2874,11 @@ mod tests {
             ),
             (
                 true,
-                Ok(vec![updater::BaseUpdater::error_result("scheme", "failed")]),
+                Ok(vec![updater::BaseUpdater::error_result(
+                    UpdateComponent::Scheme,
+                    "scheme",
+                    "failed",
+                )]),
                 false,
             ),
             (true, Err(UpdateTaskError::Cancelled), false),

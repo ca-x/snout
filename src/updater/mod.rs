@@ -52,6 +52,7 @@ pub async fn update_all(
             Lang::from_str(&config.language),
         ) {
             results.push(UpdateResult {
+                kind: UpdateComponent::Hook,
                 component: t.t("update.component.hook").into(),
                 old_version: "-".into(),
                 new_version: "-".into(),
@@ -73,7 +74,11 @@ pub async fn update_all(
     let base = match BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone()) {
         Ok(b) => b,
         Err(e) => {
-            results.push(BaseUpdater::fail_result(t.t("update.scheme"), &e));
+            results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &e,
+            ));
             return Ok(results);
         }
     };
@@ -88,7 +93,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.scheme"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &e,
+            )),
         }
 
         // 词库
@@ -104,7 +113,11 @@ pub async fn update_all(
             let base2 = match BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone()) {
                 Ok(b) => b,
                 Err(e) => {
-                    results.push(BaseUpdater::fail_result(t.t("update.dict"), &e));
+                    results.push(BaseUpdater::fail_result(
+                        UpdateComponent::Dict,
+                        t.t("update.dict"),
+                        &e,
+                    ));
                     return Ok(results);
                 }
             };
@@ -116,7 +129,11 @@ pub async fn update_all(
                 .await
             {
                 Ok(r) => results.push(r),
-                Err(e) => results.push(BaseUpdater::fail_result(t.t("update.dict"), &e)),
+                Err(e) => results.push(BaseUpdater::fail_result(
+                    UpdateComponent::Dict,
+                    t.t("update.dict"),
+                    &e,
+                )),
             }
         }
     } else if *schema == Schema::Ice {
@@ -129,7 +146,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.scheme"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &e,
+            )),
         }
 
         // 词库
@@ -143,7 +164,11 @@ pub async fn update_all(
         let base2 = match BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone()) {
             Ok(b) => b,
             Err(e) => {
-                results.push(BaseUpdater::fail_result(t.t("update.dict"), &e));
+                results.push(BaseUpdater::fail_result(
+                    UpdateComponent::Dict,
+                    t.t("update.dict"),
+                    &e,
+                ));
                 return Ok(results);
             }
         };
@@ -155,7 +180,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.dict"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Dict,
+                t.t("update.dict"),
+                &e,
+            )),
         }
     } else if *schema == Schema::Frost {
         // 白霜
@@ -167,7 +196,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.scheme"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &e,
+            )),
         }
     } else {
         let mint = MintUpdater { base };
@@ -178,7 +211,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.scheme"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &e,
+            )),
         }
     }
 
@@ -194,7 +231,11 @@ pub async fn update_all(
         let base3 = match BaseUpdater::new(config, cache_dir, rime_dir.clone()) {
             Ok(b) => b,
             Err(e) => {
-                results.push(BaseUpdater::fail_result(t.t("update.model"), &e));
+                results.push(BaseUpdater::fail_result(
+                    UpdateComponent::Model,
+                    t.t("update.model"),
+                    &e,
+                ));
                 return Ok(results);
             }
         };
@@ -206,7 +247,11 @@ pub async fn update_all(
             .await
         {
             Ok(r) => results.push(r),
-            Err(e) => results.push(BaseUpdater::fail_result(t.t("update.model"), &e)),
+            Err(e) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Model,
+                t.t("update.model"),
+                &e,
+            )),
         }
 
         // 自动 patch 模型
@@ -222,6 +267,7 @@ pub async fn update_all(
                 detail: t.t("menu.model_patch").into(),
             });
             results.push(BaseUpdater::error_result(
+                UpdateComponent::ModelPatch,
                 t.t("update.component.model_patch"),
                 &e.to_string(),
             ));
@@ -245,11 +291,13 @@ pub async fn update_all(
     });
     if let Err(e) = crate::deployer::deploy(Lang::from_str(&config.language)) {
         results.push(BaseUpdater::error_result(
+            UpdateComponent::Deploy,
             t.t("update.component.deploy"),
             &e.to_string(),
         ));
     } else {
         results.push(BaseUpdater::success_result(
+            UpdateComponent::Deploy,
             t.t("update.component.deploy"),
             "-",
             "-",
@@ -278,8 +326,17 @@ pub async fn update_all(
         );
         if let Err(e) = sync_result {
             results.push(BaseUpdater::error_result(
+                UpdateComponent::Sync,
                 t.t("update.component.sync"),
                 &e.to_string(),
+            ));
+        } else {
+            results.push(BaseUpdater::success_result(
+                UpdateComponent::Sync,
+                t.t("update.component.sync"),
+                "-",
+                "-",
+                t.t("update.complete"),
             ));
         }
     }
@@ -299,6 +356,7 @@ pub async fn update_all(
             Lang::from_str(&config.language),
         ) {
             results.push(BaseUpdater::error_result(
+                UpdateComponent::Hook,
                 t.t("update.component.hook"),
                 &format!("{}: {e}", t.t("deploy.hook_failed")),
             ));
@@ -328,7 +386,7 @@ pub async fn setup_rime(
         cancel.checkpoint()?;
         let t = L10n::new(Lang::from_str(&config.language));
         progress(UpdateEvent {
-            component: UpdateComponent::Deploy,
+            component: UpdateComponent::Fcitx5Setup,
             phase: UpdatePhase::Applying,
             progress: 0.94,
             detail: t.t("fcitx5.setup.configuring").into(),
@@ -342,12 +400,18 @@ pub async fn setup_rime(
                     "fcitx5.setup.already_added"
                 });
                 crate::feedback::info(message);
-                BaseUpdater::success_result(component, "-", "-", message)
+                BaseUpdater::success_result(
+                    UpdateComponent::Fcitx5Setup,
+                    component,
+                    "-",
+                    "-",
+                    message,
+                )
             }
             Err(error) => {
                 let message = format!("{}: {error:#}", t.t("fcitx5.setup.failed"));
                 crate::feedback::warn(&message);
-                BaseUpdater::error_result(component, &message)
+                BaseUpdater::error_result(UpdateComponent::Fcitx5Setup, component, &message)
             }
         };
         Ok(Some(result))

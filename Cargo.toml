@@ -1,12 +1,13 @@
 [package]
 name = "snout"
-version = "0.2.12"
+version = "0.2.13"
 edition = "2021"
 description = "Rime input method init and update tool with Wanxiang, Ice, Frost, and Mint support"
 license = "MIT"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 ratatui = "0.29"
 crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
