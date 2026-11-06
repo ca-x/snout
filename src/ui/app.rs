@@ -327,12 +327,12 @@ fn skin_menu_target(app: &App) -> Option<SkinMenuTarget> {
 
     if cfg!(target_os = "linux")
         && crate::skin::fcitx5::builtin_themes_available()
-        && crate::skin::fcitx5::theme_supported(&installed_engines)
+        && crate::skin::fcitx5::theme_supported(installed_engines)
     {
         return Some(SkinMenuTarget::Fcitx5Theme);
     }
 
-    theme_patch_target_for_platform(std::path::Path::new(&app.rime_dir), &installed_engines)
+    theme_patch_target_for_platform(std::path::Path::new(&app.rime_dir), installed_engines)
         .map(SkinMenuTarget::ThemePatch)
 }
 
