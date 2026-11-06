@@ -168,8 +168,13 @@ pub fn persist_installed_schema(schema: Schema) -> Result<()> {
 }
 
 pub fn rime_installation_message(lang: Lang) -> String {
+    rime_installation_message_with_engines(lang, &detect_installed_engines())
+}
+
+/// 与 [rime_installation_message] 相同，但由调用方传入已缓存的引擎列表（渲染期不得重新探测）。
+pub fn rime_installation_message_with_engines(lang: Lang, engines: &[String]) -> String {
     let t = L10n::new(lang);
-    if !detect_installed_engines().is_empty() {
+    if !engines.is_empty() {
         return String::new();
     }
 

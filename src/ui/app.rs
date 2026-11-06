@@ -70,6 +70,10 @@ pub struct App {
     pub rime_dir: String,
     pub config_path: String,
     pub t: L10n,
+    // 渲染期缓存：避免每帧重建 Manager / 重新探测引擎（Windows 上是一次 reg 子进程）
+    config_snapshot: crate::types::Config,
+    engines: Vec<String>,
+    diagnosis: Option<Result<crate::config::WanxiangDiagnosis, String>>,
     // 更新状态
     pub update_msg: String,
     pub update_pct: f64,
@@ -173,6 +177,9 @@ impl App {
             rime_dir: manager.rime_dir.display().to_string(),
             config_path: manager.config_path.display().to_string(),
             t: L10n::new(lang),
+            config_snapshot: manager.config.clone(),
+            engines: config::detect_installed_engines(),
+            diagnosis: None,
             update_msg: String::new(),
             update_pct: 0.0,
             update_done: false,
@@ -316,16 +323,16 @@ fn theme_patch_target_for_platform(
 }
 
 fn skin_menu_target(app: &App) -> Option<SkinMenuTarget> {
-    let installed_engines = config::detect_installed_engines();
+    let installed_engines = &app.engines;
 
     if cfg!(target_os = "linux")
         && crate::skin::fcitx5::builtin_themes_available()
-        && crate::skin::fcitx5::theme_supported(&installed_engines)
+        && crate::skin::fcitx5::theme_supported(installed_engines)
     {
         return Some(SkinMenuTarget::Fcitx5Theme);
     }
 
-    theme_patch_target_for_platform(std::path::Path::new(&app.rime_dir), &installed_engines)
+    theme_patch_target_for_platform(std::path::Path::new(&app.rime_dir), installed_engines)
         .map(SkinMenuTarget::ThemePatch)
 }
 
@@ -379,12 +386,17 @@ async fn run_app(
     manager: &Manager,
 ) -> Result<()> {
     refresh_config_status(app);
+    // 只在状态变化时重绘：空闲不再每 100 ms 付一次整帧成本。
+    let mut dirty = true;
     loop {
         let mut progress_events = Vec::new();
         if let Some(rx) = &app.progress_rx {
             while let Ok(event) = rx.try_recv() {
                 progress_events.push(event);
             }
+        }
+        if !progress_events.is_empty() {
+            dirty = true;
         }
         for event in progress_events {
             app.update_msg = event.detail.clone();
@@ -397,6 +409,9 @@ async fn run_app(
                 finished_results.push(event.results);
             }
         }
+        if !finished_results.is_empty() {
+            dirty = true;
+        }
         for results in finished_results {
             finish_update(app, results);
         }
@@ -406,65 +421,78 @@ async fn run_app(
                 config_snapshots.push(snapshot);
             }
         }
+        if !config_snapshots.is_empty() {
+            dirty = true;
+        }
         for snapshot in config_snapshots {
             app.config_status = snapshot;
             app.config_status_loading = false;
             app.config_status_rx = None;
         }
 
-        terminal.draw(|f| ui(f, app))?;
-
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match app.screen {
-                    AppScreen::Menu => handle_menu_key(app, key.code).await?,
-                    AppScreen::Updating => handle_updating_key(app, key.code),
-                    AppScreen::Result => handle_result_key(app, key.code),
-                    AppScreen::RimeSetupPrompt => handle_rime_setup_key(app, key.code).await?,
-                    AppScreen::UpdateConfirm => handle_update_confirm_key(app, key.code).await?,
-                    AppScreen::UserDataPolicyConfirm => {
-                        handle_user_data_policy_confirm_key(app, key.code)?
-                    }
-                    AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
-                    AppScreen::SkinSelector => handle_skin_key(app, key.code, manager).await?,
-                    AppScreen::ThemePatchPresetSelector => {
-                        handle_theme_patch_preset_key(app, key.code)?
-                    }
-                    AppScreen::ThemePatchDefaultSelector => {
-                        handle_theme_patch_default_key(app, key.code)?
-                    }
-                    AppScreen::Fcitx5LightThemeSelector => {
-                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Light).await?
-                    }
-                    AppScreen::Fcitx5DarkThemeSelector => {
-                        handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Dark).await?
-                    }
-                    AppScreen::SkinRoundPrompt => {
-                        handle_skin_round_prompt_key(app, key.code).await?
-                    }
-                    AppScreen::ConfigView => handle_config_key(app, key.code),
-                    AppScreen::ConfigInput => handle_config_input_key(app, key.code),
-                    AppScreen::ExcludeRules => handle_exclude_rules_key(app, key.code),
-                    AppScreen::WanxiangDiagnosis => handle_wanxiang_diagnosis_key(app, key.code),
-                }
-            }
-        }
-
-        // 清除过期通知
+        // 清除过期通知（清掉后需要重绘，否则气泡残留在屏幕上）
         if let Some(notification) = &app.notification {
             if notification
                 .ttl
                 .is_some_and(|ttl| notification.shown_at.elapsed() > ttl)
             {
                 app.notification = None;
+                dirty = true;
             }
+        }
+
+        if dirty {
+            terminal.draw(|f| ui(f, app))?;
+            dirty = false;
         }
 
         if app.should_quit {
             return Ok(());
+        }
+
+        if event::poll(Duration::from_millis(100))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    match app.screen {
+                        AppScreen::Menu => handle_menu_key(app, key.code).await?,
+                        AppScreen::Updating => handle_updating_key(app, key.code),
+                        AppScreen::Result => handle_result_key(app, key.code),
+                        AppScreen::RimeSetupPrompt => handle_rime_setup_key(app, key.code).await?,
+                        AppScreen::UpdateConfirm => {
+                            handle_update_confirm_key(app, key.code).await?
+                        }
+                        AppScreen::UserDataPolicyConfirm => {
+                            handle_user_data_policy_confirm_key(app, key.code)?
+                        }
+                        AppScreen::SchemeSelector => handle_scheme_key(app, key.code, manager)?,
+                        AppScreen::SkinSelector => handle_skin_key(app, key.code, manager).await?,
+                        AppScreen::ThemePatchPresetSelector => {
+                            handle_theme_patch_preset_key(app, key.code)?
+                        }
+                        AppScreen::ThemePatchDefaultSelector => {
+                            handle_theme_patch_default_key(app, key.code)?
+                        }
+                        AppScreen::Fcitx5LightThemeSelector => {
+                            handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Light).await?
+                        }
+                        AppScreen::Fcitx5DarkThemeSelector => {
+                            handle_fcitx5_theme_key(app, key.code, Fcitx5ThemePhase::Dark).await?
+                        }
+                        AppScreen::SkinRoundPrompt => {
+                            handle_skin_round_prompt_key(app, key.code).await?
+                        }
+                        AppScreen::ConfigView => handle_config_key(app, key.code),
+                        AppScreen::ConfigInput => handle_config_input_key(app, key.code),
+                        AppScreen::ExcludeRules => handle_exclude_rules_key(app, key.code),
+                        AppScreen::WanxiangDiagnosis => {
+                            handle_wanxiang_diagnosis_key(app, key.code)
+                        }
+                    }
+                    dirty = true;
+                }
+                Event::Resize(_, _) => dirty = true,
+                _ => {}
+            }
         }
     }
 }
@@ -662,6 +690,7 @@ async fn handle_rime_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
         app.notify(format!("❌ {error}"));
         return Ok(());
     }
+    reload_config_from_disk(app);
     app.offer_rime_setup = false;
     if enabled {
         start_update(app, UpdateMode::RimeSetup).await?;
@@ -1109,11 +1138,11 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
         }
         KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
             if let Ok(mut manager) = Manager::new() {
-                match actions
+                let action = actions
                     .get(app.config_selected)
                     .copied()
-                    .unwrap_or(ConfigAction::Refresh)
-                {
+                    .unwrap_or(ConfigAction::Refresh);
+                match action {
                     ConfigAction::TuiTheme => {
                         manager.config.tui_theme_mode = next_tui_theme_mode(&manager.config);
                     }
@@ -1132,6 +1161,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                         return;
                     }
                     ConfigAction::WanxiangDiagnosis => {
+                        refresh_wanxiang_diagnosis(app);
                         app.screen = AppScreen::WanxiangDiagnosis;
                         return;
                     }
@@ -1211,16 +1241,11 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     app.notify(format!("❌ {error}"));
                     return;
                 }
-                if matches!(
-                    actions
-                        .get(app.config_selected)
-                        .copied()
-                        .unwrap_or(ConfigAction::Refresh),
-                    ConfigAction::Refresh
-                ) {
-                    refresh_config_status(app);
-                } else {
-                    refresh_config_status(app);
+                if action == ConfigAction::TuiTheme {
+                    crate::ui::style::reset_terminal_theme_cache();
+                }
+                refresh_config_status(app);
+                if action != ConfigAction::Refresh {
                     app.notify(app.t.t("config.saved").to_string());
                 }
             }
@@ -1335,12 +1360,7 @@ fn handle_config_input_key(app: &mut App, key: KeyCode) {
 }
 
 fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
-    let manager = Manager::new();
-    let patterns = manager
-        .as_ref()
-        .map(|m| &m.config.exclude_files)
-        .cloned()
-        .unwrap_or_default();
+    let patterns = app.config_snapshot.exclude_files.clone();
     let action_count = patterns.len() + 2;
     match key {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -1360,10 +1380,11 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
                 if let Err(err) = manager.remove_exclude_pattern(app.exclude_selected) {
                     app.notify(format!("❌ {err}"));
                 } else {
+                    reload_config_from_disk(app);
                     app.notify(app.t.t("config.saved").to_string());
                     app.exclude_selected = app
                         .exclude_selected
-                        .min(manager.config.exclude_files.len().saturating_sub(1));
+                        .min(app.config_snapshot.exclude_files.len().saturating_sub(1));
                 }
             }
         }
@@ -1372,6 +1393,7 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
                 if let Err(err) = manager.reset_exclude_patterns() {
                     app.notify(format!("❌ {err}"));
                 } else {
+                    reload_config_from_disk(app);
                     app.notify(app.t.t("config.saved").to_string());
                     app.exclude_selected = 0;
                 }
@@ -1393,6 +1415,7 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
                     if let Err(err) = manager.reset_exclude_patterns() {
                         app.notify(format!("❌ {err}"));
                     } else {
+                        reload_config_from_disk(app);
                         app.notify(app.t.t("config.saved").to_string());
                         app.exclude_selected = 0;
                     }
@@ -1418,7 +1441,19 @@ fn enter_config_view(app: &mut App) {
     refresh_config_status(app);
 }
 
+/// 重新读取磁盘上的配置与已安装引擎，刷新渲染期缓存。
+/// 只在启动、界面切换和配置/更新动作之后调用，绝不进入逐帧路径。
+fn reload_config_from_disk(app: &mut App) {
+    if let Ok(manager) = Manager::new() {
+        app.config_snapshot = manager.config.clone();
+        app.rime_dir = manager.rime_dir.display().to_string();
+        app.config_path = manager.config_path.display().to_string();
+    }
+    app.engines = config::detect_installed_engines();
+}
+
 fn refresh_config_status(app: &mut App) {
+    reload_config_from_disk(app);
     app.config_status_loading = true;
     let (tx, rx) = mpsc::channel();
     app.config_status_rx = Some(rx);
@@ -1762,6 +1797,8 @@ fn current_schema_index(schema: Schema) -> usize {
         .unwrap_or(0)
 }
 
+// 仅 Linux 单测使用：生产渲染路径已改为读 App 内缓存的引擎列表。
+#[cfg(all(test, target_os = "linux"))]
 fn skin_menu_supported() -> bool {
     let manager = match Manager::new() {
         Ok(manager) => manager,
@@ -1778,7 +1815,7 @@ fn menu_unavailable_reason(app: &App, idx: usize) -> Option<String> {
             app.t.t("hint.unavailable"),
             app.t.t("update.no_dict")
         )),
-        6 if !skin_menu_supported() => Some(format!(
+        6 if skin_menu_target(app).is_none() => Some(format!(
             "{}: {}",
             app.t.t("hint.unavailable"),
             app.t.t("skin.not_supported")
@@ -1998,7 +2035,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn current_engine_label(app: &App) -> String {
-    let engines = config::detect_installed_engines();
+    let engines = &app.engines;
     if engines.is_empty() {
         app.t.t("config.none").to_string()
     } else {
@@ -2110,16 +2147,8 @@ fn render_update_confirmation_popup(f: &mut Frame, area: Rect, app: &App) {
         UpdateMode::Dict => app.t.t("update.confirm_dict_title"),
         UpdateMode::Model => app.t.t("update.confirm_model_title"),
     };
-    let notice = if let Ok(manager) = Manager::new() {
-        update_notice_text(&manager.config, &app.t)
-    } else {
-        app.t.t("update.preserve_user_data_notice")
-    };
-    let detail = if let Ok(manager) = Manager::new() {
-        update_detail_text(&manager.config, &app.t)
-    } else {
-        app.t.t("update.preserve_user_data_detail")
-    };
+    let notice = update_notice_text(&app.config_snapshot, &app.t);
+    let detail = update_detail_text(&app.config_snapshot, &app.t);
 
     let content = vec![
         Line::from(vec![Span::styled(
@@ -2266,7 +2295,8 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     f.render_stateful_widget(list, chunks[0], &mut state);
 
     let selected_idx = app.menu_selected + 1;
-    let install_message = config::rime_installation_message(app.t.lang());
+    let install_message =
+        config::rime_installation_message_with_engines(app.t.lang(), &app.engines);
     let detail = if !install_message.is_empty() {
         detail_lines(&install_message)
     } else if let Some(reason) = menu_unavailable_reason(app, selected_idx) {
@@ -2685,14 +2715,13 @@ fn sliding_window(selected: usize, total_items: usize, window_size: usize) -> Sl
 }
 
 fn render_config_screen(f: &mut Frame, area: Rect, app: &App) {
-    let manager = Manager::new().ok();
-    let detected_engines = manager
-        .as_ref()
-        .map(|_| crate::config::detect_installed_engines().join(", "))
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| app.t.t("config.none").into());
-    let config = manager.map(|m| m.config).unwrap_or_default();
-    let effective_proxy = crate::api::effective_proxy(&config).ok().flatten();
+    let detected_engines = if app.engines.is_empty() {
+        app.t.t("config.none").into()
+    } else {
+        app.engines.join(", ")
+    };
+    let config = &app.config_snapshot;
+    let effective_proxy = crate::api::effective_proxy(config).ok().flatten();
     let env_proxy_active = matches!(
         effective_proxy.as_ref().map(|proxy| proxy.source),
         Some(crate::api::ProxySource::Environment)
@@ -2705,7 +2734,7 @@ fn render_config_screen(f: &mut Frame, area: Rect, app: &App) {
         crate::ui::config_view::ConfigScreenState {
             selected_index: app.config_selected,
             schema_name: app.schema.display_name_lang(app.t.lang()),
-            config: &config,
+            config,
             detected_engines,
             effective_proxy: effective_proxy.as_ref(),
             env_proxy_active,
@@ -2719,28 +2748,18 @@ fn render_config_screen(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn build_exclude_rules_view_data(app: &App) -> crate::ui::config_view::ExcludeRulesViewData<'_> {
-    let manager = Manager::new().ok();
-    let patterns = manager
-        .as_ref()
-        .map(|m| crate::config::effective_exclude_patterns(&m.config))
-        .unwrap_or_else(crate::config::default_exclude_patterns);
-    let descriptions = manager
-        .as_ref()
-        .and_then(|m| {
-            let effective = crate::config::effective_exclude_patterns(&m.config);
-            let (parsed, errors) = crate::config::parse_exclude_patterns(&effective);
-            if errors.is_empty() {
-                Some(
-                    parsed
-                        .iter()
-                        .map(crate::config::exclude_pattern_description)
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| patterns.clone());
+    let patterns = crate::config::effective_exclude_patterns(&app.config_snapshot);
+    let descriptions = {
+        let (parsed, errors) = crate::config::parse_exclude_patterns(&patterns);
+        if errors.is_empty() {
+            parsed
+                .iter()
+                .map(crate::config::exclude_pattern_description)
+                .collect::<Vec<_>>()
+        } else {
+            patterns.clone()
+        }
+    };
 
     crate::ui::config_view::ExcludeRulesViewData {
         help_text: app.t.t("config.exclude_help"),
@@ -2755,18 +2774,44 @@ fn build_exclude_rules_view_data(app: &App) -> crate::ui::config_view::ExcludeRu
     }
 }
 
+/// 诊断页读盘较重（marker 文件 + 记录文件），只在进入页面时算一次，逐帧渲染用缓存。
+fn refresh_wanxiang_diagnosis(app: &mut App) {
+    app.diagnosis = Some(match Manager::new() {
+        Ok(manager) => Ok(crate::config::diagnose_wanxiang(
+            &manager.config,
+            &manager.cache_dir,
+            &manager.rime_dir,
+        )),
+        Err(err) => Err(err.to_string()),
+    });
+}
+
 fn build_wanxiang_diagnosis_view_data(
     app: &App,
 ) -> crate::ui::config_view::WanxiangDiagnosisViewData<'_> {
-    let manager = match Manager::new() {
-        Ok(manager) => manager,
-        Err(err) => {
+    let diagnosis = match &app.diagnosis {
+        Some(Ok(diagnosis)) => diagnosis,
+        Some(Err(err)) => {
             return crate::ui::config_view::WanxiangDiagnosisViewData {
                 title: app.t.t("config.wanxiang_diagnosis_title"),
                 failed_label: app.t.t("update.failed"),
                 current_scheme_label: app.t.t("config.current_scheme"),
                 markers_label: app.t.t("config.wanxiang_markers_label"),
-                error_message: Some(err.to_string()),
+                error_message: Some(err.clone()),
+                detected_schema: String::new(),
+                record_schema: String::new(),
+                config_schema: String::new(),
+                custom_patch_schema: String::new(),
+                marker_files: Vec::new(),
+            };
+        }
+        None => {
+            return crate::ui::config_view::WanxiangDiagnosisViewData {
+                title: app.t.t("config.wanxiang_diagnosis_title"),
+                failed_label: app.t.t("update.failed"),
+                current_scheme_label: app.t.t("config.current_scheme"),
+                markers_label: app.t.t("config.wanxiang_markers_label"),
+                error_message: None,
                 detected_schema: String::new(),
                 record_schema: String::new(),
                 config_schema: String::new(),
@@ -2775,8 +2820,6 @@ fn build_wanxiang_diagnosis_view_data(
             };
         }
     };
-    let diagnosis =
-        crate::config::diagnose_wanxiang(&manager.config, &manager.cache_dir, &manager.rime_dir);
     crate::ui::config_view::WanxiangDiagnosisViewData {
         title: app.t.t("config.wanxiang_diagnosis_title"),
         failed_label: app.t.t("update.failed"),
@@ -2799,7 +2842,7 @@ fn build_wanxiang_diagnosis_view_data(
             .custom_patch_schema
             .map(|s| s.display_name_lang(app.t.lang()))
             .unwrap_or_else(|| app.t.t("config.none").into()),
-        marker_files: diagnosis.marker_files,
+        marker_files: diagnosis.marker_files.clone(),
     }
 }
 

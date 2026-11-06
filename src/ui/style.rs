@@ -5,9 +5,17 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 use std::env;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 static QUERIED_THEME: OnceLock<TerminalTheme> = OnceLock::new();
+
+// 终端主题判定在一次进程生命周期内是常量：探测在 Windows 上会 shell out 到 reg
+// 并读配置，只应做一次，避免每个取色调用都重建 Manager。
+const THEME_UNRESOLVED: u8 = 0;
+const THEME_DARK: u8 = 1;
+const THEME_LIGHT: u8 = 2;
+static RESOLVED_THEME: AtomicU8 = AtomicU8::new(THEME_UNRESOLVED);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalTheme {
@@ -150,6 +158,24 @@ fn palette() -> UiPalette {
 }
 
 fn detect_terminal_theme() -> TerminalTheme {
+    match RESOLVED_THEME.load(Ordering::Relaxed) {
+        THEME_DARK => return TerminalTheme::Dark,
+        THEME_LIGHT => return TerminalTheme::Light,
+        _ => {}
+    }
+
+    let theme = resolve_terminal_theme();
+    RESOLVED_THEME.store(
+        match theme {
+            TerminalTheme::Dark => THEME_DARK,
+            TerminalTheme::Light => THEME_LIGHT,
+        },
+        Ordering::Relaxed,
+    );
+    theme
+}
+
+fn resolve_terminal_theme() -> TerminalTheme {
     let configured_mode = Manager::new()
         .ok()
         .and_then(|manager| parse_theme_override(Some(&manager.config.tui_theme_mode)));
@@ -162,10 +188,16 @@ fn detect_terminal_theme() -> TerminalTheme {
         .unwrap_or(TerminalTheme::Dark)
 }
 
+/// TUI 内切换主题（light/dark/auto）后调用，让下一次取色重新判定。
+pub(crate) fn reset_terminal_theme_cache() {
+    RESOLVED_THEME.store(THEME_UNRESOLVED, Ordering::Relaxed);
+}
+
 pub(crate) fn query_terminal_background() {
     #[cfg(unix)]
     if let Some(theme) = query_osc_background() {
         let _ = QUERIED_THEME.set(theme);
+        reset_terminal_theme_cache();
     }
 }
 
