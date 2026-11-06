@@ -1,0 +1,39 @@
+[package]
+name = "snout-desktop"
+version = "0.3.0"
+edition = "2021"
+description = "Native snout input-method workbench"
+license = "MIT"
+
+[workspace]
+
+[features]
+default = ["native"]
+native = ["dep:nsh-platform-linux", "dep:nsh-platform-macos", "dep:nsh-platform-windows"]
+
+[dependencies]
+anyhow = "1"
+nsh-core = { version = "=0.4.0", default-features = false }
+nsh-base = { version = "=0.4.0", default-features = false }
+serde_json = "1"
+snout = { path = ".." }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "=0.4.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "=0.4.0", default-features = false, optional = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { version = "=0.4.0", default-features = false, optional = true }
+
+[dev-dependencies]
+nsh-engine = { version = "=0.4.0", default-features = false }
+nsh-testing = { version = "=0.4.0", default-features = false }
+tempfile = "3"
+
+[[bin]]
+name = "snout-desktop"
+path = "src/main.rs"
+required-features = ["native"]

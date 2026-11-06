@@ -50,7 +50,7 @@ impl FrostUpdater {
             .map(|r| r.name != "rime-frost-schemas.zip")
             .unwrap_or(false);
 
-        if !scheme_switched && !BaseUpdater::needs_update(local.as_ref(), &info) {
+        if !scheme_switched && scheme_is_current(&self.base.rime_dir, local.as_ref(), &info) {
             progress(UpdateEvent {
                 component: UpdateComponent::Scheme,
                 phase: UpdatePhase::Finished,
@@ -132,4 +132,122 @@ impl FrostUpdater {
     }
 
     // 白霜词库内嵌在方案 zip 中，不需要单独更新
+}
+
+fn scheme_is_current(
+    rime_dir: &std::path::Path,
+    local: Option<&UpdateRecord>,
+    info: &UpdateInfo,
+) -> bool {
+    !BaseUpdater::needs_update(local, info)
+        && [
+            "rime_frost.schema.yaml",
+            "rime_frost.dict.yaml",
+            "cn_dicts/8105.dict.yaml",
+            "cn_dicts/base.dict.yaml",
+        ]
+        .iter()
+        .all(|file| rime_dir.join(file).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    const SCHEME_FILES: &[&str] = &[
+        "rime_frost.schema.yaml",
+        "rime_frost.dict.yaml",
+        "cn_dicts/8105.dict.yaml",
+        "cn_dicts/base.dict.yaml",
+    ];
+
+    fn cached_update(root: &Path) -> (UpdateInfo, UpdateRecord) {
+        let info = UpdateInfo {
+            name: "rime-frost-schemas.zip".into(),
+            url: String::new(),
+            update_time: "2026-11-01T00:00:00Z".into(),
+            tag: "v1".into(),
+            description: String::new(),
+            sha256: String::new(),
+            size: 0,
+        };
+        let record = UpdateRecord {
+            name: info.name.clone(),
+            update_time: info.update_time.clone(),
+            tag: info.tag.clone(),
+            apply_time: String::new(),
+            sha256: String::new(),
+        };
+        let record_path = root.join("cache/scheme_record.json");
+        BaseUpdater::save_record(&record_path, &record).expect("cached record");
+        (
+            info,
+            BaseUpdater::load_record(&record_path).expect("read cached record"),
+        )
+    }
+
+    fn install_files(root: &Path, files: &[&str]) {
+        for file in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().expect("file parent")).expect("parent directory");
+            std::fs::write(path, "installed").expect("installed file");
+        }
+    }
+
+    #[test]
+    fn scheme_freshness_requires_installed_files_despite_matching_cache() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let rime_dir = root.path().join("rime");
+        let (info, record) = cached_update(root.path());
+        install_files(&rime_dir, SCHEME_FILES);
+        assert!(scheme_is_current(&rime_dir, Some(&record), &info));
+
+        for file in SCHEME_FILES {
+            let path = rime_dir.join(file);
+            std::fs::remove_file(&path).expect("delete installed file");
+            assert!(
+                !scheme_is_current(&rime_dir, Some(&record), &info),
+                "missing {file}"
+            );
+            std::fs::create_dir(&path).expect("directory instead of file");
+            assert!(
+                !scheme_is_current(&rime_dir, Some(&record), &info),
+                "directory {file}"
+            );
+            std::fs::remove_dir(&path).expect("remove directory");
+            std::fs::write(path, "installed").expect("restore installed file");
+        }
+    }
+
+    #[test]
+    fn scheme_freshness_rejects_the_same_cache_for_a_different_rime_root() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let (info, record) = cached_update(root.path());
+        let installed = root.path().join("installed");
+        install_files(&installed, SCHEME_FILES);
+        assert!(scheme_is_current(&installed, Some(&record), &info));
+        let other = root.path().join("other");
+        install_files(
+            &other,
+            &[
+                "frost.schema.yaml",
+                "frost.dict.yaml",
+                "cn_dicts/base.dict.yaml",
+                "cn_dicts/8105.dict.yaml",
+            ],
+        );
+        assert!(!scheme_is_current(&other, Some(&record), &info));
+    }
+
+    #[test]
+    fn scheme_freshness_preserves_record_checks_when_files_exist() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let (mut info, record) = cached_update(root.path());
+        install_files(root.path(), SCHEME_FILES);
+        assert!(scheme_is_current(root.path(), Some(&record), &info));
+        assert!(!scheme_is_current(root.path(), None, &info));
+        info.tag = "v2".into();
+        assert!(!scheme_is_current(root.path(), Some(&record), &info));
+    }
 }

@@ -30,24 +30,104 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   test:
-    name: Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dbus-daemon
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      - run: cargo test --locked
+
+  desktop-headless:
+    name: Desktop headless (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> target
+      - run: cargo fmt --manifest-path desktop/Cargo.toml --all -- --check
+      - run: cargo test --manifest-path desktop/Cargo.toml --locked --no-default-features --all-targets
+      - run: cargo clippy --manifest-path desktop/Cargo.toml --locked --no-default-features --all-targets -- -D warnings
+      - name: Test desktop packaging
+        run: python -B -m unittest discover -s scripts/desktop -p "test_*.py" -v
+
+  desktop-native:
+    name: Desktop native (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install Linux native dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev
+          pkg-config --atleast-version=4.14 gtk4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> target
+      - run: cargo clippy --manifest-path desktop/Cargo.toml --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+      - run: cargo build --manifest-path desktop/Cargo.toml --locked --release --bin snout-desktop --target ${{ matrix.target }}
+      - name: Package native desktop
+        run: python scripts/package-desktop.py --target ${{ matrix.target }} --output-dir dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: snout-desktop-${{ matrix.target }}
+          path: dist/snout-desktop-*
+          if-no-files-found: error
 
   build-linux:
     name: Build Linux x86_64

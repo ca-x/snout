@@ -1,2 +1,5 @@
 /target
+/desktop/target
+/dist
+__pycache__/
 /.omx

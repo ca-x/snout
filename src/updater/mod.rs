@@ -109,20 +109,7 @@ pub async fn update_all(
                 progress: 0.40,
                 detail: t.t("menu.update_dict").into(),
             });
-            // 重新创建 updater (borrow checker)
-            let base2 = match BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone()) {
-                Ok(b) => b,
-                Err(e) => {
-                    results.push(BaseUpdater::fail_result(
-                        UpdateComponent::Dict,
-                        t.t("update.dict"),
-                        &e,
-                    ));
-                    return Ok(results);
-                }
-            };
-            let wx2 = WanxiangUpdater { base: base2 };
-            match wx2
+            match wx
                 .update_dict(schema, config, Some(&cancel), |event| {
                     emit(rescale_event(event, 0.40, 0.30));
                 })
@@ -161,19 +148,7 @@ pub async fn update_all(
             progress: 0.40,
             detail: t.t("menu.update_dict").into(),
         });
-        let base2 = match BaseUpdater::new(config, cache_dir.clone(), rime_dir.clone()) {
-            Ok(b) => b,
-            Err(e) => {
-                results.push(BaseUpdater::fail_result(
-                    UpdateComponent::Dict,
-                    t.t("update.dict"),
-                    &e,
-                ));
-                return Ok(results);
-            }
-        };
-        let ice2 = IceUpdater { base: base2 };
-        match ice2
+        match ice
             .update_dict(config, Some(&cancel), |event| {
                 emit(rescale_event(event, 0.40, 0.30));
             })

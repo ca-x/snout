@@ -121,6 +121,7 @@ impl BaseUpdater {
     }
 
     /// 通用下载+校验+解压流程
+    /// Normalizes an isolated staging tree before merging files into the destination.
     pub async fn download_and_extract(
         &self,
         info: &UpdateInfo,
@@ -188,10 +189,19 @@ impl BaseUpdater {
             progress: 0.85,
             detail: t.t("update.extracting").into(),
         });
+        let staging = fileutil::extract::stage_zip(&zip_path)?;
+        fileutil::extract::handle_nested_dir(
+            staging.path(),
+            &info.name,
+            UserDataBehavior::Discard,
+            &[],
+        )?;
+        if let Some(signal) = cancel {
+            signal.checkpoint()?;
+        }
         crate::deployer::prepare_for_update(self.lang)?;
-        std::fs::create_dir_all(extract_dest)?;
-        fileutil::extract::extract_zip(
-            &zip_path,
+        fileutil::extract::merge_directory(
+            staging.path(),
             extract_dest,
             user_data_behavior_for_config(config),
             &crate::config::effective_exclude_patterns(config),
@@ -334,6 +344,62 @@ mod tests {
             sha256: "abc".into(),
             size: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn regression_cached_zip_normalizes_before_live_merge() {
+        use std::io::Write;
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let dest = directory.path().join("rime");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(dest.join("lua")).unwrap();
+        std::fs::write(dest.join("lua/user.lua"), b"user-lua").unwrap();
+        std::fs::write(dest.join("squirrel.custom.yaml"), b"user-custom").unwrap();
+        let archive_path = cache.join("asset.zip");
+        let mut archive = zip::ZipWriter::new(std::fs::File::create(&archive_path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, contents) in [
+            ("wrapper/lua/new.lua", "new-lua"),
+            ("wrapper/schema.yaml", "new-schema"),
+            ("wrapper/squirrel.custom.yaml", "archive-custom"),
+        ] {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(contents.as_bytes()).unwrap();
+        }
+        archive.finish().unwrap();
+        let config = Config::default();
+        let updater = BaseUpdater::new(&config, cache, dest.clone()).unwrap();
+        let mut info = sample_info();
+        info.sha256 = fileutil::hash::sha256_file(&archive_path).unwrap();
+
+        updater
+            .download_and_extract(
+                &info,
+                &config,
+                &dest,
+                UpdateComponent::Scheme,
+                None,
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(dest.join("schema.yaml")).unwrap(),
+            b"new-schema"
+        );
+        assert_eq!(std::fs::read(dest.join("lua/new.lua")).unwrap(), b"new-lua");
+        assert_eq!(
+            std::fs::read(dest.join("lua/user.lua")).unwrap(),
+            b"user-lua"
+        );
+        assert_eq!(
+            std::fs::read(dest.join("squirrel.custom.yaml")).unwrap(),
+            b"user-custom"
+        );
+        assert!(!dest.join("wrapper").exists());
     }
 
     #[test]

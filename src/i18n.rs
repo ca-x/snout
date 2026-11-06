@@ -8,12 +8,24 @@ pub enum Lang {
 }
 
 impl Lang {
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "Keep the infallible compatibility API alongside the standard parsing trait"
+    )]
     pub fn from_str(s: &str) -> Self {
         if s.starts_with("zh") || s.starts_with("cn") {
             Lang::Zh
         } else {
             Lang::En
         }
+    }
+}
+
+impl std::str::FromStr for Lang {
+    type Err = std::convert::Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(Self::from_str(value))
     }
 }
 
@@ -986,9 +998,31 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn language_parsing_preserves_prefix_and_fallback_compatibility() {
+        for (value, expected) in [
+            ("zh", Lang::Zh),
+            ("zh-CN", Lang::Zh),
+            ("zh_TW", Lang::Zh),
+            ("cn", Lang::Zh),
+            ("cn-CN", Lang::Zh),
+            ("en", Lang::En),
+            ("en-US", Lang::En),
+            ("", Lang::En),
+            ("fr", Lang::En),
+            ("ZH", Lang::En),
+        ] {
+            assert_eq!(Lang::from_str(value), expected);
+            assert_eq!(value.parse::<Lang>(), Ok(expected));
+        }
+    }
+
+    #[test]
     fn all_i18n_keys_used_in_source_are_defined() {
         let source_files = [
             "src/main.rs",
+            "src/cli.rs",
+            "src/application.rs",
+            "src/application/status.rs",
             "src/api/mod.rs",
             "src/api/releases.rs",
             "src/updater/base.rs",

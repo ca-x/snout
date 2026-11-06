@@ -72,7 +72,9 @@ pub struct App {
     pub t: L10n,
     // 渲染期缓存：避免每帧重建 Manager / 重新探测引擎（Windows 上是一次 reg 子进程）
     config_snapshot: crate::types::Config,
+    cache_dir: std::path::PathBuf,
     engines: Vec<String>,
+    skin_target: Option<SkinMenuTarget>,
     diagnosis: Option<Result<crate::config::WanxiangDiagnosis, String>>,
     // 更新状态
     pub update_msg: String,
@@ -108,14 +110,9 @@ enum UpdateTaskError {
     Failed(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum UpdateMode {
-    All,
-    RimeSetup,
-    Scheme,
-    Dict,
-    Model,
-}
+use crate::application::{
+    AppearanceTarget as SkinMenuTarget, PatchMode, UpdateAction as UpdateMode,
+};
 
 #[derive(Debug)]
 struct UpdateTaskResult {
@@ -144,23 +141,14 @@ enum ConfigInputField {
     ExcludePattern,
 }
 
-#[derive(Clone)]
-struct ResolvedUpdateContext {
-    schema: Schema,
-    config: crate::types::Config,
-    cache_dir: std::path::PathBuf,
-    rime_dir: std::path::PathBuf,
-}
-
-#[derive(Debug, Clone)]
-enum SkinMenuTarget {
-    ThemePatch(std::path::PathBuf),
-    Fcitx5Theme,
-}
+type ResolvedUpdateContext = Manager;
 
 impl App {
     pub fn new(manager: &Manager) -> Self {
         let lang = Lang::from_str(&manager.config.language);
+        crate::ui::style::configure_terminal_theme(&manager.config.tui_theme_mode);
+        let engines = config::detect_installed_engines();
+        let skin_target = crate::application::appearance_target(&manager.rime_dir, &engines);
         Self {
             should_quit: false,
             screen: AppScreen::Menu,
@@ -178,7 +166,9 @@ impl App {
             config_path: manager.config_path.display().to_string(),
             t: L10n::new(lang),
             config_snapshot: manager.config.clone(),
-            engines: config::detect_installed_engines(),
+            cache_dir: manager.cache_dir.clone(),
+            engines,
+            skin_target,
             diagnosis: None,
             update_msg: String::new(),
             update_pct: 0.0,
@@ -205,6 +195,16 @@ impl App {
             exclude_selected: 0,
             exclude_edit_index: None,
         }
+    }
+
+    fn load_manager(&self) -> Result<Manager> {
+        let mut manager = Manager::with_paths(
+            std::path::PathBuf::from(&self.config_path),
+            std::path::PathBuf::from(&self.rime_dir),
+            self.cache_dir.clone(),
+        )?;
+        manager.config.schema = self.schema;
+        Ok(manager)
     }
 
     /// 动态菜单项 (i18n)
@@ -307,77 +307,74 @@ fn model_update_supported(schema: Schema) -> bool {
     schema.supports_model_patch()
 }
 
+#[cfg(test)]
 fn theme_patch_target_for_platform(
     rime_dir: &std::path::Path,
     installed_engines: &[String],
 ) -> Option<std::path::PathBuf> {
-    if cfg!(target_os = "windows") && installed_engines.iter().any(|engine| engine == "weasel") {
-        Some(rime_dir.join("weasel.custom.yaml"))
-    } else if cfg!(target_os = "macos")
-        && installed_engines.iter().any(|engine| engine == "squirrel")
-    {
-        Some(rime_dir.join("squirrel.custom.yaml"))
-    } else {
-        None
-    }
+    crate::application::theme_patch_target(rime_dir, installed_engines)
 }
 
 fn skin_menu_target(app: &App) -> Option<SkinMenuTarget> {
-    let installed_engines = &app.engines;
-
-    if cfg!(target_os = "linux")
-        && crate::skin::fcitx5::builtin_themes_available()
-        && crate::skin::fcitx5::theme_supported(installed_engines)
-    {
-        return Some(SkinMenuTarget::Fcitx5Theme);
-    }
-
-    theme_patch_target_for_platform(std::path::Path::new(&app.rime_dir), installed_engines)
-        .map(SkinMenuTarget::ThemePatch)
+    app.skin_target.clone()
 }
 
 fn resolve_update_context(app: &App, mode: &UpdateMode) -> anyhow::Result<ResolvedUpdateContext> {
-    let manager = Manager::new()?;
+    let mut manager = app.load_manager()?;
     let schema = app.schema;
+    manager.config.schema = schema;
     if matches!(mode, UpdateMode::Model) && !model_update_supported(schema) {
         anyhow::bail!("{}", app.t.t("update.model_not_supported"));
     }
 
-    Ok(ResolvedUpdateContext {
-        schema,
-        config: manager.config.clone(),
-        cache_dir: manager.cache_dir.clone(),
-        rime_dir: manager.rime_dir.clone(),
-    })
+    Ok(manager)
 }
 
 // ── 主入口 ──
 pub async fn run_tui() -> Result<()> {
     let manager = Manager::new()?;
     let mut app = App::new(&manager);
-    crate::feedback::set_tui_active(true);
-
-    // 终端设置
-    enable_raw_mode()?;
+    let _session = TerminalSession::enter()?;
     crate::ui::style::query_terminal_background();
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+    run_app(&mut terminal, &mut app, &manager).await
+}
 
-    let result = run_app(&mut terminal, &mut app, &manager).await;
+struct TerminalSession;
 
-    // 恢复终端
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-    crate::feedback::set_tui_active(false);
+impl TerminalSession {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        let session = Self;
+        crate::feedback::set_tui_active(true);
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+        Ok(session)
+    }
+}
 
-    result
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(cancel) = &self.cancel_signal {
+            cancel.cancel();
+        }
+        if let Some(task) = &self.update_task {
+            task.abort();
+        }
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            crossterm::cursor::Show
+        );
+        crate::feedback::set_tui_active(false);
+    }
 }
 
 async fn run_app(
@@ -534,9 +531,9 @@ async fn handle_menu_key(app: &mut App, key: KeyCode) -> Result<()> {
                             app.t.lang(),
                         );
                         let desired = !patched;
-                        let result = Manager::new().and_then(|mut manager| {
+                        let result = app.load_manager().and_then(|mut manager| {
                             manager.rime_dir = std::path::PathBuf::from(&app.rime_dir);
-                            set_model_patch_enabled(&mut manager, app.schema, app.t.lang(), desired)
+                            set_model_patch_enabled(&mut manager, desired)
                         });
                         if let Err(e) = result {
                             app.update_results.push(format!("❌ {e}"));
@@ -621,7 +618,7 @@ fn handle_user_data_policy_confirm_key(app: &mut App, key: KeyCode) -> Result<()
     match key {
         KeyCode::Enter => {
             if let Some(policy) = app.pending_user_data_policy.take() {
-                if let Ok(mut manager) = Manager::new() {
+                if let Ok(mut manager) = app.load_manager() {
                     manager.config.user_data_policy = policy;
                     let _ = manager.save();
                     app.notify(app.t.t("config.saved").to_string());
@@ -640,7 +637,8 @@ fn handle_user_data_policy_confirm_key(app: &mut App, key: KeyCode) -> Result<()
 }
 
 async fn begin_update_flow(app: &mut App, mode: UpdateMode) -> Result<()> {
-    let config = Manager::new()
+    let config = app
+        .load_manager()
         .map(|manager| manager.config)
         .unwrap_or_default();
     match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
@@ -682,7 +680,7 @@ async fn handle_rime_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => return Ok(()),
     };
     let save = (|| -> Result<()> {
-        let mut manager = Manager::new()?;
+        let mut manager = app.load_manager()?;
         manager.config.rime_auto_setup = Some(enabled);
         manager.save()
     })();
@@ -700,40 +698,13 @@ async fn handle_rime_setup_key(app: &mut App, key: KeyCode) -> Result<()> {
     Ok(())
 }
 
-fn set_model_patch_enabled(
-    manager: &mut Manager,
-    schema: Schema,
-    lang: Lang,
-    enabled: bool,
-) -> Result<()> {
-    let was_enabled = manager.config.model_patch_enabled;
-    let was_applied = updater::model_patch::is_model_patched(&manager.rime_dir, &schema, lang);
-
-    if enabled != was_applied {
-        if enabled {
-            updater::model_patch::patch_model(&manager.rime_dir, &schema, lang)?;
-        } else {
-            updater::model_patch::unpatch_model(&manager.rime_dir, &schema, lang)?;
-        }
-    }
-
-    manager.config.model_patch_enabled = enabled;
-    if let Err(save_error) = manager.save() {
-        manager.config.model_patch_enabled = was_enabled;
-        let rollback = if was_applied {
-            updater::model_patch::patch_model(&manager.rime_dir, &schema, lang)
-        } else {
-            updater::model_patch::unpatch_model(&manager.rime_dir, &schema, lang)
-        };
-        return match rollback {
-            Ok(()) => Err(save_error),
-            Err(rollback_error) => Err(anyhow::anyhow!(
-                "{save_error}; model patch rollback failed: {rollback_error}"
-            )),
-        };
-    }
-
-    Ok(())
+fn set_model_patch_enabled(manager: &mut Manager, enabled: bool) -> Result<()> {
+    let mode = if enabled {
+        PatchMode::Enabled
+    } else {
+        PatchMode::Disabled
+    };
+    crate::application::set_model_patch(manager, mode)
 }
 
 fn handle_updating_key(app: &mut App, key: KeyCode) {
@@ -769,7 +740,7 @@ fn handle_scheme_key(app: &mut App, key: KeyCode, _manager: &Manager) -> Result<
         KeyCode::Enter => {
             if let Some(s) = schemas.get(app.scheme_selected) {
                 app.schema = *s;
-                if let Ok(mut manager) = Manager::new() {
+                if let Ok(mut manager) = app.load_manager() {
                     manager.config.schema = *s;
                     let _ = manager.save();
                 }
@@ -886,9 +857,7 @@ fn handle_theme_patch_default_key(app: &mut App, key: KeyCode) -> Result<()> {
                         .iter()
                         .map(String::as_str)
                         .collect();
-                    if let Err(e) = crate::skin::patch::sync_skin_presets(&path, &refs) {
-                        app.notify(format!("❌ {e}"));
-                    } else if let Err(e) = crate::skin::patch::set_default_skin(&path, key) {
+                    if let Err(e) = crate::skin::patch::apply_skin_presets(&path, &refs, key) {
                         app.notify(format!("❌ {e}"));
                     } else if cfg!(target_os = "windows") {
                         if let Err(e) = crate::deployer::deploy_to("weasel", &app.t) {
@@ -1092,9 +1061,7 @@ async fn apply_skin_selection(
             }
         }
         SkinMenuTarget::ThemePatch(patch) => {
-            if let Err(e) = crate::skin::patch::sync_skin_presets(&patch, &[key]) {
-                app.notify(format!("❌ {e}"));
-            } else if let Err(e) = crate::skin::patch::set_default_skin(&patch, key) {
+            if let Err(e) = crate::skin::patch::apply_skin_presets(&patch, &[key], key) {
                 app.notify(format!("❌ {e}"));
             } else {
                 app.notify(format!("✅ {}: {name}", app.t.t("skin.applied")));
@@ -1122,9 +1089,9 @@ async fn handle_skin_round_prompt_key(app: &mut App, key: KeyCode) -> Result<()>
 }
 
 fn handle_config_key(app: &mut App, key: KeyCode) {
-    let config = Manager::new().map(|m| m.config).unwrap_or_default();
-    let actions = config_actions(&config);
-    let effective_proxy = crate::api::effective_proxy(&config).ok().flatten();
+    let config = &app.config_snapshot;
+    let actions = config_actions(config);
+    let effective_proxy = crate::api::effective_proxy(config).ok().flatten();
     let env_proxy_active = matches!(
         effective_proxy.as_ref().map(|proxy| proxy.source),
         Some(crate::api::ProxySource::Environment)
@@ -1137,7 +1104,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
             app.config_selected += 1;
         }
         KeyCode::Left | KeyCode::Right | KeyCode::Enter => {
-            if let Ok(mut manager) = Manager::new() {
+            if let Ok(mut manager) = app.load_manager() {
                 let action = actions
                     .get(app.config_selected)
                     .copied()
@@ -1203,9 +1170,7 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     }
                     ConfigAction::ModelPatch => {
                         let enabled = !manager.config.model_patch_enabled;
-                        if let Err(e) =
-                            set_model_patch_enabled(&mut manager, app.schema, app.t.lang(), enabled)
-                        {
+                        if let Err(e) = set_model_patch_enabled(&mut manager, enabled) {
                             app.notify(format!("❌ {e}"));
                             return;
                         }
@@ -1241,9 +1206,6 @@ fn handle_config_key(app: &mut App, key: KeyCode) {
                     app.notify(format!("❌ {error}"));
                     return;
                 }
-                if action == ConfigAction::TuiTheme {
-                    crate::ui::style::reset_terminal_theme_cache();
-                }
                 refresh_config_status(app);
                 if action != ConfigAction::Refresh {
                     app.notify(app.t.t("config.saved").to_string());
@@ -1274,7 +1236,7 @@ fn handle_config_input_key(app: &mut App, key: KeyCode) {
             app.exclude_edit_index = None;
         }
         KeyCode::Enter => {
-            if let Ok(mut manager) = Manager::new() {
+            if let Ok(mut manager) = app.load_manager() {
                 match app.config_input_field {
                     Some(ConfigInputField::ProxyAddress) => {
                         manager.config.proxy_address = app.config_input_value.trim().to_string();
@@ -1376,7 +1338,7 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
             app.screen = AppScreen::ConfigInput;
         }
         KeyCode::Char('d') if app.exclude_selected < patterns.len() => {
-            if let Ok(mut manager) = Manager::new() {
+            if let Ok(mut manager) = app.load_manager() {
                 if let Err(err) = manager.remove_exclude_pattern(app.exclude_selected) {
                     app.notify(format!("❌ {err}"));
                 } else {
@@ -1389,7 +1351,7 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
             }
         }
         KeyCode::Char('r') => {
-            if let Ok(mut manager) = Manager::new() {
+            if let Ok(mut manager) = app.load_manager() {
                 if let Err(err) = manager.reset_exclude_patterns() {
                     app.notify(format!("❌ {err}"));
                 } else {
@@ -1411,7 +1373,7 @@ fn handle_exclude_rules_key(app: &mut App, key: KeyCode) {
                 app.config_input_value.clear();
                 app.screen = AppScreen::ConfigInput;
             } else {
-                if let Ok(mut manager) = Manager::new() {
+                if let Ok(mut manager) = app.load_manager() {
                     if let Err(err) = manager.reset_exclude_patterns() {
                         app.notify(format!("❌ {err}"));
                     } else {
@@ -1444,12 +1406,15 @@ fn enter_config_view(app: &mut App) {
 /// 重新读取磁盘上的配置与已安装引擎，刷新渲染期缓存。
 /// 只在启动、界面切换和配置/更新动作之后调用，绝不进入逐帧路径。
 fn reload_config_from_disk(app: &mut App) {
-    if let Ok(manager) = Manager::new() {
-        app.config_snapshot = manager.config.clone();
+    if let Ok(manager) = app.load_manager() {
+        crate::ui::style::configure_terminal_theme(&manager.config.tui_theme_mode);
+        app.config_snapshot = manager.config;
         app.rime_dir = manager.rime_dir.display().to_string();
         app.config_path = manager.config_path.display().to_string();
     }
     app.engines = config::detect_installed_engines();
+    app.skin_target =
+        crate::application::appearance_target(std::path::Path::new(&app.rime_dir), &app.engines);
 }
 
 fn refresh_config_status(app: &mut App) {
@@ -1460,8 +1425,9 @@ fn refresh_config_status(app: &mut App) {
     let schema = app.schema;
     let lang = app.t.lang();
     let rime_dir = std::path::PathBuf::from(&app.rime_dir);
+    let manager = app.load_manager();
     tokio::spawn(async move {
-        let snapshot = build_config_status_snapshot(schema, lang, rime_dir).await;
+        let snapshot = build_config_status_snapshot(manager, schema, lang, rime_dir).await;
         let _ = tx.send(snapshot);
     });
 }
@@ -1514,12 +1480,11 @@ async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
     let (result_tx, result_rx) = mpsc::channel();
     app.progress_rx = Some(progress_rx);
     app.result_rx = Some(result_rx);
-    let lang = app.t.lang();
     let cancel_signal = crate::types::CancelSignal::new();
     app.cancel_signal = Some(cancel_signal.clone());
 
     let handle = tokio::spawn(async move {
-        let results = run_update_task(context, mode, lang, cancel_signal.clone(), move |event| {
+        let results = run_update_task(context, mode, cancel_signal.clone(), move |event| {
             let _ = progress_tx.send(event);
         })
         .await;
@@ -1541,138 +1506,10 @@ async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
 async fn run_update_task(
     context: ResolvedUpdateContext,
     mode: UpdateMode,
-    lang: Lang,
     cancel: crate::types::CancelSignal,
-    mut progress: impl FnMut(UpdateEvent) + Send + 'static,
+    progress: impl FnMut(UpdateEvent) + Send + 'static,
 ) -> Result<Vec<updater::UpdateResult>> {
-    let t = L10n::new(lang);
-    match mode {
-        UpdateMode::RimeSetup => Ok(updater::setup_rime(&context.config, &cancel, &mut progress)
-            .await?
-            .into_iter()
-            .collect()),
-        UpdateMode::All => {
-            updater::update_all(
-                &context.schema,
-                &context.config,
-                context.cache_dir,
-                context.rime_dir,
-                cancel,
-                &mut progress,
-            )
-            .await
-        }
-        UpdateMode::Scheme => {
-            let base = updater::BaseUpdater::new(
-                &context.config,
-                context.cache_dir.clone(),
-                context.rime_dir.clone(),
-            )?;
-            if context.schema.is_wanxiang() {
-                updater::wanxiang::WanxiangUpdater { base }
-                    .update_scheme(&context.schema, &context.config, Some(&cancel), |event| {
-                        progress(event)
-                    })
-                    .await
-                    .map(|r| vec![r])
-            } else if context.schema == Schema::Ice {
-                updater::ice::IceUpdater { base }
-                    .update_scheme(&context.config, Some(&cancel), &mut progress)
-                    .await
-                    .map(|r| vec![r])
-            } else if context.schema == Schema::Frost {
-                updater::frost::FrostUpdater { base }
-                    .update_scheme(&context.config, Some(&cancel), &mut progress)
-                    .await
-                    .map(|r| vec![r])
-            } else {
-                updater::mint::MintUpdater { base }
-                    .update_scheme(&context.config, Some(&cancel), &mut progress)
-                    .await
-                    .map(|r| vec![r])
-            }
-        }
-        UpdateMode::Dict => {
-            if context.schema.dict_zip().is_none() {
-                Ok(vec![updater::UpdateResult {
-                    kind: UpdateComponent::Dict,
-                    component: t.t("update.dict").into(),
-                    old_version: "-".into(),
-                    new_version: "-".into(),
-                    success: false,
-                    message: t.t("update.no_dict").into(),
-                }])
-            } else {
-                let base = updater::BaseUpdater::new(
-                    &context.config,
-                    context.cache_dir,
-                    context.rime_dir,
-                )?;
-                if context.schema.is_wanxiang() {
-                    updater::wanxiang::WanxiangUpdater { base }
-                        .update_dict(&context.schema, &context.config, Some(&cancel), |event| {
-                            progress(event)
-                        })
-                        .await
-                        .map(|r| vec![r])
-                } else {
-                    updater::ice::IceUpdater { base }
-                        .update_dict(&context.config, Some(&cancel), &mut progress)
-                        .await
-                        .map(|r| vec![r])
-                }
-            }
-        }
-        UpdateMode::Model => {
-            let base = updater::BaseUpdater::new(
-                &context.config,
-                context.cache_dir,
-                context.rime_dir.clone(),
-            )?;
-            let wx = updater::wanxiang::WanxiangUpdater { base };
-            let r = wx
-                .update_model(&context.config, Some(&cancel), &mut progress)
-                .await?;
-            let mut v = vec![r];
-            if context.config.model_patch_enabled && context.schema.supports_model_patch() {
-                progress(UpdateEvent {
-                    component: UpdateComponent::ModelPatch,
-                    phase: UpdatePhase::Applying,
-                    progress: 0.96,
-                    detail: t.t("menu.model_patch").into(),
-                });
-                cancel.checkpoint()?;
-                if let Err(e) =
-                    updater::model_patch::patch_model(&context.rime_dir, &context.schema, lang)
-                {
-                    v.push(updater::UpdateResult {
-                        kind: UpdateComponent::ModelPatch,
-                        component: t.t("update.component.model_patch").into(),
-                        old_version: "?".into(),
-                        new_version: "?".into(),
-                        success: false,
-                        message: e.to_string(),
-                    });
-                } else {
-                    v.push(updater::UpdateResult {
-                        kind: UpdateComponent::ModelPatch,
-                        component: t.t("update.component.model_patch").into(),
-                        old_version: "-".into(),
-                        new_version: t.t("patch.model.enabled").into(),
-                        success: true,
-                        message: t.t("patch.model.enabled").into(),
-                    });
-                    progress(UpdateEvent {
-                        component: UpdateComponent::ModelPatch,
-                        phase: UpdatePhase::Finished,
-                        progress: 1.0,
-                        detail: t.t("patch.model.enabled").into(),
-                    });
-                }
-            }
-            Ok(v)
-        }
-    }
+    crate::application::run_update(mode, &context, cancel, progress).await
 }
 
 fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, UpdateTaskError>) {
@@ -1795,17 +1632,6 @@ fn current_schema_index(schema: Schema) -> usize {
         .iter()
         .position(|candidate| *candidate == schema)
         .unwrap_or(0)
-}
-
-// 仅 Linux 单测使用：生产渲染路径已改为读 App 内缓存的引擎列表。
-#[cfg(all(test, target_os = "linux"))]
-fn skin_menu_supported() -> bool {
-    let manager = match Manager::new() {
-        Ok(manager) => manager,
-        Err(_) => return false,
-    };
-    let app = App::new(&manager);
-    skin_menu_target(&app).is_some()
 }
 
 fn menu_unavailable_reason(app: &App, idx: usize) -> Option<String> {
@@ -2776,7 +2602,7 @@ fn build_exclude_rules_view_data(app: &App) -> crate::ui::config_view::ExcludeRu
 
 /// 诊断页读盘较重（marker 文件 + 记录文件），只在进入页面时算一次，逐帧渲染用缓存。
 fn refresh_wanxiang_diagnosis(app: &mut App) {
-    app.diagnosis = Some(match Manager::new() {
+    app.diagnosis = Some(match app.load_manager() {
         Ok(manager) => Ok(crate::config::diagnose_wanxiang(
             &manager.config,
             &manager.cache_dir,
@@ -2890,9 +2716,21 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    fn isolated_manager() -> (tempfile::TempDir, Manager) {
+        let root = tempfile::tempdir().expect("temporary configuration root");
+        let manager = Manager::with_paths(
+            root.path().join("config.json"),
+            root.path().join("rime"),
+            root.path().join("cache"),
+        )
+        .expect("isolated manager");
+        manager.save().expect("save isolated configuration");
+        (root, manager)
+    }
+
     #[tokio::test]
     async fn rime_setup_prompt_only_follows_successful_eligible_install() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         for (eligible, results, expect_prompt) in [
             (
                 true,
@@ -2956,7 +2794,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn rime_setup_setting_is_visible_in_small_terminal() {
-        let manager = Manager::new().unwrap();
+        let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         app.screen = AppScreen::ConfigView;
         app.config_selected = config_actions(&manager.config)
@@ -3009,17 +2847,33 @@ mod tests {
         assert_eq!(current_schema_index(Schema::Mint), Schema::all().len() - 1);
     }
 
+    #[test]
+    fn loaded_manager_keeps_the_selected_schema_for_shared_operations() {
+        let (_root, manager) = isolated_manager();
+        std::fs::create_dir_all(&manager.rime_dir).expect("temporary Rime directory");
+        std::fs::write(manager.rime_dir.join("rime_ice.schema.yaml"), "")
+            .expect("installed scheme marker");
+        let mut app = App::new(&manager);
+        app.schema = Schema::Mint;
+        assert_eq!(
+            app.load_manager().expect("selected manager").config.schema,
+            Schema::Mint
+        );
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
-    fn skin_menu_supported_matches_skin_target_resolution() {
-        let manager = Manager::new().expect("manager");
-        let app = App::new(&manager);
-        assert_eq!(skin_menu_supported(), skin_menu_target(&app).is_some());
+    fn skin_menu_support_uses_the_cached_capability() {
+        let (_root, manager) = isolated_manager();
+        let mut app = App::new(&manager);
+        app.engines.clear();
+        app.skin_target = None;
+        assert!(skin_menu_target(&app).is_none());
     }
 
     #[test]
     fn menu_unavailable_reason_blocks_dict_for_schema_without_separate_dict() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         app.schema = Schema::Mint;
         assert!(menu_unavailable_reason(&app, 3).is_some());
@@ -3028,18 +2882,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn menu_unavailable_reason_uses_runtime_skin_support() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let app = App::new(&manager);
 
         assert_eq!(
             menu_unavailable_reason(&app, 6).is_some(),
-            !skin_menu_supported()
+            skin_menu_target(&app).is_none()
         );
     }
 
     #[test]
     fn handle_updating_key_marks_update_as_cancelled() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         app.screen = AppScreen::Updating;
         app.update_in_progress = true;
@@ -3053,7 +2907,7 @@ mod tests {
 
     #[tokio::test]
     async fn enter_on_quit_menu_item_exits() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         app.menu_selected = app.menu_items().len() - 1;
 
@@ -3066,7 +2920,7 @@ mod tests {
 
     #[test]
     fn ui_clears_previous_screen_content_before_rendering() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -3206,8 +3060,7 @@ mod tests {
         };
         std::fs::create_dir_all(&manager.rime_dir).expect("create rime dir");
 
-        set_model_patch_enabled(&mut manager, Schema::WanxiangBase, Lang::Zh, true)
-            .expect("enable model patch");
+        set_model_patch_enabled(&mut manager, true).expect("enable model patch");
         assert!(manager.config.model_patch_enabled);
         assert!(updater::model_patch::is_model_patched(
             &manager.rime_dir,
@@ -3220,8 +3073,7 @@ mod tests {
         .expect("parse saved config");
         assert!(saved.model_patch_enabled);
 
-        set_model_patch_enabled(&mut manager, Schema::WanxiangBase, Lang::Zh, false)
-            .expect("disable model patch");
+        set_model_patch_enabled(&mut manager, false).expect("disable model patch");
         assert!(!manager.config.model_patch_enabled);
         assert!(!updater::model_patch::is_model_patched(
             &manager.rime_dir,
@@ -3239,21 +3091,17 @@ mod tests {
 
     #[test]
     fn resolve_update_context_reloads_latest_saved_config() {
-        let manager = Manager::new().expect("manager");
+        let (_root, manager) = isolated_manager();
         let original = manager.config.model_patch_enabled;
         let mut app = App::new(&manager);
         app.schema = manager.config.schema;
 
-        let mut updated = Manager::new().expect("reload manager");
+        let mut updated = manager.reload().expect("reload manager");
         updated.config.model_patch_enabled = !original;
         updated.save().expect("save updated config");
 
         let context = resolve_update_context(&app, &UpdateMode::All).expect("update context");
         assert_eq!(context.config.model_patch_enabled, !original);
-
-        let mut restore = Manager::new().expect("restore manager");
-        restore.config.model_patch_enabled = original;
-        restore.save().expect("restore config");
     }
 
     fn buffer_to_string(backend: &TestBackend) -> String {

@@ -10,6 +10,7 @@ Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](
 
 - 🔄 **一键更新**: 方案、词库、模型一键检查并更新
 - 🎨 **TUI 界面**: ratatui 终端界面，键盘操作
+- 🖥️ **原生桌面端**: NSH 构建的 Windows / macOS / Linux 工作台，与 CLI/TUI 共用 Rust 核心
 - 🌐 **多方案**: 万象 (10 变体) + 雾凇 + 白霜 + 薄荷
 - 🧠 **模型 Patch**: 自动下载万象语法模型，并可按方案写入对应 schema patch
 - 🎭 **皮肤 Patch**: 内置 6 个主题一键切换
@@ -34,6 +35,29 @@ cargo build --release
 
 Linux 上运行 `cargo test` 需安装 `dbus-daemon`。Fcitx5 集成测试使用独立的临时 D-Bus，
 不会读写当前桌面的输入法配置。
+
+### 原生桌面端
+
+桌面端覆盖命令行功能，并提供方案选择、组件更新、皮肤与候选数、网络与代理设置、
+排除规则、诊断和 JSON / shell 补全导出。它直接调用共享 Rust 服务，不会通过拼接 shell 命令驱动 CLI。
+耗时操作在后台工作线程中执行；更新可取消，覆盖用户数据和执行 hooks 前需显式确认。
+CLI 与桌面端使用同一份配置；避免同时在多个窗口或终端中执行更新。
+使用 hooks 的平台还需要在 `PATH` 中找到 `sh`；填写脚本文件路径，而不是命令字符串。
+
+```bash
+# Linux: GTK 4.14+，例如 Ubuntu 24.04
+sudo apt-get install build-essential pkg-config libgtk-4-dev dbus-daemon
+
+# Windows / macOS 无需安装 GTK；分别使用 Win32 / AppKit
+cargo run --manifest-path desktop/Cargo.toml --release
+```
+
+构建结果位于 `desktop/target/release/snout-desktop`（Windows 为 `.exe`）。
+桌面依赖独立于根 crate；仅构建 CLI 不会引入 GTK / AppKit / Win32 UI 依赖。
+Release 中的桌面资产单独命名为 `snout-desktop-*`：Linux 为 GNU 动态链接包，
+包含 `bin/` 和 `share/applications/`；macOS 为 `.app` 压缩包；Windows 为 ZIP。
+Linux 运行时需要 GTK 4.14+。桌面包目前未签名或 notarize；打开前请核对发布页的 `SHA256SUMS`，
+并使用操作系统的正常授权流程。`snout-bin` AUR 包仍安装 CLI/TUI，不包含桌面端。
 
 ### Arch Linux (AUR)
 
@@ -274,7 +298,12 @@ snout --lang en --update
 
 ```
 src/
-├── main.rs           CLI 入口
+├── main.rs           精简 CLI 入口
+├── lib.rs            所有前端共用的 Rust crate
+├── cli.rs            clap 参数解析、输出和自动补全
+├── application/      状态检查
+├── application.rs    更新调度、设置校验、模型 patch 一致性、外观能力
+├── report.rs         CLI / GUI 共用的结构化结果
 ├── types.rs          核心类型 (Schema, Config, UpdateInfo)
 ├── config.rs         配置管理 + 平台路径检测
 ├── i18n.rs           国际化 (中/英)
@@ -284,6 +313,8 @@ src/
 ├── deployer/         跨平台部署 + Fcitx 同步 + hooks
 ├── skin/             内置主题 + YAML patch
 └── ui/               ratatui TUI + 初始化向导
+
+desktop/              独立 NSH crate：原生 UI + 后台控制器
 ```
 
 ## 开发
@@ -299,6 +330,18 @@ cargo build --release
 cargo run
 cargo run -- --init
 cargo run -- --update --mirror
+
+# 共享核心验证
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --locked
+cargo doc --no-deps
+
+# 桌面 UI / 控制器无显示器交互测试
+cargo test --manifest-path desktop/Cargo.toml --no-default-features --locked
+
+# 原生桌面构建
+cargo build --manifest-path desktop/Cargo.toml --release --locked
 ```
 
 ## 贡献
@@ -332,6 +375,7 @@ A Rime input method initialization & update tool. Rust rewrite of [rime-wanxiang
 
 - 🔄 **One-click update**: Schemas, dictionaries, and language models in one command
 - 🎨 **TUI**: Interactive terminal UI powered by ratatui
+- 🖥️ **Native desktop**: An NSH workbench for Windows, macOS, and Linux using the same Rust application services
 - 🌐 **Multi-schema**: Wanxiang (10 variants) + Rime Ice + Rime Frost + Mint Input
 - 🧠 **Model patch**: Auto-download Wanxiang grammar models and write schema-specific patch files
 - 🎭 **Skin patch**: 6 built-in themes, one-click apply
@@ -362,6 +406,22 @@ git clone https://github.com/ca-x/snout.git
 cd snout
 cargo build --release
 ```
+
+The optional native desktop is a separate crate:
+
+```bash
+# Linux needs GTK 4.14+, pkg-config and a C toolchain; macOS/Windows use native backends.
+cargo run --manifest-path desktop/Cargo.toml --release
+```
+
+Desktop packages are separate `snout-desktop-*` release assets. Linux packages use GNU
+dynamic linking and require GTK 4.14+; macOS archives contain an unsigned `.app`; Windows
+archives contain the native executable. Verify `SHA256SUMS` before opening unsigned builds.
+The `snout-bin` AUR package continues to install only CLI/TUI. Both frontends share the
+existing configuration, so avoid running updates concurrently across them. The desktop
+exposes all CLI capabilities, background progress/cancellation, explicit data/hook confirmation,
+diagnostics, and JSON/completion export without shelling out to the CLI.
+Hooks take script file paths and require `sh` on `PATH`; they are not command-string fields.
 
 ## Usage
 

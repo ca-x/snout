@@ -21,11 +21,7 @@ fn load_patch_doc(path: &Path) -> Result<PatchDoc> {
 }
 
 fn write_patch_doc(path: &Path, doc: &PatchDoc) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, serde_yaml::to_string(doc)?)?;
-    Ok(())
+    crate::fileutil::atomic_write(path, serde_yaml::to_string(doc)?.as_bytes())
 }
 
 fn patch_mapping_mut(doc: &mut PatchDoc) -> Result<&mut Mapping> {
@@ -58,6 +54,9 @@ pub fn set_candidate_page_size(
     schema: Schema,
     page_size: Option<u8>,
 ) -> Result<()> {
+    if page_size.is_some_and(|value| !(1..=9).contains(&value)) {
+        anyhow::bail!("candidate page size must be between 1 and 9");
+    }
     let path = custom_patch_path(rime_dir, schema);
     let mut doc = load_patch_doc(&path)?;
     let mapping = patch_mapping_mut(&mut doc)?;
@@ -101,5 +100,17 @@ mod tests {
         assert_eq!(candidate_page_size(&dir, Schema::Ice).expect("read"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_candidate_page_size_does_not_change_the_patch() {
+        let root = tempfile::tempdir().expect("temporary Rime directory");
+        let path = custom_patch_path(root.path(), Schema::Ice);
+        set_candidate_page_size(root.path(), Schema::Ice, Some(5)).expect("valid size");
+        let original = std::fs::read(&path).expect("original patch");
+        for invalid in [0, 10, u8::MAX] {
+            assert!(set_candidate_page_size(root.path(), Schema::Ice, Some(invalid)).is_err());
+            assert_eq!(std::fs::read(&path).expect("unchanged patch"), original);
+        }
     }
 }

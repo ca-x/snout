@@ -192,36 +192,53 @@ pub fn sync_to_engines(
 ) -> Result<()> {
     let t = L10n::new(lang);
     let engines = detect_engines();
-    if engines.len() <= 1 {
-        return Ok(());
-    }
+    let targets: Vec<_> = engines
+        .into_iter()
+        .filter_map(|engine| engine_data_dir(&engine).map(|target| (engine, target)))
+        .collect();
+    sync_to_engine_dirs(src_dir, &targets, exclude_files, use_link, &t)
+}
 
-    let primary = engines.first().cloned().unwrap_or_default();
+fn sync_to_engine_dirs(
+    src_dir: &Path,
+    targets: &[(String, PathBuf)],
+    exclude_files: &[String],
+    use_link: bool,
+    t: &L10n,
+) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = use_link;
     let mut errors = Vec::new();
 
-    for engine in &engines {
-        if *engine == primary {
+    for (engine, target) in targets {
+        if paths_equivalent(src_dir, target) {
             continue;
         }
-        if let Some(target) = engine_data_dir(engine) {
-            if let Some(parent) = target.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            #[cfg(unix)]
-            let sync_result = if use_link {
-                sync_via_symlink(src_dir, &target)
-            } else {
-                sync_dir_filtered(src_dir, &target, exclude_files)
-            };
-            #[cfg(not(unix))]
-            let sync_result = sync_dir_filtered(src_dir, &target, exclude_files);
-            if let Err(e) = sync_result {
-                errors.push(format!("{engine}: {e}"));
-            }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        let sync_result = if use_link {
+            sync_via_symlink(src_dir, target)
+        } else {
+            sync_dir_filtered(src_dir, target, exclude_files)
+        };
+        #[cfg(not(unix))]
+        let sync_result = sync_dir_filtered(src_dir, target, exclude_files);
+        if let Err(e) = sync_result {
+            errors.push(format!("{engine}: {e}"));
         }
     }
 
-    finalize_sync_result(errors, &t)
+    finalize_sync_result(errors, t)
+}
+
+fn paths_equivalent(src: &Path, target: &Path) -> bool {
+    src == target
+        || matches!(
+            (src.canonicalize(), target.canonicalize()),
+            (Ok(source_path), Ok(target_path)) if source_path == target_path
+        )
 }
 
 fn finalize_sync_result(errors: Vec<String>, t: &L10n) -> Result<()> {
@@ -239,6 +256,9 @@ fn finalize_sync_result(errors: Vec<String>, t: &L10n) -> Result<()> {
 
 #[allow(dead_code)]
 fn sync_dir_filtered(src: &Path, dst: &Path, exclude_files: &[String]) -> Result<()> {
+    if paths_equivalent(src, dst) {
+        return Ok(());
+    }
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -283,7 +303,7 @@ pub fn run_hook(hook_path: &str, phase: &str, lang: Lang) -> Result<()> {
         t.t("deploy.hook_running")
     ));
     let status = crate::feedback::command("sh")
-        .arg("-c")
+        .arg("--")
         .arg(hook_path)
         .status()?;
 
@@ -505,6 +525,9 @@ fn hard_stop_weasel() {
 
 #[cfg(unix)]
 fn sync_via_symlink(src: &Path, target: &Path) -> Result<()> {
+    if paths_equivalent(src, target) {
+        return Ok(());
+    }
     if target.exists() || target.is_symlink() {
         let backup = target.with_extension("bak");
         if target.is_symlink() || target.is_file() {
@@ -561,10 +584,8 @@ fn finalize_deploy_result(success_count: usize, failures: Vec<String>, t: &L10n)
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[cfg(unix)]
     fn temp_dir(name: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -635,6 +656,157 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn sync_via_symlink_preserves_source_when_target_is_same_path() {
+        let base = temp_dir("deployer-link-self");
+        let src = base.join("src");
+        std::fs::create_dir_all(&src).expect("create src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+
+        sync_via_symlink(&src, &src).expect("skip source directory");
+
+        assert!(
+            !src.is_symlink(),
+            "source must remain an ordinary directory"
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!src.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn sync_dir_filtered_preserves_source_when_target_is_same_path() {
+        let base = temp_dir("deployer-copy-self");
+        let src = base.join("src");
+        std::fs::create_dir_all(src.join("nested")).expect("create nested src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+        std::fs::write(src.join("nested/child.txt"), "child").expect("write nested file");
+
+        sync_dir_filtered(&src, &src, &[]).expect("skip source directory");
+
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("nested/child.txt")).unwrap(),
+            "child"
+        );
+        assert!(!src.is_symlink());
+        assert!(!src.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_via_symlink_preserves_existing_link_to_source() {
+        let base = temp_dir("deployer-link-alias");
+        let src = base.join("src");
+        let target = base.join("target");
+        std::fs::create_dir_all(&src).expect("create src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+        std::os::unix::fs::symlink("src", &target).expect("create relative symlink");
+
+        sync_via_symlink(&src, &target).expect("skip existing link to source");
+
+        assert_eq!(std::fs::read_link(&target).unwrap(), Path::new("src"));
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!target.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_dir_filtered_preserves_source_through_existing_link() {
+        let base = temp_dir("deployer-copy-alias");
+        let src = base.join("src");
+        let target = base.join("target");
+        std::fs::create_dir_all(&src).expect("create src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+        std::os::unix::fs::symlink("src", &target).expect("create relative symlink");
+
+        sync_dir_filtered(&src, &target, &[]).expect("skip existing link to source");
+
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(std::fs::read_link(&target).unwrap(), Path::new("src"));
+        assert!(!target.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn sync_to_engines_preserves_source_in_second_engine_in_copy_mode() {
+        let base = temp_dir("deployer-copy-second-engine");
+        let first = base.join("first/rime");
+        let src = base.join("second/rime");
+        std::fs::create_dir_all(&src).expect("create src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+        let targets = [
+            ("first".into(), first.clone()),
+            ("second".into(), src.clone()),
+        ];
+
+        sync_to_engine_dirs(&src, &targets, &[], false, &L10n::new(Lang::En))
+            .expect("sync from second engine");
+
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            std::fs::read_to_string(first.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!src.is_symlink());
+        assert!(!src.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_to_engines_preserves_source_in_second_engine_in_link_mode() {
+        let base = temp_dir("deployer-link-second-engine");
+        let first = base.join("first/rime");
+        let src = base.join("second/rime");
+        std::fs::create_dir_all(&src).expect("create src dir");
+        std::fs::write(src.join("keep.txt"), "keep").expect("write source file");
+        let targets = [
+            ("first".into(), first.clone()),
+            ("second".into(), src.clone()),
+        ];
+
+        sync_to_engine_dirs(&src, &targets, &[], true, &L10n::new(Lang::En))
+            .expect("sync from second engine");
+
+        assert!(
+            !src.is_symlink(),
+            "source must remain an ordinary directory"
+        );
+        assert_eq!(
+            std::fs::read_to_string(src.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(first.is_symlink());
+        assert_eq!(std::fs::read_link(&first).unwrap(), src);
+        assert!(!src.with_extension("bak").exists());
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     #[test]
     fn sync_dir_filtered_copies_files_and_skips_exclusions() {
         let base = temp_dir("deployer-copy");
@@ -673,6 +845,24 @@ mod tests {
     fn run_hook_accepts_empty_and_rejects_missing_paths() {
         assert!(run_hook("", "pre-update", Lang::En).is_ok());
         assert!(run_hook("/definitely/missing/hook.sh", "pre-update", Lang::En).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_hook_accepts_script_paths_with_spaces_without_shell_interpolation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("temporary hook root");
+        let script = root.path().join("hook with spaces.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").expect("hook script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("hook permissions");
+        run_hook(
+            script.to_str().expect("script path"),
+            "pre-update",
+            Lang::En,
+        )
+        .expect("script path is one argument");
     }
 
     #[cfg(unix)]

@@ -1,3 +1,4 @@
+use crate::application::{self, UpdateAction};
 use crate::config::{self, Manager};
 use crate::i18n::{L10n, Lang};
 use crate::types::Schema;
@@ -17,10 +18,11 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
 
     // 1. 检测引擎
     let engines = config::detect_installed_engines();
-    if engines.is_empty() {
-        println!("{}", config::rime_installation_message(lang));
-        return Ok(());
-    }
+    anyhow::ensure!(
+        !engines.is_empty(),
+        "{}",
+        config::rime_installation_message_with_engines(lang, &engines)
+    );
     println!(
         "✅ {}: {}\n",
         t.t("wizard.engine_found"),
@@ -54,19 +56,15 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
     }
 
     // 4. 保存配置
+    manager.config.schema = schema;
     manager.config.model_patch_enabled = model_patch;
     manager.save()?;
 
     // 5. 执行更新
     println!("\n📦 {}...\n", t.t("wizard.downloading"));
-    let cache_dir = manager.cache_dir.clone();
-    let rime_dir = manager.rime_dir.clone();
-
-    let results = updater::update_all(
-        &schema,
-        &manager.config,
-        cache_dir,
-        rime_dir.clone(),
+    let results = application::run_update(
+        UpdateAction::All,
+        &manager,
         crate::types::CancelSignal::new(),
         |event| {
             print!("\r  [{:3.0}%] {}", event.progress * 100.0, event.detail);
@@ -75,22 +73,18 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
     )
     .await?;
 
-    if !results.iter().all(|result| result.success) {
-        for result in results.iter().filter(|result| !result.success) {
-            eprintln!("\n❌ {}: {}", result.component, result.message);
-        }
-        return Ok(());
+    for result in results.iter().filter(|result| !result.success) {
+        eprintln!("\n❌ {}: {}", result.component, result.message);
     }
-    println!("\n✅ {}!\n", t.t("wizard.complete"));
-    // The updater may have persisted a newly selected schema.
-    manager = Manager::new()?;
+    ensure_update_succeeded(&results)?;
+    manager = manager.reload()?;
     if updater::should_prompt_rime_setup(&manager.config) {
         if let Some(enabled) =
             prompt_rime_auto_setup(&mut std::io::stdin().lock(), &mut std::io::stdout(), &t)?
         {
             manager.config.rime_auto_setup = Some(enabled);
             manager.save()?;
-            updater::setup_rime(
+            let setup_result = updater::setup_rime(
                 &manager.config,
                 &crate::types::CancelSignal::new(),
                 |event| {
@@ -98,10 +92,22 @@ pub async fn run_init_wizard(language: Option<&str>) -> Result<()> {
                 },
             )
             .await?;
+            ensure_update_succeeded(setup_result.as_slice())?;
         }
     }
+    println!("\n✅ {}!\n", t.t("wizard.complete"));
     println!("{}", t.t("wizard.open_tui"));
 
+    Ok(())
+}
+
+fn ensure_update_succeeded(results: &[updater::UpdateResult]) -> Result<()> {
+    let failures: Vec<_> = results
+        .iter()
+        .filter(|result| !result.success)
+        .map(|result| format!("{}: {}", result.component, result.message))
+        .collect();
+    anyhow::ensure!(failures.is_empty(), "{}", failures.join("\n"));
     Ok(())
 }
 
@@ -129,6 +135,78 @@ fn prompt_rime_auto_setup(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_update_result_is_an_error() {
+        let results = [updater::BaseUpdater::error_result(
+            updater::UpdateComponent::Scheme,
+            "Scheme",
+            "download failed",
+        )];
+
+        let error = ensure_update_succeeded(&results).expect_err("failed initialization");
+
+        assert_eq!(error.to_string(), "Scheme: download failed");
+    }
+
+    #[test]
+    fn successful_and_skipped_updates_are_successful() {
+        let results = [updater::BaseUpdater::success_result(
+            updater::UpdateComponent::Scheme,
+            "Scheme",
+            "old",
+            "new",
+            "updated",
+        )];
+        let skipped_setup: Option<updater::UpdateResult> = None;
+
+        assert!(ensure_update_succeeded(&results).is_ok());
+        assert!(ensure_update_succeeded(skipped_setup.as_slice()).is_ok());
+    }
+
+    #[test]
+    fn mixed_update_results_report_every_failed_component() {
+        let results = [
+            updater::BaseUpdater::success_result(
+                updater::UpdateComponent::Scheme,
+                "Scheme",
+                "old",
+                "new",
+                "updated",
+            ),
+            updater::BaseUpdater::error_result(
+                updater::UpdateComponent::Dict,
+                "Dictionary",
+                "download failed",
+            ),
+            updater::BaseUpdater::error_result(
+                updater::UpdateComponent::Model,
+                "Model",
+                "checksum mismatch",
+            ),
+        ];
+
+        let error = ensure_update_succeeded(&results).expect_err("failed initialization");
+
+        assert_eq!(
+            error.to_string(),
+            "Dictionary: download failed\nModel: checksum mismatch"
+        );
+    }
+
+    #[test]
+    fn failed_optional_setup_result_is_an_error() {
+        let setup_result = Some(updater::BaseUpdater::error_result(
+            updater::UpdateComponent::Fcitx5Setup,
+            "Rime setup",
+            "session bus unavailable",
+        ));
+
+        let error =
+            ensure_update_succeeded(setup_result.as_slice()).expect_err("failed optional setup");
+
+        assert_eq!(error.to_string(), "Rime setup: session bus unavailable");
+    }
 
     #[test]
     fn setup_prompt_requires_yes_and_keeps_eof_undecided() {

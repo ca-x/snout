@@ -36,10 +36,13 @@ pub struct WanxiangDiagnosis {
 
 impl Manager {
     pub fn new() -> Result<Self> {
-        let config_path = get_config_path()?;
+        Self::with_paths(get_config_path()?, detect_rime_dir(), get_cache_dir())
+    }
+
+    /// Loads configuration and data roots without probing platform directory locations.
+    /// These paths do not sandbox updater hooks, deployment, or other engine integrations.
+    pub fn with_paths(config_path: PathBuf, rime_dir: PathBuf, cache_dir: PathBuf) -> Result<Self> {
         let mut config = load_or_create_config(&config_path)?;
-        let rime_dir = detect_rime_dir();
-        let cache_dir = get_cache_dir();
 
         // 确保目录存在
         if let Some(parent) = config_path.parent() {
@@ -67,10 +70,16 @@ impl Manager {
         Ok(manager)
     }
 
+    pub fn reload(&self) -> Result<Self> {
+        Self::with_paths(
+            self.config_path.clone(),
+            self.rime_dir.clone(),
+            self.cache_dir.clone(),
+        )
+    }
+
     pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(&self.config)?;
-        fs::write(&self.config_path, json)?;
-        Ok(())
+        save_config(&self.config_path, &self.config)
     }
 
     pub fn add_exclude_pattern(&mut self, pattern: String) -> Result<()> {
@@ -82,8 +91,9 @@ impl Manager {
         if self.config.exclude_files.iter().any(|p| p == &pattern) {
             anyhow::bail!("exclude pattern already exists");
         }
-        self.config.exclude_files.push(pattern);
-        self.save()
+        let mut patterns = self.config.exclude_files.clone();
+        patterns.push(pattern);
+        self.save_exclude_patterns(patterns)
     }
 
     pub fn update_exclude_pattern(&mut self, index: usize, pattern: String) -> Result<()> {
@@ -95,21 +105,31 @@ impl Manager {
             anyhow::bail!("exclude pattern cannot be empty");
         }
         parse_exclude_pattern(&pattern)?;
-        self.config.exclude_files[index] = pattern;
-        self.save()
+        let mut patterns = self.config.exclude_files.clone();
+        patterns[index] = pattern;
+        self.save_exclude_patterns(patterns)
     }
 
     pub fn remove_exclude_pattern(&mut self, index: usize) -> Result<()> {
         if index >= self.config.exclude_files.len() {
             anyhow::bail!("exclude pattern index out of range");
         }
-        self.config.exclude_files.remove(index);
-        self.save()
+        let mut patterns = self.config.exclude_files.clone();
+        patterns.remove(index);
+        self.save_exclude_patterns(patterns)
     }
 
     pub fn reset_exclude_patterns(&mut self) -> Result<()> {
-        self.config.exclude_files = default_exclude_patterns();
-        self.save()
+        self.save_exclude_patterns(default_exclude_patterns())
+    }
+
+    fn save_exclude_patterns(&mut self, patterns: Vec<String>) -> Result<()> {
+        let previous = std::mem::replace(&mut self.config.exclude_files, patterns);
+        if let Err(error) = self.save() {
+            self.config.exclude_files = previous;
+            return Err(error);
+        }
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -163,8 +183,11 @@ pub fn persist_installed_schema(schema: Schema) -> Result<()> {
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(config_path, serde_json::to_string_pretty(&config)?)?;
-    Ok(())
+    save_config(&config_path, &config)
+}
+
+fn save_config(path: &Path, config: &Config) -> Result<()> {
+    crate::fileutil::atomic_write(path, &serde_json::to_vec_pretty(config)?)
 }
 
 pub fn rime_installation_message(lang: Lang) -> String {

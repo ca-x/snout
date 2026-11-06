@@ -3,6 +3,7 @@ use crate::i18n::{L10n, Lang};
 use crate::types::*;
 use crate::updater::{UpdateComponent, UpdateEvent, UpdatePhase};
 use anyhow::{Context, Result};
+use std::path::Path;
 
 /// 万象方案更新器
 pub struct WanxiangUpdater {
@@ -138,21 +139,6 @@ impl WanxiangUpdater {
             )
             .await?;
 
-        // 处理 CNB 嵌套目录
-        let mut warnings = Vec::new();
-        if self.base.client.use_mirror() {
-            if let Err(e) = crate::fileutil::extract::handle_nested_dir(
-                &self.base.rime_dir,
-                &info.name,
-                user_data_behavior_for_config(config),
-                &crate::config::effective_exclude_patterns(config),
-            ) {
-                let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
-                crate::feedback::warn(format!("⚠️ {msg}"));
-                warnings.push(msg);
-            }
-        }
-
         // 保存记录
         if let Some(signal) = cancel {
             signal.checkpoint()?;
@@ -185,11 +171,6 @@ impl WanxiangUpdater {
             progress: 1.0,
             detail: t.t("update.scheme_done").into(),
         });
-        let msg = if warnings.is_empty() {
-            t.t("update.complete").into()
-        } else {
-            format!("{} ({})", t.t("update.complete"), warnings.join("; "))
-        };
         Ok(UpdateResult {
             kind: UpdateComponent::Scheme,
             component: t.t("update.scheme").into(),
@@ -198,7 +179,7 @@ impl WanxiangUpdater {
                 .unwrap_or_else(|| t.t("status.not_installed").into()),
             new_version: info.tag,
             success: true,
-            message: msg,
+            message: t.t("update.complete").into(),
         })
     }
 
@@ -293,7 +274,7 @@ impl WanxiangUpdater {
         let record_path = self.base.cache_dir.join("dict_record.json");
         let local = BaseUpdater::load_record(&record_path);
 
-        if !BaseUpdater::needs_update(local.as_ref(), &info) {
+        if dict_is_current(&self.base.rime_dir, schema, local.as_ref(), &info) {
             progress(UpdateEvent {
                 component: UpdateComponent::Dict,
                 phase: UpdatePhase::Finished,
@@ -322,20 +303,6 @@ impl WanxiangUpdater {
             )
             .await?;
 
-        let mut warnings = Vec::new();
-        if self.base.client.use_mirror() {
-            if let Err(e) = crate::fileutil::extract::handle_nested_dir(
-                &dict_dir,
-                &info.name,
-                user_data_behavior_for_config(config),
-                &crate::config::effective_exclude_patterns(config),
-            ) {
-                let msg = format!("{}: {e}", t.t("update.nested_dir_failed"));
-                crate::feedback::warn(format!("⚠️ {msg}"));
-                warnings.push(msg);
-            }
-        }
-
         // 保存记录
         if let Some(signal) = cancel {
             signal.checkpoint()?;
@@ -361,11 +328,6 @@ impl WanxiangUpdater {
             progress: 1.0,
             detail: t.t("update.dict_done").into(),
         });
-        let msg = if warnings.is_empty() {
-            t.t("update.complete").into()
-        } else {
-            format!("{} ({})", t.t("update.complete"), warnings.join("; "))
-        };
         Ok(UpdateResult {
             kind: UpdateComponent::Dict,
             component: t.t("update.dict").into(),
@@ -374,7 +336,7 @@ impl WanxiangUpdater {
                 .unwrap_or_else(|| t.t("status.not_installed").into()),
             new_version: info.tag,
             success: true,
-            message: msg,
+            message: t.t("update.complete").into(),
         })
     }
 
@@ -437,11 +399,7 @@ impl WanxiangUpdater {
         let target = self.base.rime_dir.join(MODEL_FILE);
 
         // 已有相同文件则跳过
-        if target.exists()
-            && local.as_ref().is_some_and(|rec| rec.name == MODEL_FILE)
-            && ((!info.sha256.is_empty() && self.base.hash_matches(&info.sha256, &target))
-                || !BaseUpdater::needs_update(local.as_ref(), &info))
-        {
+        if adopt_current_model(&target, &record_path, local.as_ref(), &info, cancel)? {
             let current_tag = local
                 .as_ref()
                 .map(|rec| rec.tag.clone())
@@ -515,14 +473,7 @@ impl WanxiangUpdater {
             progress: 0.95,
             detail: t.t("update.saving").into(),
         });
-        let record = UpdateRecord {
-            name: MODEL_FILE.into(),
-            update_time: info.update_time.clone(),
-            tag: info.tag.clone(),
-            apply_time: chrono::Utc::now().to_rfc3339(),
-            sha256: info.sha256.clone(),
-        };
-        BaseUpdater::save_record(&record_path, &record)?;
+        save_model_record(&record_path, &info)?;
 
         progress(UpdateEvent {
             component: UpdateComponent::Model,
@@ -543,15 +494,471 @@ impl WanxiangUpdater {
     }
 }
 
-fn user_data_behavior_for_config(
-    config: &crate::types::Config,
-) -> crate::fileutil::extract::UserDataBehavior {
-    match config.user_data_policy.trim().to_ascii_lowercase().as_str() {
-        "discard" => crate::fileutil::extract::UserDataBehavior::Discard,
-        _ => crate::fileutil::extract::UserDataBehavior::Preserve,
+fn dict_is_current(
+    rime_dir: &Path,
+    schema: &Schema,
+    local: Option<&UpdateRecord>,
+    info: &UpdateInfo,
+) -> bool {
+    let required_files = match schema {
+        Schema::WanxiangBase => ["zi.dict.yaml", "jichu.dict.yaml"],
+        _ if schema.is_wanxiang() => ["zi.pro.dict.yaml", "jichu.pro.dict.yaml"],
+        _ => return false,
+    };
+    let dict_dir = rime_dir.join("dicts");
+    !BaseUpdater::needs_update(local, info)
+        && required_files
+            .iter()
+            .all(|file| dict_dir.join(file).is_file())
+}
+
+fn adopt_current_model(
+    target: &Path,
+    record_path: &Path,
+    local: Option<&UpdateRecord>,
+    info: &UpdateInfo,
+    cancel: Option<&CancelSignal>,
+) -> Result<bool> {
+    if !model_is_current(target, local, info) {
+        return Ok(false);
+    }
+    let metadata_matches = local.is_some_and(|record| {
+        record.name == MODEL_FILE
+            && record.tag == info.tag
+            && record.update_time == info.update_time
+            && record.sha256 == info.sha256
+    });
+    if !info.sha256.is_empty() && !metadata_matches {
+        if let Some(signal) = cancel {
+            signal.checkpoint()?;
+        }
+        save_model_record(record_path, info)?;
+    }
+    Ok(true)
+}
+
+fn save_model_record(record_path: &Path, info: &UpdateInfo) -> Result<()> {
+    let record = UpdateRecord {
+        name: MODEL_FILE.into(),
+        update_time: info.update_time.clone(),
+        tag: info.tag.clone(),
+        apply_time: chrono::Utc::now().to_rfc3339(),
+        sha256: info.sha256.clone(),
+    };
+    BaseUpdater::save_record(record_path, &record)
+}
+
+fn model_is_current(target: &Path, local: Option<&UpdateRecord>, info: &UpdateInfo) -> bool {
+    if !target.is_file() {
+        return false;
+    }
+
+    if info.sha256.is_empty() {
+        local.is_some_and(|record| record.name == MODEL_FILE)
+            && !BaseUpdater::needs_update(local, info)
+    } else {
+        crate::fileutil::hash::verify_sha256(target, &info.sha256)
     }
 }
 
 fn find_matching_release_asset(release: &GitHubRelease, file_name: &str) -> Option<UpdateInfo> {
     BaseUpdater::find_update_info(std::slice::from_ref(release), file_name, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE_DICT_FILES: [&str; 2] = ["dicts/zi.dict.yaml", "dicts/jichu.dict.yaml"];
+    const PRO_DICT_FILES: [&str; 2] = ["dicts/zi.pro.dict.yaml", "dicts/jichu.pro.dict.yaml"];
+    const DICT_CASES: &[(Schema, [&str; 2])] = &[
+        (Schema::WanxiangBase, BASE_DICT_FILES),
+        (Schema::WanxiangMoqi, PRO_DICT_FILES),
+        (Schema::WanxiangFlypy, PRO_DICT_FILES),
+        (Schema::WanxiangZrm, PRO_DICT_FILES),
+        (Schema::WanxiangTiger, PRO_DICT_FILES),
+        (Schema::WanxiangWubi, PRO_DICT_FILES),
+        (Schema::WanxiangHanxin, PRO_DICT_FILES),
+        (Schema::WanxiangShouyou, PRO_DICT_FILES),
+        (Schema::WanxiangShyplus, PRO_DICT_FILES),
+        (Schema::WanxiangWx, PRO_DICT_FILES),
+    ];
+
+    fn cached_dict_update(root: &Path, schema: &Schema) -> (UpdateInfo, UpdateRecord) {
+        let info = UpdateInfo {
+            name: schema.dict_zip().expect("dictionary archive").into(),
+            url: String::new(),
+            update_time: "2026-11-01T00:00:00Z".into(),
+            tag: "dict-v1".into(),
+            description: String::new(),
+            sha256: String::new(),
+            size: 0,
+        };
+        let record = UpdateRecord {
+            name: info.name.clone(),
+            update_time: info.update_time.clone(),
+            tag: info.tag.clone(),
+            apply_time: String::new(),
+            sha256: String::new(),
+        };
+        let record_path = root.join("cache/dict_record.json");
+        BaseUpdater::save_record(&record_path, &record).expect("cached dictionary record");
+        let local = BaseUpdater::load_record(&record_path).expect("read cached dictionary record");
+        (info, local)
+    }
+
+    fn install_dict_files(rime_dir: &Path, files: &[&str]) {
+        for file in files {
+            let path = rime_dir.join(file);
+            std::fs::create_dir_all(path.parent().expect("dictionary parent"))
+                .expect("dictionary directory");
+            std::fs::write(path, "installed dictionary").expect("dictionary file");
+        }
+    }
+
+    #[test]
+    fn dict_freshness_rejects_missing_and_empty_roots_for_all_variants() {
+        for (schema, files) in DICT_CASES {
+            let root = tempfile::tempdir().expect("temporary root");
+            let (info, local) = cached_dict_update(root.path(), schema);
+            let installed = root.path().join("installed");
+            install_dict_files(&installed, files);
+            assert!(dict_is_current(&installed, schema, Some(&local), &info));
+
+            let other = root.path().join("other");
+            assert!(
+                !dict_is_current(&other, schema, Some(&local), &info),
+                "missing root: {schema:?}"
+            );
+            std::fs::create_dir_all(other.join("dicts")).expect("empty dictionary directory");
+            assert!(
+                !dict_is_current(&other, schema, Some(&local), &info),
+                "empty root: {schema:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dict_freshness_rejects_deleted_sentinels_for_all_variants() {
+        for (schema, files) in DICT_CASES {
+            let root = tempfile::tempdir().expect("temporary root");
+            let (info, local) = cached_dict_update(root.path(), schema);
+            let rime_dir = root.path().join("rime");
+            install_dict_files(&rime_dir, files);
+            assert!(dict_is_current(&rime_dir, schema, Some(&local), &info));
+
+            for file in files {
+                let path = rime_dir.join(file);
+                std::fs::remove_file(&path).expect("delete dictionary");
+                assert!(
+                    !dict_is_current(&rime_dir, schema, Some(&local), &info),
+                    "missing {file}: {schema:?}"
+                );
+                std::fs::create_dir(&path).expect("directory instead of dictionary");
+                assert!(
+                    !dict_is_current(&rime_dir, schema, Some(&local), &info),
+                    "directory {file}: {schema:?}"
+                );
+                std::fs::remove_dir(&path).expect("remove placeholder directory");
+                std::fs::write(path, "installed dictionary").expect("restore dictionary");
+            }
+        }
+    }
+
+    #[test]
+    fn dict_freshness_rejects_wrong_variant_and_nested_layouts_for_all_variants() {
+        for (schema, files) in DICT_CASES {
+            let root = tempfile::tempdir().expect("temporary root");
+            let (info, local) = cached_dict_update(root.path(), schema);
+            let rime_dir = root.path().join("rime");
+            let wrong_files = if *schema == Schema::WanxiangBase {
+                &PRO_DICT_FILES
+            } else {
+                &BASE_DICT_FILES
+            };
+            install_dict_files(&rime_dir, wrong_files);
+            install_dict_files(&rime_dir.join("dicts"), files);
+            assert!(
+                !dict_is_current(&rime_dir, schema, Some(&local), &info),
+                "wrong layout or variant: {schema:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dict_freshness_preserves_valid_install_and_metadata_checks_for_all_variants() {
+        assert_eq!(
+            DICT_CASES.len(),
+            Schema::all()
+                .iter()
+                .filter(|schema| schema.is_wanxiang())
+                .count()
+        );
+        for (schema, files) in DICT_CASES {
+            let root = tempfile::tempdir().expect("temporary root");
+            let (mut info, local) = cached_dict_update(root.path(), schema);
+            let rime_dir = root.path().join("rime");
+            install_dict_files(&rime_dir, files);
+            assert!(
+                dict_is_current(&rime_dir, schema, Some(&local), &info),
+                "installed: {schema:?}"
+            );
+            assert!(!dict_is_current(&rime_dir, schema, None, &info));
+            info.tag = "dict-v2".into();
+            assert!(!dict_is_current(&rime_dir, schema, Some(&local), &info));
+            info.tag = local.tag.clone();
+            info.name = "other-dicts.zip".into();
+            assert!(!dict_is_current(&rime_dir, schema, Some(&local), &info));
+        }
+    }
+
+    fn model_info() -> UpdateInfo {
+        UpdateInfo {
+            name: MODEL_FILE.into(),
+            url: String::new(),
+            update_time: "2026-11-01T00:00:00Z".into(),
+            tag: "model-v1".into(),
+            description: String::new(),
+            sha256: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9".into(),
+            size: 11,
+        }
+    }
+
+    fn model_record(info: &UpdateInfo) -> UpdateRecord {
+        UpdateRecord {
+            name: info.name.clone(),
+            update_time: info.update_time.clone(),
+            tag: info.tag.clone(),
+            apply_time: String::new(),
+            sha256: info.sha256.clone(),
+        }
+    }
+
+    #[test]
+    fn model_adoption_persists_authoritative_metadata_without_a_record() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("cache/model_record.json");
+        std::fs::write(&target, "hello world").expect("existing valid model");
+        let info = model_info();
+
+        assert!(
+            adopt_current_model(&target, &record_path, None, &info, None).expect("adopt model")
+        );
+        let saved = BaseUpdater::load_record(&record_path).expect("persisted model record");
+        assert_eq!(saved.name, MODEL_FILE);
+        assert_eq!(saved.tag, info.tag);
+        assert_eq!(saved.update_time, info.update_time);
+        assert_eq!(saved.sha256, info.sha256);
+        assert!(!saved.apply_time.is_empty());
+        assert_eq!(
+            std::fs::read(target).expect("unchanged model"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn model_adoption_replaces_stale_metadata_for_a_checksum_valid_file() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("model_record.json");
+        std::fs::write(&target, "hello world").expect("existing valid model");
+        let info = model_info();
+        let mut stale = model_record(&info);
+        stale.name = "old-model.gram".into();
+        stale.tag = "model-v0".into();
+        stale.update_time = "2026-10-01T00:00:00Z".into();
+        stale.sha256.clear();
+        BaseUpdater::save_record(&record_path, &stale).expect("stale model record");
+        let local = BaseUpdater::load_record(&record_path).expect("read stale record");
+
+        assert!(
+            adopt_current_model(&target, &record_path, Some(&local), &info, None)
+                .expect("adopt model")
+        );
+        let saved = BaseUpdater::load_record(&record_path).expect("refreshed model record");
+        assert_eq!(saved.name, MODEL_FILE);
+        assert_eq!(saved.tag, info.tag);
+        assert_eq!(saved.update_time, info.update_time);
+        assert_eq!(saved.sha256, info.sha256);
+        assert_eq!(
+            std::fs::read(target).expect("unchanged model"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn model_adoption_repairs_a_missing_checksum_in_an_otherwise_matching_record() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("model_record.json");
+        std::fs::write(&target, "hello world").expect("existing valid model");
+        let info = model_info();
+        let mut local = model_record(&info);
+        local.sha256.clear();
+        BaseUpdater::save_record(&record_path, &local).expect("legacy model record");
+
+        assert!(
+            adopt_current_model(&target, &record_path, Some(&local), &info, None)
+                .expect("adopt model")
+        );
+        assert_eq!(
+            BaseUpdater::load_record(&record_path)
+                .expect("repaired record")
+                .sha256,
+            info.sha256
+        );
+    }
+
+    #[test]
+    fn model_adoption_does_not_rewrite_matching_metadata() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("model_record.json");
+        std::fs::write(&target, "hello world").expect("existing valid model");
+        let info = model_info();
+        let mut local = model_record(&info);
+        local.apply_time = "2026-10-01T00:00:00Z".into();
+        BaseUpdater::save_record(&record_path, &local).expect("matching model record");
+        let original = std::fs::read(&record_path).expect("original record");
+
+        assert!(
+            adopt_current_model(&target, &record_path, Some(&local), &info, None)
+                .expect("current model")
+        );
+        assert_eq!(
+            std::fs::read(record_path).expect("unchanged record"),
+            original
+        );
+    }
+
+    #[test]
+    fn model_adoption_does_not_record_unverified_files() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("model_record.json");
+        std::fs::write(&target, "invalid model").expect("corrupt model");
+        let mut info = model_info();
+
+        assert!(
+            !adopt_current_model(&target, &record_path, None, &info, None).expect("not current")
+        );
+        info.sha256.clear();
+        assert!(
+            !adopt_current_model(&target, &record_path, None, &info, None)
+                .expect("unverified model")
+        );
+        assert!(!record_path.exists());
+    }
+
+    #[test]
+    fn model_adoption_honors_cancellation_before_record_repair() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        let record_path = root.path().join("model_record.json");
+        std::fs::write(&target, "hello world").expect("existing valid model");
+        let cancel = CancelSignal::new();
+        cancel.cancel();
+
+        let error = adopt_current_model(&target, &record_path, None, &model_info(), Some(&cancel))
+            .expect_err("cancelled adoption");
+        assert!(error.is::<UpdateCancelled>());
+        assert!(!record_path.exists());
+        assert_eq!(
+            std::fs::read(target).expect("unchanged model"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn model_adoption_reports_record_write_failure_without_changing_the_model() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let target = root.path().join(MODEL_FILE);
+        std::fs::write(&target, "hello world").expect("existing valid model");
+
+        assert!(adopt_current_model(&target, root.path(), None, &model_info(), None).is_err());
+        assert_eq!(
+            std::fs::read(target).expect("unchanged model"),
+            b"hello world"
+        );
+    }
+
+    #[test]
+    fn model_freshness_rejects_corruption_despite_matching_record() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        let info = model_info();
+        let local = model_record(&info);
+
+        for contents in ["corrupted model", ""] {
+            std::fs::write(&target, contents).expect("write corrupted model");
+
+            assert!(
+                !model_is_current(&target, Some(&local), &info),
+                "matching metadata must not bypass checksum failure for {contents:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn model_freshness_accepts_matching_checksum_without_record() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        std::fs::write(&target, "hello world").expect("write valid model");
+
+        assert!(model_is_current(&target, None, &model_info()));
+    }
+
+    #[test]
+    fn model_freshness_uses_checksum_instead_of_stale_metadata() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        std::fs::write(&target, "hello world").expect("write valid model");
+        let info = model_info();
+        let mut local = model_record(&info);
+        local.tag = "model-v0".into();
+        local.update_time = "2026-10-01T00:00:00Z".into();
+        local.sha256 = "outdated checksum".into();
+
+        assert!(model_is_current(&target, Some(&local), &info));
+    }
+
+    #[test]
+    fn model_freshness_uses_metadata_only_without_checksum() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        std::fs::write(&target, "model without checksum").expect("write model");
+        let mut info = model_info();
+        info.sha256.clear();
+        let local = model_record(&info);
+
+        assert!(model_is_current(&target, Some(&local), &info));
+        assert!(!model_is_current(&target, None, &info));
+
+        info.tag = "model-v2".into();
+        assert!(!model_is_current(&target, Some(&local), &info));
+    }
+
+    #[test]
+    fn model_freshness_rejects_missing_file_despite_matching_record() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        let mut info = model_info();
+        info.sha256.clear();
+        let local = model_record(&info);
+
+        assert!(!model_is_current(&target, Some(&local), &info));
+    }
+
+    #[test]
+    fn model_freshness_rejects_directory_without_checksum() {
+        let directory = tempfile::tempdir().expect("create model directory");
+        let target = directory.path().join(MODEL_FILE);
+        std::fs::create_dir(&target).expect("create directory instead of model file");
+        let mut info = model_info();
+        info.sha256.clear();
+        let local = model_record(&info);
+
+        assert!(!model_is_current(&target, Some(&local), &info));
+    }
 }

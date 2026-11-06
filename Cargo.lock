@@ -2041,7 +2041,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "snout"
-version = "0.2.14"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2061,6 +2061,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tempfile",
  "tokio",
  "zbus",
  "zip",

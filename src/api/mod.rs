@@ -7,6 +7,7 @@ use anyhow::Result;
 use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION};
 use reqwest::Proxy;
 
+#[derive(Clone)]
 pub struct Client {
     pub(crate) http: reqwest::Client,
     pub(crate) http_direct: reqwest::Client,
@@ -44,6 +45,7 @@ impl Client {
         F: std::future::Future<Output = reqwest::Result<T>>,
     {
         if let Some(signal) = cancel {
+            signal.checkpoint()?;
             tokio::select! {
                 result = future => result.map_err(Into::into),
                 result = Self::wait_for_cancel(signal) => result.and_then(|_| unreachable!()),
@@ -162,18 +164,19 @@ impl Client {
                         response.status()
                     ));
                 }
+                Err(error) if error.is::<UpdateCancelled>() => return Err(error),
                 Err(error) => direct_error = Some(error),
             }
         }
 
         let proxied = self.http.get(url).headers(headers).send();
-        match Self::await_with_cancel(proxied, cancel).await {
-            Ok(response) => Ok(response),
-            Err(error) if direct_error.is_some() => Err(anyhow::anyhow!(
-                "mirror request failed without proxy ({}) and with proxy ({error})",
-                direct_error.expect("direct error")
+        match (Self::await_with_cancel(proxied, cancel).await, direct_error) {
+            (Ok(response), _) => Ok(response),
+            (Err(error), _) if error.is::<UpdateCancelled>() => Err(error),
+            (Err(error), Some(direct_error)) => Err(anyhow::anyhow!(
+                "mirror request failed without proxy ({direct_error}) and with proxy ({error})"
             )),
-            Err(error) => Err(error),
+            (Err(error), None) => Err(error),
         }
     }
 }

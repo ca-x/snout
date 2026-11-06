@@ -128,7 +128,11 @@ pub fn theme_supports_optional_rounding(theme_name: &str) -> bool {
         return false;
     }
     theme_file_text(theme_name, "theme.conf")
-        .map(|content| optional_rounding_state(&content).is_some())
+        .map(|content| {
+            content
+                .lines()
+                .any(|line| matches!(line.trim(), "# Image=panel.svg" | "#Image=panel.svg"))
+        })
         .unwrap_or(false)
 }
 
@@ -138,7 +142,7 @@ pub fn installed_theme_rounding(theme_name: &str) -> Result<Option<bool>> {
         return Ok(None);
     }
     let content = std::fs::read_to_string(path).context("read installed theme.conf")?;
-    Ok(optional_rounding_state(&content))
+    Ok(optional_rounding_state(theme_name, &content))
 }
 
 fn install_theme(theme_name: &str, rounded: Option<bool>) -> Result<()> {
@@ -211,23 +215,9 @@ fn render_theme_conf(content: &str, rounded: Option<bool>) -> String {
     rendered
 }
 
-fn optional_rounding_state(content: &str) -> Option<bool> {
-    let mut saw_enabled = false;
-    let mut saw_disabled = false;
-
-    for line in content.lines() {
-        match line.trim() {
-            "Image=panel.svg" => saw_enabled = true,
-            "# Image=panel.svg" | "#Image=panel.svg" => saw_disabled = true,
-            _ => {}
-        }
-    }
-
-    if saw_disabled {
-        Some(saw_enabled)
-    } else {
-        None
-    }
+fn optional_rounding_state(theme_name: &str, content: &str) -> Option<bool> {
+    theme_supports_optional_rounding(theme_name)
+        .then(|| content.lines().any(|line| line.trim() == "Image=panel.svg"))
 }
 
 async fn write_theme_setting_pair(light_theme: &str, dark_theme: &str) -> Result<()> {
@@ -483,13 +473,16 @@ mod tests {
 
     #[test]
     fn optional_rounding_detection_finds_disabled_toggle() {
-        assert_eq!(optional_rounding_state("# Image=panel.svg\n"), Some(false));
+        assert_eq!(
+            optional_rounding_state("catppuccin-latte-sky", "# Image=panel.svg\n"),
+            Some(false)
+        );
     }
 
     #[test]
     fn optional_rounding_detection_finds_enabled_toggle() {
         assert_eq!(
-            optional_rounding_state("Image=panel.svg\n# Image=panel.svg\n"),
+            optional_rounding_state("catppuccin-latte-sky", "Image=panel.svg\n"),
             Some(true)
         );
     }
@@ -497,7 +490,7 @@ mod tests {
     #[test]
     fn optional_rounding_detection_returns_none_for_fixed_theme() {
         assert_eq!(
-            optional_rounding_state("Theme=OriDark\nImage=panel.svg\n"),
+            optional_rounding_state("OriDark", "Theme=OriDark\nImage=panel.svg\n"),
             None
         );
     }
@@ -514,5 +507,55 @@ mod tests {
         assert!(theme_supports_optional_rounding("catppuccin-latte-sky"));
         assert!(!theme_supports_optional_rounding("OriDark"));
         assert!(!theme_supports_optional_rounding("inflex-wechat"));
+    }
+
+    #[test]
+    fn embedded_optional_rounding_roundtrip_enabled() {
+        for theme_name in FCITX5_THEME_NAMES
+            .iter()
+            .filter(|name| name.starts_with("catppuccin-"))
+        {
+            let content = theme_file_text(theme_name, "theme.conf").expect("embedded theme.conf");
+            let rendered = render_theme_conf(&content, Some(true));
+
+            assert_eq!(
+                optional_rounding_state(theme_name, &rendered),
+                Some(true),
+                "theme {theme_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_optional_rounding_roundtrip_disabled() {
+        for theme_name in FCITX5_THEME_NAMES
+            .iter()
+            .filter(|name| name.starts_with("catppuccin-"))
+        {
+            let content = theme_file_text(theme_name, "theme.conf").expect("embedded theme.conf");
+            let rendered = render_theme_conf(&content, Some(false));
+
+            assert_eq!(
+                optional_rounding_state(theme_name, &rendered),
+                Some(false),
+                "theme {theme_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn embedded_optional_rounding_roundtrip_fixed_themes() {
+        for theme_name in ["OriDark", "OriLight", "inflex-wechat"] {
+            let content = theme_file_text(theme_name, "theme.conf").expect("embedded theme.conf");
+            for rounded in [Some(true), Some(false), None] {
+                let rendered = render_theme_conf(&content, rounded);
+
+                assert_eq!(
+                    optional_rounding_state(theme_name, &rendered),
+                    None,
+                    "theme {theme_name}, rounding {rounded:?}"
+                );
+            }
+        }
     }
 }

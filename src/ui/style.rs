@@ -1,4 +1,3 @@
-use crate::config::Manager;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::Span,
@@ -10,12 +9,11 @@ use std::sync::OnceLock;
 
 static QUERIED_THEME: OnceLock<TerminalTheme> = OnceLock::new();
 
-// 终端主题判定在一次进程生命周期内是常量：探测在 Windows 上会 shell out 到 reg
-// 并读配置，只应做一次，避免每个取色调用都重建 Manager。
 const THEME_UNRESOLVED: u8 = 0;
 const THEME_DARK: u8 = 1;
 const THEME_LIGHT: u8 = 2;
 static RESOLVED_THEME: AtomicU8 = AtomicU8::new(THEME_UNRESOLVED);
+static CONFIGURED_THEME: AtomicU8 = AtomicU8::new(THEME_UNRESOLVED);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalTheme {
@@ -176,16 +174,40 @@ fn detect_terminal_theme() -> TerminalTheme {
 }
 
 fn resolve_terminal_theme() -> TerminalTheme {
-    let configured_mode = Manager::new()
-        .ok()
-        .and_then(|manager| parse_theme_override(Some(&manager.config.tui_theme_mode)));
-    parse_theme_override(env::var("SNOUT_TUI_THEME").ok().as_deref())
+    let configured_mode = match CONFIGURED_THEME.load(Ordering::Relaxed) {
+        THEME_DARK => Some(TerminalTheme::Dark),
+        THEME_LIGHT => Some(TerminalTheme::Light),
+        _ => None,
+    };
+    resolve_theme_from_values(
+        env::var("SNOUT_TUI_THEME").ok().as_deref(),
+        configured_mode,
+        QUERIED_THEME.get().copied(),
+        env::var("COLORFGBG").ok().as_deref(),
+    )
+}
+
+fn resolve_theme_from_values(
+    override_mode: Option<&str>,
+    configured_mode: Option<TerminalTheme>,
+    queried_theme: Option<TerminalTheme>,
+    colorfgbg: Option<&str>,
+) -> TerminalTheme {
+    parse_theme_override(override_mode)
         .or(configured_mode)
-        .or_else(|| QUERIED_THEME.get().copied())
-        .or_else(|| {
-            detect_terminal_theme_from_env_values(None, env::var("COLORFGBG").ok().as_deref())
-        })
+        .or(queried_theme)
+        .or_else(|| detect_terminal_theme_from_env_values(None, colorfgbg))
         .unwrap_or(TerminalTheme::Dark)
+}
+
+pub(crate) fn configure_terminal_theme(mode: &str) {
+    let encoded = match parse_theme_override(Some(mode)) {
+        Some(TerminalTheme::Dark) => THEME_DARK,
+        Some(TerminalTheme::Light) => THEME_LIGHT,
+        None => THEME_UNRESOLVED,
+    };
+    CONFIGURED_THEME.store(encoded, Ordering::Relaxed);
+    reset_terminal_theme_cache();
 }
 
 /// TUI 内切换主题（light/dark/auto）后调用，让下一次取色重新判定。
@@ -316,5 +338,52 @@ pub(crate) fn contrast_color(color: Color) -> Color {
             }
         }
         _ => Color::Rgb(255, 255, 255),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_override_wins_over_configuration_and_terminal_queries() {
+        assert_eq!(
+            resolve_theme_from_values(
+                Some("light"),
+                Some(TerminalTheme::Dark),
+                Some(TerminalTheme::Dark),
+                Some("0;0")
+            ),
+            TerminalTheme::Light
+        );
+    }
+
+    #[test]
+    fn configured_theme_wins_over_queries_and_environment_colors() {
+        assert_eq!(
+            resolve_theme_from_values(
+                None,
+                Some(TerminalTheme::Dark),
+                Some(TerminalTheme::Light),
+                Some("0;15")
+            ),
+            TerminalTheme::Dark
+        );
+    }
+
+    #[test]
+    fn automatic_theme_uses_query_then_environment_then_dark() {
+        assert_eq!(
+            resolve_theme_from_values(None, None, Some(TerminalTheme::Light), Some("0;0")),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            resolve_theme_from_values(None, None, None, Some("0;15")),
+            TerminalTheme::Light
+        );
+        assert_eq!(
+            resolve_theme_from_values(None, None, None, None),
+            TerminalTheme::Dark
+        );
     }
 }

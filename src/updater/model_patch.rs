@@ -90,7 +90,7 @@ pub fn is_model_patched(rime_dir: &Path, schema: &Schema, lang: Lang) -> bool {
     }
 }
 
-fn patch_file_path(rime_dir: &Path, schema: &Schema) -> std::path::PathBuf {
+pub(crate) fn patch_file_path(rime_dir: &Path, schema: &Schema) -> std::path::PathBuf {
     rime_dir.join(format!("{}.custom.yaml", schema.schema_id()))
 }
 
@@ -106,13 +106,7 @@ fn load_patch_doc(path: &Path, t: &L10n) -> Result<PatchDoc> {
 }
 
 fn write_patch_doc(path: &Path, doc: &PatchDoc) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let yaml = serde_yaml::to_string(doc)?;
-    std::fs::write(path, yaml)?;
-    Ok(())
+    crate::fileutil::atomic_write(path, serde_yaml::to_string(doc)?.as_bytes())
 }
 
 fn has_model_patch(doc: &PatchDoc, schema: &Schema) -> bool {
