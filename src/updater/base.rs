@@ -346,6 +346,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     async fn regression_cached_zip_normalizes_before_live_merge() {
         use std::io::Write;

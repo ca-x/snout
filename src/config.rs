@@ -661,19 +661,9 @@ fn fcitx5_rime_installed() -> bool {
     linux_fcitx5_rime_dir().exists() || linux_fcitx5_config_rime_dir().exists()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn fcitx5_rime_installed() -> bool {
-    false
-}
-
 #[cfg(target_os = "linux")]
 fn fcitx_rime_installed() -> bool {
     linux_fcitx_rime_dir().exists()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn fcitx_rime_installed() -> bool {
-    false
 }
 
 #[cfg(target_os = "linux")]
@@ -691,11 +681,6 @@ fn linux_fcitx5_config_rime_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_default()
         .join(".config/fcitx5/rime")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn linux_fcitx5_config_rime_dir() -> PathBuf {
-    PathBuf::new()
 }
 
 #[cfg(target_os = "linux")]

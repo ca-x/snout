@@ -631,6 +631,12 @@ mod tests {
         }
     }
 
+    async fn bounded_download(future: impl std::future::Future<Output = Result<()>>) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), future)
+            .await
+            .expect("download fixture should complete within 30 seconds")
+    }
+
     async fn rejects_resume_response(headers: &'static str, body: &'static [u8]) {
         let content = b"0123456789abcdefghijklmnopqrstuvwxyz";
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -651,11 +657,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let dest = directory.path().join("asset.bin");
         std::fs::write(temp_download_path(&dest), &content[..10]).unwrap();
-        Client::new_download_client(&base_config())
-            .unwrap()
-            .download_file(&server.url, &dest, &base_config(), None, |_, _| {})
-            .await
-            .unwrap();
+        bounded_download(
+            Client::new_download_client(&base_config())
+                .unwrap()
+                .download_file(&server.url, &dest, &base_config(), None, |_, _| {}),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), content);
         assert_eq!(
@@ -746,11 +754,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let dest = directory.path().join("asset.bin");
         std::fs::write(temp_download_path(&dest), b"0123456789").unwrap();
-        Client::new_download_client(&base_config())
-            .unwrap()
-            .download_file(&server.url, &dest, &base_config(), None, |_, _| {})
-            .await
-            .unwrap();
+        bounded_download(
+            Client::new_download_client(&base_config())
+                .unwrap()
+                .download_file(&server.url, &dest, &base_config(), None, |_, _| {}),
+        )
+        .await
+        .unwrap();
 
         assert_eq!(
             std::fs::read(&dest).unwrap(),
@@ -826,11 +836,15 @@ mod tests {
             ..base_config()
         };
 
-        Client::new_download_client(&config)
-            .unwrap()
-            .download_file(&server.url, &dest, &config, None, |_, _| {})
-            .await
-            .unwrap();
+        bounded_download(Client::new_download_client(&config).unwrap().download_file(
+            &server.url,
+            &dest,
+            &config,
+            None,
+            |_, _| {},
+        ))
+        .await
+        .unwrap();
 
         assert!(
             std::fs::read(&dest).unwrap() == *expected,
@@ -1054,75 +1068,68 @@ mod tests {
         });
 
         let client = Client::new_download_client(&base_config()).expect("client");
-        let dir = std::env::temp_dir().join("snout-api-resume-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join("asset.bin");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("asset.bin");
         let tmp = temp_download_path(&dest);
         std::fs::write(&tmp, &full_content[..10]).unwrap();
 
-        client
-            .download_file(
-                &format!("http://{addr}/asset"),
-                &dest,
-                &base_config(),
-                None,
-                |_downloaded, _total| {},
-            )
-            .await
-            .unwrap();
+        bounded_download(client.download_file(
+            &format!("http://{addr}/asset"),
+            &dest,
+            &base_config(),
+            None,
+            |_downloaded, _total| {},
+        ))
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), full_content);
         assert!(!tmp.exists());
 
         server_task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn download_file_restarts_when_server_ignores_range() {
         let content = b"complete file content";
-        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = server.local_addr().unwrap();
-        let server_task = tokio::spawn(async move {
-            loop {
-                let (mut socket, _) = match server.accept().await {
-                    Ok(value) => value,
-                    Err(_) => break,
-                };
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
-                    content.len()
-                );
-                let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
-                let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, content).await;
+        let observed_ranges = Arc::new(Mutex::new(Vec::new()));
+        let server_ranges = observed_ranges.clone();
+        let server = http_fixture(move |mut socket, range| {
+            server_ranges.lock().unwrap().push(range);
+            async move {
+                http_response(
+                    &mut socket,
+                    "200 OK",
+                    &format!("Content-Length: {}\r\n", content.len()),
+                    content,
+                )
+                .await;
             }
-        });
+        })
+        .await;
 
         let client = Client::new_download_client(&base_config()).expect("client");
-        let dir = std::env::temp_dir().join("snout-api-no-resume-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join("asset.bin");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("asset.bin");
         let tmp = temp_download_path(&dest);
         std::fs::write(&tmp, b"partial").unwrap();
 
-        client
-            .download_file(
-                &format!("http://{addr}/asset"),
-                &dest,
-                &base_config(),
-                None,
-                |_downloaded, _total| {},
-            )
-            .await
-            .unwrap();
+        bounded_download(client.download_file(
+            &server.url,
+            &dest,
+            &base_config(),
+            None,
+            |_downloaded, _total| {},
+        ))
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), content);
         assert!(!tmp.exists());
-
-        server_task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            observed_ranges.lock().unwrap().as_slice(),
+            &[Some("bytes=7-".into())]
+        );
     }
 
     #[tokio::test]
@@ -1135,10 +1142,8 @@ mod tests {
         });
 
         let client = Client::new_download_client(&base_config()).expect("client");
-        let dir = std::env::temp_dir().join("snout-api-cancel-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join("asset.bin");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("asset.bin");
         let cancel = CancelSignal::new();
         let cancel_clone = cancel.clone();
 
@@ -1165,7 +1170,6 @@ mod tests {
         assert!(result.unwrap_err().is::<UpdateCancelled>());
 
         server_task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1173,89 +1177,63 @@ mod tests {
         let content = (0..2_000_000u32)
             .map(|n| (n % 251) as u8)
             .collect::<Vec<_>>();
-        let server_content = content.clone();
+        let server_content = Arc::new(content.clone());
         let observed_ranges = Arc::new(Mutex::new(Vec::<String>::new()));
         let observed_ranges_server = observed_ranges.clone();
 
-        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = server.local_addr().unwrap();
-        let server_task = tokio::spawn(async move {
-            loop {
-                let (mut socket, _) = match server.accept().await {
-                    Ok(value) => value,
-                    Err(_) => break,
-                };
-                let mut buf = [0u8; 4096];
-                let n = match tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await {
-                    Ok(n) => n,
-                    Err(_) => continue,
-                };
-                let request = String::from_utf8_lossy(&buf[..n]);
-                let range_header = request
-                    .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        if name.trim().eq_ignore_ascii_case("range") {
-                            Some(value.trim())
-                        } else {
-                            None
-                        }
-                    })
-                    .map(str::trim)
-                    .map(str::to_string);
-
-                if let Some(range) = range_header {
-                    observed_ranges_server.lock().unwrap().push(range.clone());
+        let server = http_fixture(move |mut socket, range| {
+            let content = server_content.clone();
+            if let Some(range) = range.as_ref() {
+                observed_ranges_server.lock().unwrap().push(range.clone());
+            }
+            async move {
+                if let Some(range) = range {
                     let range = range.trim_start_matches("bytes=");
                     let (start, end) = range.split_once('-').unwrap();
                     let start: usize = start.parse().unwrap();
                     let end: usize = end.parse().unwrap();
-                    let body = &server_content[start..=end];
-                    let response = format!(
-                        "HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\n\r\n",
-                        body.len(),
-                        start,
-                        end,
-                        server_content.len()
-                    );
-                    let _ =
-                        tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
-                    let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, body).await;
+                    let body = &content[start..=end];
+                    http_response(
+                        &mut socket,
+                        "206 Partial Content",
+                        &format!(
+                            "Accept-Ranges: bytes\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\n",
+                            body.len(),
+                            content.len()
+                        ),
+                        body,
+                    )
+                    .await;
                 } else {
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\n\r\n",
-                        server_content.len()
-                    );
-                    let _ =
-                        tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
-                    let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, &server_content).await;
+                    http_response(
+                        &mut socket,
+                        "200 OK",
+                        &format!("Accept-Ranges: bytes\r\nContent-Length: {}\r\n", content.len()),
+                        &content,
+                    )
+                    .await;
                 }
             }
-        });
+        })
+        .await;
 
         let mut config = base_config();
         config.download_threads = 4;
         let client = Client::new_download_client(&config).expect("client");
-        let dir = std::env::temp_dir().join("snout-api-parallel-test");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let dest = dir.join("asset.bin");
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("asset.bin");
 
-        client
-            .download_file(
-                &format!("http://{addr}/asset"),
-                &dest,
-                &config,
-                None,
-                |_downloaded, _total| {},
-            )
-            .await
-            .unwrap();
+        bounded_download(client.download_file(
+            &server.url,
+            &dest,
+            &config,
+            None,
+            |_downloaded, _total| {},
+        ))
+        .await
+        .unwrap();
 
         assert_eq!(std::fs::read(&dest).unwrap(), content);
         assert!(observed_ranges.lock().unwrap().len() >= 2);
-
-        server_task.abort();
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

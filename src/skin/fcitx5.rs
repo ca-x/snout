@@ -31,6 +31,7 @@ impl FcitxThemeConfig {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn to_json_payload(&self) -> String {
         serde_json::json!({
             "Theme": self.theme,

@@ -315,14 +315,17 @@ pub fn run_hook(hook_path: &str, phase: &str, lang: Lang) -> Result<()> {
 
 // ── 辅助函数 ──
 
+#[cfg(target_os = "linux")]
 fn has_binary(name: &str) -> bool {
     which(name).is_some()
 }
 
+#[cfg(target_os = "linux")]
 fn find_binary(name: &str, lang: &L10n) -> Result<PathBuf> {
     which(name).ok_or_else(|| anyhow::anyhow!("{}: {name}", lang.t("deploy.binary_not_found")))
 }
 
+#[cfg(target_os = "linux")]
 fn which(name: &str) -> Option<PathBuf> {
     std::process::Command::new("which")
         .arg(name)
@@ -628,8 +631,9 @@ mod tests {
         assert!(err.to_string().contains(t.t("deploy.sync_partial_failed")));
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
-    fn prepare_for_update_returns_ok() {
+    fn prepare_for_update_is_noop_on_non_windows() {
         assert!(prepare_for_update(Lang::En).is_ok());
     }
 

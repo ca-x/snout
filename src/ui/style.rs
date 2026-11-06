@@ -270,6 +270,7 @@ fn query_osc_background() -> Option<TerminalTheme> {
     None
 }
 
+#[cfg(any(unix, test))]
 pub(crate) fn parse_osc_background(response: &[u8]) -> Option<TerminalTheme> {
     let start = response.windows(5).position(|part| part == b"\x1b]11;")? + 5;
     let end = response[start..]
