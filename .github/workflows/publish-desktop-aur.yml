@@ -1,0 +1,77 @@
+name: Publish Desktop AUR
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Latest published stable release tag (vX.Y.Z)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      AUR_USERNAME:
+        required: true
+      AUR_EMAIL:
+        required: true
+      AUR_SSH_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-snout-desktop-bin
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish snout-desktop-bin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Verify published desktop payload
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a stable release tag: vX.Y.Z" >&2
+            exit 1
+          fi
+          test "$(gh release view --json tagName --jq .tagName)" = "$RELEASE_TAG"
+          test "$(gh release view "$RELEASE_TAG" --json tagName,isDraft,isPrerelease --jq 'select(.isDraft == false and .isPrerelease == false).tagName')" = "$RELEASE_TAG"
+          asset="snout-desktop-${RELEASE_TAG}-linux-x86_64-gnu.tar.gz"
+          gh release download "$RELEASE_TAG" --pattern SHA256SUMS --pattern "$asset" --dir release-assets
+          test -f "release-assets/$asset"
+          (cd release-assets && sha256sum --check --ignore-missing SHA256SUMS)
+          checksum=$(sha256sum "release-assets/$asset")
+          echo "sha256=${checksum%% *}" >> "$GITHUB_OUTPUT"
+      - name: Set package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i "s/^pkgver=.*/pkgver=${RELEASE_TAG#v}/" snout-desktop-bin/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" snout-desktop-bin/PKGBUILD
+      - name: Build and publish AUR package
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7
+        with:
+          pkgname: snout-desktop-bin
+          pkgbuild: ./snout-desktop-bin/PKGBUILD
+          updpkgsums: true
+          test: true
+          post_process: >-
+            source PKGBUILD
+            && test "${sha256sums_x86_64[0]}" = "${{ steps.verify.outputs.sha256 }}"
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: Update to version ${{ inputs.tag }}
+          ssh_keyscan_types: rsa,ecdsa,ed25519

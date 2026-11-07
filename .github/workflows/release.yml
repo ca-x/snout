@@ -189,6 +189,15 @@ jobs:
             gh release upload "${{ github.ref_name }}" "$file" --clobber
           done
 
+  publish-aur-snout-desktop-bin:
+    name: Publish snout-desktop-bin to AUR
+    needs:
+      - publish-release
+    uses: ./.github/workflows/publish-desktop-aur.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
+
   publish-aur-snout-bin:
     name: Publish snout-bin to AUR
     runs-on: ubuntu-latest

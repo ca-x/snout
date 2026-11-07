@@ -5,6 +5,23 @@ runtime, browser assets, or native dependencies are added to the root CLI packag
 This directory is a separate Cargo workspace; it consumes `snout` through a path
 dependency.
 
+## Arch Linux Package
+
+```sh
+yay -S snout-desktop-bin
+```
+
+The binary package currently supports x86_64 and requires GTK 4.14+. It installs
+`snout-desktop`, an application-menu entry, and the MIT license. It can coexist
+with `snout-bin`, which remains the separate CLI/TUI package. Both share the same
+configuration; do not run concurrent updates from different frontends.
+
+The Release workflow publishes this package after uploading the desktop assets.
+Maintainers can also run `Publish Desktop AUR` with the latest published stable
+tag to publish an existing release without rebuilding or replacing its assets.
+The workflow verifies the release checksum, builds the Arch package, and lets
+`updpkgsums` generate real AUR checksums; the GitHub PKGBUILD keeps `SKIP` values.
+
 ## Run
 
 ```sh

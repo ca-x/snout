@@ -69,6 +69,13 @@ yay -S snout-bin
 paru -S snout-bin
 ```
 
+桌面端使用独立的 `snout-desktop-bin` 包（目前仅 x86_64，需要 GTK 4.14+），
+安装后可从应用菜单或通过 `snout-desktop` 启动。它可与 `snout-bin` 同时安装：
+
+```bash
+yay -S snout-desktop-bin
+```
+
 ## 使用
 
 ### TUI 模式 (默认)
@@ -422,6 +429,10 @@ existing configuration, so avoid running updates concurrently across them. The d
 exposes all CLI capabilities, background progress/cancellation, explicit data/hook confirmation,
 diagnostics, and JSON/completion export without shelling out to the CLI.
 Hooks take script file paths and require `sh` on `PATH`; they are not command-string fields.
+
+On Arch Linux, install the desktop with `yay -S snout-desktop-bin` (x86_64 only,
+GTK 4.14+). It installs `snout-desktop` and an application-menu entry, and can coexist
+with the CLI/TUI `snout-bin` package. Future releases update both AUR packages automatically.
 
 ## Usage
 
