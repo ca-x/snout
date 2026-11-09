@@ -1,6 +1,6 @@
 [package]
 name = "snout-desktop"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Native snout input-method workbench"
 license = "MIT"
@@ -13,7 +13,7 @@ native = ["dep:nsh-platform-linux", "dep:nsh-platform-macos", "dep:nsh-platform-
 
 [dependencies]
 anyhow = "1"
-nsh-core = { version = "=0.4.0", default-features = false }
+nsh-core = { version = "=0.4.0", default-features = false, features = ["svg"] }
 nsh-base = { version = "=0.4.0", default-features = false }
 serde_json = "1"
 snout = { path = ".." }

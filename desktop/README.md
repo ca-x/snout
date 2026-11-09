@@ -52,6 +52,14 @@ component report. This permits testing real JSON export without live effects.
 
 ## Features
 
+The redesigned workbench uses a persistent icon sidebar, component cards,
+wrapping scheme choices, a candidate-count preview, and grouped settings. A fixed
+save/revert strip keeps drafts visible across pages. Confirmation dialogs support
+Escape; Command/Ctrl+1–5 switches pages and Command/Ctrl+S reviews unsaved changes.
+Control feedback and disclosure animations honor the system reduced-motion
+preference. The app's semantic light/dark tokens and interaction standards live in
+`src/theme.json` and `../docs/desktop-design.md`.
+
 | Page | Shared CLI/TUI capabilities |
 | --- | --- |
 | Overview | Update all or scheme/dictionary/model separately; installed component versions; remote status check; engine diagnostics; Wanxiang diagnosis; paths; one-time Rime integration; cancellable startup countdown |

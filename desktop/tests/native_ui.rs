@@ -93,6 +93,77 @@ fn actual_root_navigates_all_five_pages_and_lists_every_schema() {
 }
 
 #[test]
+fn draft_actions_follow_navigation_and_revert_without_writing() {
+    let (_root, paths, mut app) = workbench();
+    app.press("browse-schemes").expect("scheme shortcut");
+    wait_for_navigation(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("schema-Ice").expect("select another scheme");
+    app.wait_for("unsaved-changes").expect("draft visible");
+    navigate(&mut app, "nav-overview", "Selected scheme");
+    assert_eq!(persisted(&paths).schema, Schema::WanxiangBase);
+    app.press("discard-draft").expect("revert draft");
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .expect("draft cleared");
+    assert!(app.shows(&Schema::WanxiangBase.display_name_lang(Lang::En)));
+    assert_eq!(persisted(&paths).schema, Schema::WanxiangBase);
+    assert!(!paths.rime.exists());
+}
+
+#[test]
+fn keyboard_navigation_save_and_escape_keep_confirmation_safe() {
+    let (_root, paths, mut app) = workbench();
+    app.press_key("mod+2").expect("scheme shortcut");
+    wait_for_navigation(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("schema-Ice").expect("change selection");
+    app.press_key("mod+s").expect("save shortcut");
+    app.wait_for("confirmation").expect("review draft");
+    app.press_key("mod+4")
+        .expect("navigation during confirmation");
+    assert!(app.screen().selected("nav-schemes").expect("selection"));
+    app.press_key("escape").expect("dismiss modal");
+    app.wait_for_gone("confirmation", Duration::from_secs(2))
+        .expect("modal dismissed");
+    assert_eq!(persisted(&paths).schema, Schema::WanxiangBase);
+    app.press("save-draft").expect("save draft strip");
+    app.wait_for("confirmation").expect("review again");
+    app.press("confirm-continue").expect("confirm save");
+    app.wait_for("Completed").expect("saved");
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .expect("clean state");
+    assert_eq!(persisted(&paths).schema, Schema::Ice);
+    assert!(!paths.rime.exists());
+}
+
+#[test]
+fn diagnostics_disclosure_and_preview_work_in_dark_reduced_motion_at_small_size() {
+    let (_root, paths, mut app) = workbench();
+    app.set_viewport(Size::new(px(800.0), px(640.0)))
+        .expect("narrow window");
+    app.set_environment("dark with reduced motion and larger text", |environment| {
+        environment.color_scheme = nsh_engine::ColorScheme::Dark;
+        environment.reduce_motion = true;
+        environment.font_scale = 1.2;
+    })
+    .expect("accessibility preferences");
+    assert!(!app.shows("Locations"));
+    app.press("toggle-diagnostics").expect("open details");
+    app.wait_for("Locations").expect("paths disclosed");
+    app.press("toggle-diagnostics").expect("close details");
+    app.wait_for_gone("Locations", Duration::from_secs(2))
+        .expect("details hidden");
+    app.press("open-appearance").expect("appearance shortcut");
+    wait_for_navigation(&mut app, "nav-appearance", "Candidate window");
+    app.wait_for("candidate-preview").expect("layout preview");
+    assert!(app.shows("你好"));
+    assert!(!app.shows("呢好"));
+    app.press("label:Candidates per page")
+        .expect("open count picker");
+    app.press("text:9").expect("nine candidates");
+    app.wait_for("拟").expect("preview follows selection");
+    assert!(!paths.rime.exists(), "preview must not apply settings");
+}
+
+#[test]
 fn actual_root_confirms_updates_and_cancel_does_not_run_anything() {
     let (_root, paths, mut app) = workbench();
     app.press("update-all").expect("request update");
