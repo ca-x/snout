@@ -12,6 +12,7 @@ import zipfile
 
 
 APP_ID = "io.github.snout.desktop"
+ICON_DIR = Path(__file__).resolve().parent.parent / "desktop" / "assets"
 TARGETS = {
     "x86_64-unknown-linux-gnu": "linux-x86_64-gnu",
     "x86_64-apple-darwin": "macos-x86_64",
@@ -42,12 +43,16 @@ def package_desktop(target, version, target_dir, output_dir):
             package = staging / "snout.app"
             installed_binary = package / "Contents" / "MacOS" / executable
             installed_binary.parent.mkdir(parents=True)
+            resources = package / "Contents" / "Resources"
+            resources.mkdir()
+            shutil.copyfile(ICON_DIR / "snout.icns", resources / "snout.icns")
             with (package / "Contents" / "Info.plist").open("wb") as plist:
                 plistlib.dump(
                     {
                         "CFBundleDevelopmentRegion": "en",
                         "CFBundleDisplayName": "snout",
                         "CFBundleExecutable": executable,
+                        "CFBundleIconFile": "snout.icns",
                         "CFBundleIdentifier": APP_ID,
                         "CFBundleInfoDictionaryVersion": "6.0",
                         "CFBundleName": "snout",
@@ -64,6 +69,10 @@ def package_desktop(target, version, target_dir, output_dir):
             installed_binary.parent.mkdir(parents=True)
             applications = package / "share" / "applications"
             applications.mkdir(parents=True)
+            for size, filename in [(256, "logo.png"), (512, "logo-512.png")]:
+                icons = package / "share" / "icons" / "hicolor" / f"{size}x{size}" / "apps"
+                icons.mkdir(parents=True)
+                shutil.copyfile(ICON_DIR / filename, icons / f"{APP_ID}.png")
             (applications / f"{APP_ID}.desktop").write_text(
                 "[Desktop Entry]\n"
                 "Version=1.0\n"
@@ -72,6 +81,7 @@ def package_desktop(target, version, target_dir, output_dir):
                 "Comment=Manage Rime input method schemes and settings\n"
                 "Exec=snout-desktop\n"
                 "TryExec=snout-desktop\n"
+                f"Icon={APP_ID}\n"
                 "Terminal=false\n"
                 "Categories=Utility;\n"
                 f"StartupWMClass={APP_ID}\n",

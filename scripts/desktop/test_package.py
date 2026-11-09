@@ -52,6 +52,13 @@ class DesktopPackageTests(unittest.TestCase):
             ).read().decode("utf-8")
             self.assertIn("Exec=snout-desktop\n", entry)
             self.assertIn("Terminal=false\n", entry)
+            self.assertIn(f"Icon={PACKAGER.APP_ID}\n", entry)
+            for size, filename in [(256, "logo.png"), (512, "logo-512.png")]:
+                icon = archive.getmember(
+                    f"{prefix}/share/icons/hicolor/{size}x{size}/apps/{PACKAGER.APP_ID}.png"
+                )
+                self.assertEqual(icon.mode & 0o777, 0o644)
+                self.assertEqual(archive.extractfile(icon).read(), (PACKAGER.ICON_DIR / filename).read_bytes())
             self.assertIn("StartupWMClass=io.github.snout.desktop\n", entry)
             self.assertNotIn(f"{prefix}/bin/snout", archive.getnames())
 
@@ -70,6 +77,11 @@ class DesktopPackageTests(unittest.TestCase):
                         archive.extractfile("snout.app/Contents/Info.plist").read()
                     )
                     self.assertEqual(plist["CFBundleExecutable"], "snout-desktop")
+                    self.assertEqual(plist["CFBundleIconFile"], "snout.icns")
+                    self.assertEqual(
+                        archive.extractfile("snout.app/Contents/Resources/snout.icns").read(),
+                        (PACKAGER.ICON_DIR / "snout.icns").read_bytes(),
+                    )
                     self.assertEqual(plist["CFBundleIdentifier"], "io.github.snout.desktop")
                     self.assertEqual(plist["CFBundlePackageType"], "APPL")
                     self.assertEqual(plist["CFBundleVersion"], "0.3.0")

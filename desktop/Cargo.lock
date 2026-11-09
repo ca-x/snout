@@ -3823,7 +3823,7 @@ checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
 
 [[package]]
 name = "snout"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3851,9 +3851,10 @@ dependencies = [
 
 [[package]]
 name = "snout-desktop"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
@@ -3865,6 +3866,7 @@ dependencies = [
  "snout",
  "tempfile",
  "tokio",
+ "winresource",
 ]
 
 [[package]]
@@ -5382,6 +5384,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winresource"
+version = "0.1.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
+dependencies = [
+ "toml",
+ "version_check",
 ]
 
 [[package]]

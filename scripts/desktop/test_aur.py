@@ -53,6 +53,10 @@ class DesktopAurTests(unittest.TestCase):
             launcher.parent.mkdir(parents=True)
             binary.write_bytes(b"desktop executable fixture\n")
             launcher.write_text("[Desktop Entry]\nExec=snout-desktop\n", encoding="utf-8")
+            for size in [256, 512]:
+                icon = release / f"share/icons/hicolor/{size}x{size}/apps/io.github.snout.desktop.png"
+                icon.parent.mkdir(parents=True)
+                icon.write_bytes(f"icon fixture {size}".encode())
             license_file = source_dir / f"snout-LICENSE-{version}"
             license_file.write_text("MIT license fixture\n", encoding="utf-8")
 
@@ -78,6 +82,11 @@ class DesktopAurTests(unittest.TestCase):
                 (package_dir / "usr/share/applications/io.github.snout.desktop.desktop").read_bytes(),
                 launcher.read_bytes(),
             )
+            for size in [256, 512]:
+                relative = f"share/icons/hicolor/{size}x{size}/apps/io.github.snout.desktop.png"
+                installed_icon = package_dir / "usr" / relative
+                self.assertEqual(installed_icon.read_bytes(), (release / relative).read_bytes())
+                self.assertEqual(installed_icon.stat().st_mode & 0o777, 0o644)
             installed_license = package_dir / "usr/share/licenses/snout-desktop-bin/LICENSE"
             self.assertEqual(installed_license.read_bytes(), license_file.read_bytes())
             self.assertEqual(installed_license.stat().st_mode & 0o777, 0o644)

@@ -2,6 +2,7 @@ use crate::controller::{self, Command, Controller, Paths, Snapshot, Status};
 use crate::theme::{
     accent, canvas, danger, ink, line, muted, on_accent, selection, sidebar_surface, surface,
 };
+use base64::prelude::*;
 use nsh_base::theme;
 use nsh_base::{button, input, progress, select, switch, SelectItem, SelectValue};
 use nsh_core::animation::{KeyframeTiming, MotionChannel, MotionSpec};
@@ -607,18 +608,15 @@ fn sidebar(ui: Ui) -> AnyElement {
                 .py_4()
                 .mb_4()
                 .child(
-                    view()
-                        .size(px(38.0))
-                        .rounded(px(10.0))
-                        .bg(accent)
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            text("文")
-                                .text_color(on_accent)
-                                .text_size(px(20.0))
-                                .font_weight(FontWeight::SEMIBOLD),
-                        ),
+                    image(format!(
+                        "data:image/png;base64,{}",
+                        BASE64_STANDARD.encode(include_bytes!("../assets/logo.png"))
+                    ))
+                    .test_id("brand-logo")
+                    .size(px(48.0))
+                    .flex_shrink_0()
+                    .object_fit(ResizeMode::Contain)
+                    .label("snout"),
                 )
                 .child(
                     view()

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="snout Logo" width="200" />
+</p>
+
 # snout
 
 > **snout** /snaʊt/ — 象鼻虫的长吻。如同象鼻虫用细长的吻精准触达目标，snout 帮你精准触达 Rime 输入法的每个组件：方案、词库、模型、皮肤。

@@ -8,6 +8,11 @@ use nsh_platform_macos as platform;
 use nsh_platform_windows as platform;
 
 fn main() -> anyhow::Result<impl std::process::Termination> {
+    #[cfg(target_os = "linux")]
+    {
+        platform::gtk4::init()?;
+        platform::gtk4::Window::set_default_icon_name("io.github.snout.desktop");
+    }
     let shutdown = snout_desktop::controller::ProcessShutdown::install()?;
     let root = if let Some(directory) = std::env::var_os("SNOUT_DESKTOP_SANDBOX") {
         let directory = std::path::PathBuf::from(directory);

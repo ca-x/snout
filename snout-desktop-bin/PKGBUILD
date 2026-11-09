@@ -1,5 +1,5 @@
 pkgname=snout-desktop-bin
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Native desktop workbench for Rime input method schemes, models, and themes"
 arch=('x86_64')
@@ -20,5 +20,9 @@ package() {
   install -Dm755 "${release_dir}/bin/snout-desktop" "${pkgdir}/usr/bin/snout-desktop"
   install -Dm644 "${release_dir}/share/applications/io.github.snout.desktop.desktop" \
     "${pkgdir}/usr/share/applications/io.github.snout.desktop.desktop"
+  for size in 256 512; do
+    install -Dm644 "${release_dir}/share/icons/hicolor/${size}x${size}/apps/io.github.snout.desktop.png" \
+      "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/io.github.snout.desktop.png"
+  done
   install -Dm644 "${srcdir}/snout-LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

@@ -1,9 +1,22 @@
+<p align="center">
+  <img src="../assets/logo.png" alt="snout Logo" width="200" />
+</p>
+
 # snout desktop
 
 A native Rust input-method workbench built with NSH 0.4.0. No webview, JavaScript
 runtime, browser assets, or native dependencies are added to the root CLI package.
 This directory is a separate Cargo workspace; it consumes `snout` through a path
 dependency.
+
+## Branding
+
+The original transparent artwork is preserved in `../assets/logo.png`. The sidebar
+embeds its 256 px PNG at compile time, so it needs no external image files or network.
+The desktop assets include 256/512 px PNGs for Linux, a multi-size ICNS for macOS,
+and a multi-size ICO embedded into the Windows executable by `build.rs`.
+Regenerate them with `uv run --with pillow python scripts/generate-desktop-icons.py`
+from the repository root.
 
 ## Arch Linux Package
 
