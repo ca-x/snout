@@ -102,7 +102,8 @@ struct Cli {
     #[arg(long, value_parser = ["http", "socks5"])]
     proxy_type: Option<String>,
 
-    /// GitHub token / GitHub token
+    /// GitHub Token（可选；否则使用 GH_TOKEN / GITHUB_TOKEN / gh 登录）
+    /// Optional token; falls back to GH_TOKEN, GITHUB_TOKEN, then local gh login
     #[arg(long)]
     github_token: Option<String>,
 

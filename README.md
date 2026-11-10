@@ -305,6 +305,34 @@ snout --lang en --update
 
 `rime_auto_setup` 为 `true` 时自动检查并添加 Rime，`false` 时跳过；`null` 表示尚未选择，询问前也不会执行。
 
+### GitHub 认证与 403 / 429
+
+桌面端、CLI 和 TUI 使用相同的认证顺序：
+
+1. 桌面设置 / 配置文件中的 `github_token`，或 CLI 的 `--github-token` 显式参数。
+2. 环境变量 `GH_TOKEN`，其次 `GITHUB_TOKEN`。
+3. 已安装且登录的 GitHub CLI：从 `gh auth token --hostname github.com` 读取现有凭据。
+4. 均未提供时匿名访问。`gh` 不是必需依赖，程序不会自动安装它或启动交互式登录。
+
+**没有 gh**：在桌面「设置 → 下载与网络 → GitHub 令牌」填写 GitHub Token 并保存；
+CLI 可使用环境变量。例如在 Bash 中输入 Token（输入不回显），再执行更新：
+
+```bash
+read -rsp 'GitHub Token: ' GH_TOKEN
+export GH_TOKEN
+printf '\n'
+snout --schema ice --update --json
+```
+
+已安装 gh 的用户也可先执行 `gh auth login --hostname github.com`。
+环境变量和 gh 凭据只在内存中使用，不会自动写回配置文件，也不会发送给 CNB 镜像。
+从应用菜单启动的桌面程序未必继承终端的环境变量；这种情况可直接在桌面设置填写 Token，
+或从已设置环境变量的终端启动 `snout-desktop`。
+
+401 会提示检查或更新 Token；403 不一定是限流，也可能与权限、访问策略或代理有关。
+程序会根据 GitHub 响应头区分额度耗尽，显示恢复时间（UTC）和 `Retry-After` 等待时间。
+401 / 403 / 429 不再立即重复请求；若已认证的额度也耗尽，仍需等待恢复。
+
 ## 架构
 
 ```

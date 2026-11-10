@@ -9,6 +9,16 @@ runtime, browser assets, or native dependencies are added to the root CLI packag
 This directory is a separate Cargo workspace; it consumes `snout` through a path
 dependency.
 
+## GitHub authentication
+
+Settings → Downloads & network → GitHub token accepts an optional explicit token.
+When blank, the shared core tries `GH_TOKEN`, then `GITHUB_TOKEN`, then the existing
+`gh auth token --hostname github.com` login. Without any credentials it uses anonymous
+access; installing `gh` is optional. Environment/gh credentials stay in memory and
+are never written into settings or forwarded to CNB. Apps launched from the desktop
+menu may not inherit a terminal's environment; set the token in settings or launch
+`snout-desktop` from that terminal. Rate-limit failures show reset/wait information.
+
 ## Branding
 
 The original transparent artwork is preserved in `../assets/logo.png`. The sidebar

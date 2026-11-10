@@ -1,9 +1,10 @@
+mod auth;
 mod download;
 mod releases;
 
 use crate::i18n::{L10n, Lang};
 use crate::types::*;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION};
 use reqwest::Proxy;
 
@@ -100,10 +101,15 @@ impl Client {
         }
         direct_builder = direct_builder.no_proxy();
 
+        let github_token = auth::resolve(&config.github_token);
+        if !github_token.is_empty() {
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {github_token}"))
+                .context(t.t("api.github_invalid_token").to_string())?;
+        }
         Ok(Self {
             http: builder.build()?,
             http_direct: direct_builder.build()?,
-            github_token: config.github_token.clone(),
+            github_token,
             use_mirror: config.use_mirror,
             lang: Lang::from_str(&config.language),
             has_proxy: proxy_url.is_some(),
@@ -113,7 +119,10 @@ impl Client {
     pub(crate) fn github_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         if !self.github_token.is_empty() {
-            if let Ok(val) = format!("Bearer {}", self.github_token).parse() {
+            if let Ok(mut val) =
+                format!("Bearer {}", self.github_token).parse::<reqwest::header::HeaderValue>()
+            {
+                val.set_sensitive(true);
                 headers.insert(AUTHORIZATION, val);
             }
         }
@@ -124,11 +133,6 @@ impl Client {
         let mut headers = HeaderMap::new();
         if let Ok(val) = "application/vnd.cnb.web+json".parse() {
             headers.insert(ACCEPT, val);
-        }
-        if !self.github_token.is_empty() {
-            if let Ok(val) = format!("Bearer {}", self.github_token).parse() {
-                headers.insert(AUTHORIZATION, val);
-            }
         }
         headers
     }
@@ -306,7 +310,8 @@ mod tests {
 
     #[test]
     fn github_headers_omit_auth_when_token_missing() {
-        let client = Client::new(&base_config()).expect("client");
+        let mut client = Client::new(&base_config()).expect("client");
+        client.github_token.clear();
         let headers = client.github_headers();
         assert!(!headers.contains_key(AUTHORIZATION));
     }
@@ -317,10 +322,22 @@ mod tests {
         config.github_token = "secret".into();
         let client = Client::new(&config).expect("client");
         let headers = client.github_headers();
+        assert!(headers.get(AUTHORIZATION).unwrap().is_sensitive());
         assert_eq!(
             headers.get(AUTHORIZATION).unwrap(),
             &"Bearer secret".parse::<HeaderValue>().unwrap()
         );
+    }
+
+    #[test]
+    fn invalid_token_is_rejected_without_echoing_the_secret() {
+        let mut config = base_config();
+        config.github_token = "fixture-secret\ninvalid".into();
+        let error = Client::new(&config)
+            .err()
+            .expect("invalid credential rejected");
+        assert!(error.to_string().contains("invalid characters"));
+        assert!(!format!("{error:#}").contains("fixture-secret"));
     }
 
     #[test]
@@ -336,15 +353,12 @@ mod tests {
     }
 
     #[test]
-    fn cnb_headers_include_optional_bearer_token() {
+    fn cnb_headers_never_receive_github_credentials() {
         let mut config = base_config();
         config.github_token = "token".into();
         let client = Client::new(&config).expect("client");
         let headers = client.cnb_headers();
-        assert_eq!(
-            headers.get(AUTHORIZATION).unwrap(),
-            &"Bearer token".parse::<HeaderValue>().unwrap()
-        );
+        assert!(!headers.contains_key(AUTHORIZATION));
     }
 
     #[test]

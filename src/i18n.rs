@@ -642,6 +642,51 @@ impl L10n {
         );
         zh.insert("api.github_status", "GitHub API 返回");
         en.insert("api.github_status", "GitHub API returned");
+        zh.insert(
+            "api.github_invalid_token",
+            "GitHub Token 含无效字符，请检查配置或 GH_TOKEN/GITHUB_TOKEN",
+        );
+        en.insert("api.github_invalid_token", "GitHub token contains invalid characters; check the configured token or GH_TOKEN/GITHUB_TOKEN");
+        zh.insert(
+            "api.github_unauthorized",
+            "GitHub 认证失败，请检查 Token 或重新运行 gh auth login",
+        );
+        en.insert(
+            "api.github_unauthorized",
+            "GitHub authentication failed; check the token or sign in again with gh auth login",
+        );
+        zh.insert(
+            "api.github_rate_limit_anonymous",
+            "GitHub 匿名请求额度已用尽",
+        );
+        en.insert(
+            "api.github_rate_limit_anonymous",
+            "GitHub anonymous API rate limit exhausted",
+        );
+        zh.insert(
+            "api.github_rate_limit_authenticated",
+            "GitHub 当前 Token 的请求额度已用尽，请等待恢复",
+        );
+        en.insert(
+            "api.github_rate_limit_authenticated",
+            "GitHub API rate limit exhausted for the current token; wait for the limit to reset",
+        );
+        zh.insert("api.github_throttled", "GitHub 请求受到限流，请稍后重试");
+        en.insert(
+            "api.github_throttled",
+            "GitHub requests are being throttled; retry later",
+        );
+        zh.insert(
+            "api.github_forbidden",
+            "GitHub 拒绝访问，请检查权限、访问策略、代理或次级限流",
+        );
+        en.insert("api.github_forbidden", "GitHub denied access; check permissions, access policies, proxies, or secondary rate limits");
+        zh.insert("api.github_auth_help", "可在设置填写 GitHub Token，或设置 GH_TOKEN/GITHUB_TOKEN；已安装 gh 时也可运行 gh auth login");
+        en.insert("api.github_auth_help", "Set a GitHub token in settings or GH_TOKEN/GITHUB_TOKEN; if gh is installed, gh auth login is also supported");
+        zh.insert("api.github_rate_reset", "额度恢复时间（UTC）");
+        en.insert("api.github_rate_reset", "Rate limit resets at (UTC)");
+        zh.insert("api.github_retry_after", "至少等待（秒）");
+        en.insert("api.github_retry_after", "Wait at least (seconds)");
         zh.insert("api.github_request_failed", "GitHub API 请求失败");
         en.insert("api.github_request_failed", "GitHub API request failed");
         zh.insert("api.cnb_status", "CNB API 返回");

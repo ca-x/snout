@@ -56,7 +56,7 @@ impl Client {
         let resp = self.send_get(&url, self.github_headers(), cancel).await?;
 
         if !resp.status().is_success() {
-            anyhow::bail!("{} {}", t.t("api.github_branch_status"), resp.status());
+            return Err(github_status_error(self, resp.status(), resp.headers()));
         }
 
         let branch_info: serde_json::Value = resp.json().await?;
@@ -85,13 +85,23 @@ impl Client {
         tag: &str,
         cancel: Option<&CancelSignal>,
     ) -> Result<Vec<GitHubRelease>> {
-        let t = L10n::new(self.lang);
         let url = if tag.is_empty() {
             format!("{GITHUB_API}/repos/{owner}/{repo}/releases?per_page=30")
         } else {
             format!("{GITHUB_API}/repos/{owner}/{repo}/releases/tags/{tag}")
         };
 
+        self.fetch_github_releases_url(&url, !tag.is_empty(), cancel)
+            .await
+    }
+
+    async fn fetch_github_releases_url(
+        &self,
+        url: &str,
+        single_release: bool,
+        cancel: Option<&CancelSignal>,
+    ) -> Result<Vec<GitHubRelease>> {
+        let t = L10n::new(self.lang);
         let mut last_err = None;
         for attempt in 0..3 {
             if let Some(signal) = cancel {
@@ -102,11 +112,11 @@ impl Client {
                 Client::cancellable_sleep(delay, cancel).await?;
             }
 
-            let resp = self.send_get(&url, self.github_headers(), cancel).await;
+            let resp = self.send_get(url, self.github_headers(), cancel).await;
 
             match resp {
                 Ok(r) if r.status().is_success() => {
-                    if tag.is_empty() {
+                    if !single_release {
                         let releases: Vec<GitHubRelease> = r.json().await?;
                         return Ok(releases);
                     } else {
@@ -115,11 +125,11 @@ impl Client {
                     }
                 }
                 Ok(r) => {
-                    last_err = Some(anyhow::anyhow!(
-                        "{} {}",
-                        t.t("api.github_status"),
-                        r.status()
-                    ));
+                    let error = github_status_error(self, r.status(), r.headers());
+                    if matches!(r.status().as_u16(), 401 | 403 | 429) {
+                        return Err(error);
+                    }
+                    last_err = Some(error);
                 }
                 Err(e) => {
                     last_err = Some(anyhow::anyhow!("{}: {e}", t.t("api.github_request_failed")));
@@ -324,9 +334,158 @@ fn find_matching_asset_info(
         })
 }
 
+fn github_status_error(
+    client: &Client,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> anyhow::Error {
+    let t = L10n::new(client.lang);
+    let remaining = headers
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok());
+    let hint = match status.as_u16() {
+        401 => Some("api.github_unauthorized"),
+        403 | 429 if remaining == Some("0") => Some(if client.github_token.is_empty() {
+            "api.github_rate_limit_anonymous"
+        } else {
+            "api.github_rate_limit_authenticated"
+        }),
+        429 => Some("api.github_throttled"),
+        403 => Some("api.github_forbidden"),
+        _ => None,
+    };
+    let mut message = format!("{} {status}", t.t("api.github_status"));
+    if let Some(hint) = hint {
+        message.push_str(&format!("; {}", t.t(hint)));
+    }
+    if matches!(status.as_u16(), 403 | 429) {
+        if client.github_token.is_empty() {
+            message.push_str(&format!("; {}", t.t("api.github_auth_help")));
+        }
+        if remaining == Some("0") {
+            if let Some(reset) = headers
+                .get("x-ratelimit-reset")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<i64>().ok())
+                .and_then(|value| chrono::DateTime::<chrono::Utc>::from_timestamp(value, 0))
+            {
+                message.push_str(&format!(
+                    "; {}: {}",
+                    t.t("api.github_rate_reset"),
+                    reset.to_rfc3339()
+                ));
+            }
+        }
+        if let Some(seconds) = headers
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            message.push_str(&format!("; {}: {seconds}", t.t("api.github_retry_after")));
+        }
+    }
+    anyhow::anyhow!(message)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_client(token: &str) -> Client {
+        let mut client = Client::new(&Config {
+            github_token: "fixture-token".into(),
+            language: "en".into(),
+            ..Config::default()
+        })
+        .unwrap();
+        client.github_token = token.into();
+        client.http = reqwest::Client::builder().no_proxy().build().unwrap();
+        client
+    }
+
+    #[test]
+    fn github_limits_explain_authentication_and_reset_without_leaking_tokens() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-reset", "1794268800".parse().unwrap());
+        let anonymous =
+            github_status_error(&test_client(""), reqwest::StatusCode::FORBIDDEN, &headers)
+                .to_string();
+        assert!(anonymous.contains("anonymous API rate limit"));
+        assert!(anonymous.contains("GH_TOKEN/GITHUB_TOKEN"));
+        assert!(anonymous.contains("2026-11-10T00:00:00+00:00"));
+        let authenticated = github_status_error(
+            &test_client("fixture-secret"),
+            reqwest::StatusCode::FORBIDDEN,
+            &headers,
+        )
+        .to_string();
+        assert!(authenticated.contains("current token"));
+        assert!(!authenticated.contains("fixture-secret"));
+    }
+
+    #[test]
+    fn forbidden_without_limit_evidence_is_not_reported_as_quota_exhaustion() {
+        let error = github_status_error(
+            &test_client(""),
+            reqwest::StatusCode::FORBIDDEN,
+            &reqwest::header::HeaderMap::new(),
+        )
+        .to_string();
+        assert!(error.contains("permissions"));
+        assert!(!error.contains("exhausted"));
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after", "60".parse().unwrap());
+        let error = github_status_error(
+            &test_client(""),
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &headers,
+        )
+        .to_string();
+        assert!(error.contains("Wait at least (seconds): 60"));
+    }
+
+    #[tokio::test]
+    async fn github_auth_failures_are_not_retried() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+        for status in [401, 403, 429] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0 && request.len() < 8192);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                assert!(String::from_utf8_lossy(&request)
+                    .contains("authorization: Bearer fixture-token"));
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Denied\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .unwrap();
+            });
+            let client = test_client("fixture-token");
+            let response = tokio::time::timeout(
+                Duration::from_secs(1),
+                client.fetch_github_releases_url(&format!("http://{address}"), false, None),
+            )
+            .await
+            .expect("authentication and rate-limit errors return immediately");
+            let error = response.unwrap_err().to_string();
+            assert!(error.contains(&status.to_string()));
+            assert!(!error.contains("fixture-token"));
+            server.join().unwrap();
+        }
+    }
 
     #[test]
     fn normalize_cnb_tag_strips_refs_prefix() {
