@@ -204,13 +204,35 @@ snout --lang en --update
 
 | 方案 | 仓库 | 说明 |
 |------|------|------|
-| 万象拼音 (标准版) | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | 全拼、双拼 |
-| 万象拼音 Pro (墨奇/小鹤/自然码/虎码/五笔/汉心/首右) | 同上 | 双拼 + 辅助码 |
-| 雾凇拼音 | [iDvel/rime-ice](https://github.com/iDvel/rime-ice) | 16.6k ⭐ |
-| 白霜拼音 | [gaboolic/rime-frost](https://github.com/gaboolic/rime-frost) | 3.1k ⭐ |
-| 薄荷输入法 | [Mintimate/oh-my-rime](https://github.com/Mintimate/oh-my-rime) | 薄荷系配置模板与词库 |
+| 万象拼音 (标准版) | [amzxyz/rime_wanxiang](https://github.com/amzxyz/rime_wanxiang) | 全拼、双拼；`--schema wanxiang` |
+| 万象拼音 Pro | 同上 | 双拼 + 辅助码；分支参数见下表 |
+| 雾凇拼音 | [iDvel/rime-ice](https://github.com/iDvel/rime-ice) | `--schema ice` |
+| 白霜拼音 | [gaboolic/rime-frost](https://github.com/gaboolic/rime-frost) | `--schema frost` |
+| 薄荷输入法 | [Mintimate/oh-my-rime](https://github.com/Mintimate/oh-my-rime) | `--schema mint` |
 | 极点五笔86 | [KyleBing/rime-wubi86-jidian](https://github.com/KyleBing/rime-wubi86-jidian) | 五笔86；`--schema jidian` |
 | 智能 ABC·改 | [cloudwu/abcm](https://github.com/cloudwu/abcm) | 智能 ABC 改版；`--schema abcm` |
+
+### 拼音方案安装
+
+桌面端选择方案并保存，再点击“安装所选方案”；CLI 例如：
+
+```bash
+snout --schema ice --scheme
+snout --schema mint --scheme
+snout --schema abcm --scheme
+```
+
+万象 Pro 分支使用以下 `--schema` 参数：
+
+| 辅助码 | 参数 | 辅助码 | 参数 |
+|--------|------|--------|------|
+| 墨奇 | `moqi` | 小鹤 | `flypy` |
+| 自然码 | `zrm` | 虎码 | `tiger` |
+| 五笔 | `wubi` | 汉心 | `hanxin` |
+| 首右 | `shouyou` | 首右+ | `shyplus` |
+| 万象 | `wx` | | |
+
+例如 `snout --schema flypy --scheme`。更新已安装方案使用 `snout --update`。
 
 ### 极点五笔86与智能 ABC·改
 
@@ -228,9 +250,16 @@ snout --schema abcm --scheme
 
 ### Linux Fcitx5 在线主题
 
-桌面主题页使用可筛选列表，以“内置 / 在线”标签区分来源；本机另外安装的主题标记“已安装”。
-点击“刷新在线主题”从 GitHub 的 `fcitx5-theme`、`fcitx5-skin` topic 获取仓库，跨 topic 按仓库 ID 去重。
-获取主题后，选择亮色与暗色并应用；获取本身不会切换当前主题。
+桌面端分为“本地主题”和“主题市场”：
+
+1. 在“主题市场”下载仓库，完成后显示下载的主题数量。
+2. 点击“查看主题”查看该仓库内的全部主题；一个仓库可以包含多个主题。
+3. 在“本地主题”分别选择浅色、暗色模式的主题，点击“应用”。下载不会切换当前主题。
+
+本地列表以“内置 / 在线 / 已安装”标签标记来源。市场从 GitHub 的
+`fcitx5-theme`、`fcitx5-skin` topic 获取仓库，跨 topic 去重。
+
+CLI 同样支持下载仓库内的多个主题：
 
 ```bash
 # 列出内置、已安装和去重后的在线仓库；支持 --json
@@ -247,7 +276,6 @@ snout --fcitx5-theme-light <light-key> --fcitx5-theme-dark <dark-key>
 仅导入包含 `theme.conf` 的可直接使用主题，不执行仓库安装脚本；需先生成的仓库会提示参阅 README。
 内置主题保持离线可用；TUI 的主题选择器也会列出已获取的在线主题。
 圆角需主题支持，仅为支持切换的主题显示开关。
-桌面端分为“本地主题”和“主题市场”。一个仓库可包含多个主题：下载后显示数量，点击“查看主题”进入该仓库的本地列表；分别选择浅色、暗色模式的主题，再点击“应用”。
 桌面端按实际引擎隐藏不适用的皮肤选项，Linux 不显示鼠须管 / 小狼毫补丁设置，其他平台不显示 Fcitx5 设置。
 
 ### 功能支持矩阵

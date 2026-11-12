@@ -156,9 +156,11 @@ fn diagnostics_disclosure_and_preview_work_in_dark_reduced_motion_at_small_size(
     app.wait_for("candidate-preview").expect("layout preview");
     assert!(app.shows("你好"));
     assert!(!app.shows("呢好"));
-    app.press("label:Candidates per page")
+    app.press("candidate-size-trigger")
         .expect("open count picker");
-    app.press("text:9").expect("nine candidates");
+    app.wait_for("role:option[9]")
+        .expect("count options rendered");
+    app.press("role:option[9]").expect("nine candidates");
     app.wait_for("拟").expect("preview follows selection");
     assert!(!paths.rime.exists(), "preview must not apply settings");
 }
