@@ -1,10 +1,10 @@
-use crate::controller::{self, Command, Controller, Paths, Snapshot, Status};
+use crate::controller::{self, Command, Controller, Paths, Snapshot, Status, ThemeTask};
 use crate::theme::{
     accent, canvas, danger, ink, line, muted, on_accent, selection, sidebar_surface, surface,
 };
 use base64::prelude::*;
 use nsh_base::theme;
-use nsh_base::{button, input, progress, select, switch, SelectItem, SelectValue};
+use nsh_base::{button, input, progress, select, switch, tab, tabs, SelectItem, SelectValue};
 use nsh_core::animation::{KeyframeTiming, MotionChannel, MotionSpec};
 use nsh_core::element::{on_key, ImageSrc};
 use nsh_core::file_dialog::SaveDialog;
@@ -58,8 +58,12 @@ enum Pending {
     ResetExclusions,
     ResetCandidate,
     Skins,
-    Fcitx,
-    ImportTheme(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ThemePage {
+    Local,
+    Market,
 }
 
 #[derive(Clone, Copy)]
@@ -84,6 +88,9 @@ struct Ui {
     dark_round: Signal<bool>,
     diagnostics_open: Signal<bool>,
     theme_filter: Signal<String>,
+    market_filter: Signal<String>,
+    theme_page: Signal<ThemePage>,
+    theme_repository: Signal<Option<u64>>,
 }
 
 impl Ui {
@@ -178,31 +185,79 @@ impl Ui {
                 keys: self.selected_skins.get().into_iter().collect(),
                 default: self.default_skin.get(),
             },
-            Pending::ImportTheme(index) => {
-                let Some(repository) = self
-                    .state
-                    .with(|state| state.fcitx_repositories.get(index).cloned())
-                else {
-                    return;
-                };
-                Command::ImportFcitxTheme(repository)
-            }
-            Pending::Fcitx => {
-                let light = self.light_theme.get();
-                let dark = self.dark_theme.get();
-                let light_rounded = skin::fcitx5::theme_supports_optional_rounding(&light)
-                    .then(|| self.light_round.get());
-                let dark_rounded = skin::fcitx5::theme_supports_optional_rounding(&dark)
-                    .then(|| self.dark_round.get());
-                Command::FcitxThemes {
-                    light,
-                    dark,
-                    light_rounded,
-                    dark_rounded,
-                }
-            }
         };
         self.send(command);
+    }
+
+    fn sync_theme_selection(self, next: &Snapshot) {
+        let changed = self.state.with(|previous| {
+            !previous.fcitx_supported
+                || previous.fcitx_selection != next.fcitx_selection
+                || previous.light_rounded != next.light_rounded
+                || previous.dark_rounded != next.dark_rounded
+        });
+        if changed {
+            self.light_theme.set(
+                next.fcitx_selection
+                    .light
+                    .clone()
+                    .unwrap_or_else(|| "catppuccin-latte-sky".into()),
+            );
+            self.dark_theme.set(
+                next.fcitx_selection
+                    .dark
+                    .clone()
+                    .unwrap_or_else(|| "catppuccin-mocha-sky".into()),
+            );
+            self.light_round.set(next.light_rounded.unwrap_or(true));
+            self.dark_round.set(next.dark_rounded.unwrap_or(true));
+        }
+    }
+
+    fn theme_changed(self) -> bool {
+        self.state.with(|state| {
+            state.fcitx_selection.light.as_deref() != Some(self.light_theme.get().as_str())
+                || state.fcitx_selection.dark.as_deref() != Some(self.dark_theme.get().as_str())
+                || (skin::fcitx5::theme_supports_optional_rounding(&self.light_theme.get())
+                    && state.light_rounded != Some(self.light_round.get()))
+                || (skin::fcitx5::theme_supports_optional_rounding(&self.dark_theme.get())
+                    && state.dark_rounded != Some(self.dark_round.get()))
+        })
+    }
+
+    fn can_apply_theme(self) -> bool {
+        self.theme_changed()
+            || self.state.with(|state| {
+                matches!(state.theme_task, Some(ThemeTask::Apply))
+                    && matches!(state.status, Status::Error | Status::PartialFailure)
+            })
+    }
+
+    fn apply_theme(self) {
+        if self.locked() || !self.can_apply_theme() {
+            return;
+        }
+        let light = self.light_theme.get();
+        let dark = self.dark_theme.get();
+        self.send(Command::FcitxThemes {
+            light_rounded: skin::fcitx5::theme_supports_optional_rounding(&light)
+                .then(|| self.light_round.get()),
+            dark_rounded: skin::fcitx5::theme_supports_optional_rounding(&dark)
+                .then(|| self.dark_round.get()),
+            light,
+            dark,
+        });
+    }
+
+    fn show_local_themes(self) {
+        self.theme_page.set(ThemePage::Local);
+        self.theme_filter.set(String::new());
+        self.theme_repository.set(None);
+    }
+
+    fn show_repository_themes(self, id: u64) {
+        self.show_local_themes();
+        self.theme_repository.set(Some(id));
     }
 
     fn export(self, content: String, name: &'static str) {
@@ -265,9 +320,21 @@ fn action(
     primary: bool,
     run: impl Fn() + 'static,
 ) -> AnyElement {
+    action_enabled(ui, id, en, zh, primary, || true, run)
+}
+
+fn action_enabled(
+    ui: Ui,
+    id: &str,
+    en: &'static str,
+    zh: &'static str,
+    primary: bool,
+    enabled: impl Fn() -> bool + 'static,
+    run: impl Fn() + 'static,
+) -> AnyElement {
     button()
         .test_id(id)
-        .disabled(move || ui.locked())
+        .disabled(move || ui.locked() || !enabled())
         .px_4()
         .py_2()
         .min_h(px(38.0))
@@ -378,6 +445,9 @@ fn picker(
                 .value(move || SelectValue::from(current()))
                 .disabled(move || ui.locked())
                 .searchable(true)
+                .search_accessibility_label(move || {
+                    Some(format!("{} {}", ui.tr("Search", "搜索"), ui.tr(en, zh)).into())
+                })
                 .accessibility_label(move || Some(ui.tr(en, zh).into()))
                 .popup_class("rounded-lg border border-border bg-popover p-1")
                 .item_class(
@@ -386,6 +456,7 @@ fn picker(
                 .search_class("px-3 py-2 text-sm bg-popover text-popover-foreground")
                 .trigger(
                     view()
+                        .test_id(&format!("{id}-trigger"))
                         .flex_row()
                         .items_center()
                         .justify_between()
@@ -415,7 +486,10 @@ fn picker(
                                         .unwrap_or_else(|| "—".into())
                                 }
                             })
-                            .text_size(px(14.0)),
+                            .text_size(px(14.0))
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .number_of_lines(1),
                         )
                         .child(text("⌄").text_color(muted)),
                 )
@@ -473,6 +547,9 @@ fn new_ui(controller: Controller) -> Ui {
         dark_round: signal(true),
         diagnostics_open: signal(false),
         theme_filter: signal(String::new()),
+        market_filter: signal(String::new()),
+        theme_page: signal(ThemePage::Local),
+        theme_repository: signal(None),
     }
 }
 
@@ -518,20 +595,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
             ui.selected_skins.set(next.skins.clone());
             ui.default_skin
                 .set(next.default_skin.clone().unwrap_or_default());
-            ui.light_theme.set(
-                next.fcitx_selection
-                    .light
-                    .clone()
-                    .unwrap_or_else(|| "catppuccin-latte-sky".into()),
-            );
-            ui.dark_theme.set(
-                next.fcitx_selection
-                    .dark
-                    .clone()
-                    .unwrap_or_else(|| "catppuccin-mocha-sky".into()),
-            );
-            ui.light_round.set(next.light_rounded.unwrap_or(true));
-            ui.dark_round.set(next.dark_rounded.unwrap_or(true));
+            ui.sync_theme_selection(&next);
         }
         let auto_due = next.auto_update_due;
         ui.state.set(next);
@@ -1002,16 +1066,6 @@ fn confirmation(ui: Ui) -> AnyElement {
                                     "写入所选预设和默认皮肤，然后重新部署。",
                                 )
                                 .into(),
-                            Some(Pending::ImportTheme(index)) => format!("{}\n{}", ui.state.with(|state| state.fcitx_repositories.get(index).map(|repo| repo.full_name.clone()).unwrap_or_default()), ui.tr("Download ready-to-use themes. The current theme stays active until you apply a selection.", "获取可直接使用的主题。选择并应用前，当前主题保持不变。")),
-                            Some(Pending::Fcitx) => format!(
-                                "{} → {}\n{}",
-                                ui.light_theme.get(),
-                                ui.dark_theme.get(),
-                                ui.tr(
-                                    "Install themes and reload Fcitx5.",
-                                    "安装主题，并重新载入 Fcitx5。"
-                                )
-                            ),
                             None => String::new(),
                         };
                                                 if matches!(pending, Some(Pending::Update(_))) {
@@ -1586,6 +1640,10 @@ fn appearance(ui: Ui) -> AnyElement {
         .collect();
     view()
         .gap_6()
+        .child(when(
+            move || ui.state.with(|state| state.fcitx_supported),
+            move || fcitx_appearance(ui),
+        ))
         .child(candidate_preview(ui))
         .child(
             section(ui, "Candidate window", "候选窗口")
@@ -1624,10 +1682,6 @@ fn appearance(ui: Ui) -> AnyElement {
                 ),
         )
         .child(when(
-            move || ui.state.with(|state| state.fcitx_supported),
-            move || fcitx_appearance(ui),
-        ))
-        .child(when(
             move || {
                 ui.state.with(|state| {
                     matches!(
@@ -1652,243 +1706,530 @@ fn theme_tag(label: String) -> AnyElement {
         .into_element()
 }
 
-#[derive(Clone)]
-enum ThemeRow {
-    Installed {
-        key: String,
-        label: String,
-        source: &'static str,
-    },
-    Repository {
-        index: usize,
-        repository: snout::api::ThemeRepository,
-    },
-}
-impl ThemeRow {
-    fn identity(&self) -> String {
-        match self {
-            Self::Installed { key, .. } => key.clone(),
-            Self::Repository { repository, .. } => format!("repository-{}", repository.id),
-        }
-    }
-}
-
-fn theme_choice(ui: Ui, key: String, label: String, light: bool) -> AnyElement {
-    let selected = key.clone();
-    let status = key.clone();
-    button()
-        .test_id(&format!(
-            "theme-{}-{key}",
-            if light { "light" } else { "dark" }
-        ))
-        .disabled(move || ui.locked())
-        .px_3()
-        .py_2()
+fn theme_filter(ui: Ui, market: bool) -> AnyElement {
+    let value = if market {
+        ui.market_filter
+    } else {
+        ui.theme_filter
+    };
+    input()
+        .test_id(if market {
+            "market-theme-filter"
+        } else {
+            "theme-filter"
+        })
+        .value(move || value.get())
+        .placeholder(move || ui.tr("Search themes", "搜索主题"))
+        .label(move || SharedString::from(ui.tr("Search themes", "搜索主题")))
         .min_h(px(38.0))
-        .rounded(px(8.0))
+        .px_3()
+        .text_size(px(14.0))
+        .bg(surface)
+        .text_color(ink)
+        .rounded(px(6.0))
         .border_1()
         .border_color(line)
-        .accessibility_label(move || {
-            Some(
-                format!(
-                    "{}: {}",
-                    label,
-                    ui.tr(
-                        if light {
-                            "Use for light"
-                        } else {
-                            "Use for dark"
-                        },
-                        if light {
-                            "设为亮色"
-                        } else {
-                            "设为暗色"
-                        }
-                    )
-                )
-                .into(),
-            )
-        })
-        .bg(move || {
-            if (if light {
-                ui.light_theme.get()
-            } else {
-                ui.dark_theme.get()
-            }) == selected
-            {
-                selection()
-            } else {
-                surface()
-            }
-        })
         .focus(|style| style.outline(px(2.0)).outline_color(accent))
-        .transition_colors()
-        .duration(120.0)
-        .active(|style| style.opacity(0.75))
-        .disabled_style(|style| style.opacity(0.45))
-        .on_press(move || {
-            if light {
-                ui.light_theme.set(key.clone())
-            } else {
-                ui.dark_theme.set(key.clone())
-            }
-        })
-        .child(
-            text(move || {
-                let selected = (if light {
-                    ui.light_theme.get()
-                } else {
-                    ui.dark_theme.get()
-                }) == status;
-                format!(
-                    "{}{}",
-                    if selected { "✓ " } else { "" },
-                    ui.tr(
-                        if light { "Light" } else { "Dark" },
-                        if light { "亮色" } else { "暗色" }
-                    )
-                )
-            })
-            .text_size(px(14.0)),
-        )
+        .on_change(move |text: &str| value.set(text.to_owned()))
         .into_element()
 }
 
-fn theme_row(ui: Ui, row: ThemeRow) -> AnyElement {
-    match row {
-        ThemeRow::Installed { key, label, source } => view()
-            .test_id(&format!("fcitx-theme-{key}"))
-            .gap_2()
-            .p_3()
-            .border_b_1()
-            .border_color(line)
-            .child(
+fn repository_theme_count(state: &Snapshot, id: u64) -> usize {
+    let prefix = format!("snout-online-{id}-");
+    state
+        .fcitx_choices
+        .iter()
+        .filter(|(key, _)| key.starts_with(&prefix))
+        .count()
+}
+
+fn market_row(ui: Ui, repository: snout::api::ThemeRepository) -> AnyElement {
+    let id = repository.id;
+    let source = repository.clone();
+    let url = format!("https://github.com/{}", repository.full_name);
+    view().test_id(&format!("online-theme-{id}")).gap_2().p_3().border_b_1().border_color(line)
+        .child(view().flex_row().flex_wrap().items_center().gap_2()
+            .child(text(repository.full_name).text_size(px(14.0)))
+            .child(dynamic(move || {
+                let count = ui.state.with(|state| repository_theme_count(state, id));
+                if count > 0 { theme_tag(format!("{} · {count}", ui.tr("Downloaded", "已下载"))) }
+                else { theme_tag(ui.tr("Online", "在线").into()) }
+            })))
+        .child(text(repository.description.unwrap_or_default()).text_size(px(13.0)).text_color(muted))
+        .child(view().flex_row().flex_wrap().gap_2()
+            .child(dynamic(move || {
+                let snapshot = ui.state.get();
+                let active = matches!(snapshot.theme_task, Some(ThemeTask::Download { id: at, .. }) if at == id);
+                if active && snapshot.busy {
+                    return caption(ui, "Downloading…", "下载中…");
+                }
+                let source = source.clone();
+                let retry = active && matches!(snapshot.status, Status::Error | Status::Cancelled);
+                if repository_theme_count(&snapshot, id) > 0 {
+                    return view().flex_row().gap_2()
+                        .child(action(ui, &format!("use-theme-{id}"), "View themes", "查看主题", false, move || ui.show_repository_themes(id)))
+                        .child(action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Update" }, if retry { "重试" } else { "更新" }, false, move || ui.send(Command::ImportFcitxTheme(source.clone())))).into_element();
+                }
+                action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Download" }, if retry { "重试" } else { "下载" }, false, move || ui.send(Command::ImportFcitxTheme(source.clone())))
+            }))
+            .child(action(ui, &format!("open-theme-{id}"), "Repository", "仓库", false, move || {
+                let url = url.clone();
+                spawn(async move { if !open_url(url).await { ui.error.set(Some(ui.tr("Could not open the repository.", "无法打开仓库。").into())); } });
+            })))
+        .into_element()
+}
+
+fn theme_feedback(ui: Ui) -> AnyElement {
+    dynamic(move || {
+        let state = ui.state.get();
+        let Some(task) = &state.theme_task else {
+            return view().into_element();
+        };
+        if state.busy {
+            let message = match task {
+                ThemeTask::Search => ui.tr("Loading theme market…", "正在加载主题市场…"),
+                ThemeTask::Download { .. } => ui.tr("Downloading themes…", "正在下载主题…"),
+                ThemeTask::Apply => ui.tr("Applying…", "正在应用…"),
+            };
+            return text(message)
+                .test_id("theme-operation-progress")
+                .text_size(px(14.0))
+                .text_color(muted)
+                .into_element();
+        }
+        if matches!(
+            state.status,
+            Status::Error | Status::Cancelled | Status::PartialFailure
+        ) {
+            return text(
+                state
+                    .error
+                    .clone()
+                    .or_else(|| {
+                        let report: serde_json::Value =
+                            serde_json::from_str(state.report.as_deref()?).ok()?;
+                        report["results"]
+                            .as_array()?
+                            .iter()
+                            .find(|result| result["success"] == false)?["message"]
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_else(|| {
+                        if state.status == Status::Cancelled {
+                            ui.tr("Cancelled. You can retry.", "已取消，可重试。")
+                        } else {
+                            ui.tr(
+                                "Could not complete the operation. Retry.",
+                                "操作失败，请重试。",
+                            )
+                        }
+                        .into()
+                    }),
+            )
+            .test_id("theme-operation-error")
+            .text_size(px(14.0))
+            .text_color(danger)
+            .into_element();
+        }
+        if state.status == Status::Success {
+            if let ThemeTask::Download { id, name } = task {
+                if let Some(download) = state
+                    .theme_download
+                    .as_ref()
+                    .filter(|download| download.repository_id == *id)
+                {
+                    let id = *id;
+                    return view()
+                        .test_id("theme-download-success")
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            text(format!(
+                                "{} · {} · {}",
+                                name,
+                                download.keys.len(),
+                                ui.tr("themes downloaded", "个主题已下载")
+                            ))
+                            .text_size(px(14.0)),
+                        )
+                        .child(when(
+                            move || ui.theme_page.get() == ThemePage::Market,
+                            move || {
+                                action(
+                                    ui,
+                                    "show-downloaded-themes",
+                                    "View local themes",
+                                    "查看本地主题",
+                                    false,
+                                    move || ui.show_repository_themes(id),
+                                )
+                            },
+                        ))
+                        .into_element();
+                }
+            }
+            if matches!(task, ThemeTask::Apply) && !ui.theme_changed() {
+                return text(ui.tr("Applied", "已应用"))
+                    .test_id("theme-apply-success")
+                    .text_size(px(14.0))
+                    .text_color(muted)
+                    .into_element();
+            }
+        }
+        view().into_element()
+    })
+    .into_element()
+}
+
+fn theme_label(label: &str) -> String {
+    match label.split_once(" · ") {
+        Some((repository, variant)) if !variant.is_empty() => format!("{variant} · {repository}"),
+        _ => label.to_owned(),
+    }
+}
+
+fn local_themes(ui: Ui) -> AnyElement {
+    let rows = computed(move || {
+        let filter = ui.theme_filter.get().to_lowercase();
+        let mut rows = ui.state.with(|state| {
+            state
+                .fcitx_choices
+                .iter()
+                .filter(|(key, _)| {
+                    ui.theme_repository
+                        .get()
+                        .is_none_or(|id| key.starts_with(&format!("snout-online-{id}-")))
+                })
+                .filter(|(key, label)| format!("{key} {label}").to_lowercase().contains(&filter))
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        let recent = ui.state.with(|state| {
+            state
+                .theme_download
+                .as_ref()
+                .map(|download| download.keys.clone())
+                .unwrap_or_default()
+        });
+        rows.sort_by_key(|(key, _)| !recent.contains(key));
+        rows
+    });
+    view()
+        .gap_3()
+        .child(dynamic(move || {
+            let mut choices = ui.state.with(|state| {
+                state
+                    .fcitx_choices
+                    .iter()
+                    .map(|(key, label)| (key.clone(), theme_label(label)))
+                    .collect::<Vec<_>>()
+            });
+            let recent = ui.state.with(|state| {
+                state
+                    .theme_download
+                    .as_ref()
+                    .map(|download| download.keys.clone())
+                    .unwrap_or_default()
+            });
+            choices.sort_by_key(|(key, _)| !recent.contains(key));
+            view()
+                .flex_row()
+                .flex_wrap()
+                .gap_4()
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(220.0))
+                        .child(picker(
+                            ui,
+                            "fcitx-light-theme",
+                            "Light mode",
+                            "浅色模式",
+                            choices.clone(),
+                            move || ui.light_theme.get(),
+                            move |key| ui.light_theme.set(key),
+                        ))
+                        .child(rounding(ui, "fcitx-light-rounded", true)),
+                )
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(220.0))
+                        .child(picker(
+                            ui,
+                            "fcitx-dark-theme",
+                            "Dark mode",
+                            "暗色模式",
+                            choices,
+                            move || ui.dark_theme.get(),
+                            move |key| ui.dark_theme.set(key),
+                        ))
+                        .child(rounding(ui, "fcitx-dark-rounded", false)),
+                )
+        }))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(action_enabled(
+                    ui,
+                    "apply-fcitx",
+                    "Apply",
+                    "应用",
+                    true,
+                    move || ui.can_apply_theme(),
+                    move || ui.apply_theme(),
+                ))
+                .child(when(
+                    move || ui.theme_changed(),
+                    move || {
+                        text(ui.tr("Not applied", "待应用"))
+                            .test_id("theme-unapplied")
+                            .text_size(px(13.0))
+                            .text_color(muted)
+                    },
+                )),
+        )
+        .child(when(
+            move || ui.theme_repository.get().is_some(),
+            move || {
                 view()
                     .flex_row()
                     .flex_wrap()
                     .items_center()
-                    .gap_2()
-                    .child(text(label.clone()).text_size(px(14.0)))
-                    .child(theme_tag(
-                        match source {
-                            "builtin" => ui.tr("Built-in", "内置"),
-                            "online" => ui.tr("Online", "在线"),
-                            _ => ui.tr("Installed", "已安装"),
-                        }
-                        .into(),
-                    )),
+                    .gap_3()
+                    .child(
+                        text(move || {
+                            ui.state.with(|state| {
+                                let id = ui.theme_repository.get().unwrap_or_default();
+                                let name = state
+                                    .fcitx_repositories
+                                    .iter()
+                                    .find(|repo| repo.id == id)
+                                    .map(|repo| repo.full_name.as_str())
+                                    .unwrap_or_default();
+                                format!(
+                                    "{name} · {} {}",
+                                    repository_theme_count(state, id),
+                                    ui.tr("themes", "个主题")
+                                )
+                            })
+                        })
+                        .test_id("local-theme-repository")
+                        .text_size(px(13.0))
+                        .text_color(muted),
+                    )
+                    .child(action(
+                        ui,
+                        "all-local-themes",
+                        "All themes",
+                        "全部主题",
+                        false,
+                        move || ui.show_local_themes(),
+                    ))
+            },
+        ))
+        .child(theme_filter(ui, false))
+        .child(
+            virtual_list(
+                move || rows.with(Vec::len),
+                move |at| {
+                    dynamic(move || {
+                        let Some((key, label)) = rows.with(|rows| rows.get(at.index()).cloned())
+                        else {
+                            return view().into_element();
+                        };
+                        let builtin = skin::fcitx5::builtin_theme_choices()
+                            .iter()
+                            .any(|(name, _)| name == &key);
+                        let source = if builtin {
+                            ui.tr("Built-in", "内置")
+                        } else if key.starts_with("snout-online-") {
+                            ui.tr("Online", "在线")
+                        } else {
+                            ui.tr("Installed", "已安装")
+                        };
+                        let light = key.clone();
+                        let dark = key.clone();
+                        view()
+                            .test_id(&format!("fcitx-theme-{key}"))
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .p_3()
+                            .border_b_1()
+                            .border_color(line)
+                            .child(text(theme_label(&label)).text_size(px(14.0)))
+                            .child(theme_tag(source.into()))
+                            .child(when(
+                                move || ui.light_theme.get() == light,
+                                move || theme_tag(ui.tr("Light", "浅色").into()),
+                            ))
+                            .child(when(
+                                move || ui.dark_theme.get() == dark,
+                                move || theme_tag(ui.tr("Dark", "暗色").into()),
+                            ))
+                            .into_element()
+                    })
+                },
             )
-            .child(
-                view()
-                    .flex_row()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(theme_choice(ui, key.clone(), label.clone(), true))
-                    .child(theme_choice(ui, key, label, false)),
-            )
-            .into_element(),
-        ThemeRow::Repository { index, repository } => {
-            let mut tags = view()
+            .keys(move || {
+                rows.with(|rows| rows.iter().map(|(key, _)| key.clone()).collect::<Vec<_>>())
+            })
+            .h(px(240.0))
+            .empty(caption(
+                ui,
+                "No matching local themes.",
+                "没有匹配的本地主题。",
+            )),
+        )
+        .into_element()
+}
+
+fn theme_market(ui: Ui) -> AnyElement {
+    let rows = computed(move || {
+        let filter = ui.market_filter.get().to_lowercase();
+        let rows = ui.state.with(|state| {
+            state
+                .fcitx_repositories
+                .iter()
+                .filter(|repo| {
+                    format!(
+                        "{} {}",
+                        repo.full_name,
+                        repo.description.as_deref().unwrap_or_default()
+                    )
+                    .to_lowercase()
+                    .contains(&filter)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        rows
+    });
+    view()
+        .gap_3()
+        .child(
+            view()
                 .flex_row()
                 .flex_wrap()
                 .items_center()
-                .gap_2()
-                .child(theme_tag(ui.tr("Online", "在线").into()));
-            for topic in &repository.topics {
-                if matches!(topic.as_str(), "fcitx5-theme" | "fcitx5-skin") {
-                    tags = tags.child(theme_tag(topic.clone()));
-                }
-            }
-            let repository_url = format!("https://github.com/{}", repository.full_name);
-            view()
-                .test_id(&format!("online-theme-{}", repository.id))
-                .gap_2()
-                .p_3()
-                .border_b_1()
-                .border_color(line)
-                .child(text(repository.full_name.clone()).text_size(px(14.0)))
-                .child(tags)
+                .gap_3()
                 .child(
-                    text(repository.description.unwrap_or_default())
-                        .text_size(px(13.0))
-                        .text_color(muted),
+                    view()
+                        .flex_1()
+                        .min_w(px(180.0))
+                        .child(theme_filter(ui, true)),
                 )
                 .child(action(
                     ui,
-                    &format!("import-theme-{}", repository.id),
-                    "Get themes",
-                    "获取主题",
+                    "fetch-fcitx-themes",
+                    "Refresh",
+                    "刷新",
                     false,
-                    move || ui.request(Pending::ImportTheme(index)),
-                ))
-                .child(action(
-                    ui,
-                    &format!("open-theme-{}", repository.id),
-                    "Open repository",
-                    "打开仓库",
-                    false,
-                    move || {
-                        let url = repository_url.clone();
-                        spawn(async move {
-                            if !open_url(url).await {
-                                ui.error.set(Some(
-                                    ui.tr("Could not open the repository.", "无法打开仓库。")
-                                        .into(),
-                                ));
-                            }
-                        });
-                    },
-                ))
-                .into_element()
-        }
-    }
-}
-
-fn selected_theme_name(ui: Ui, key: &str) -> String {
-    ui.state.with(|state| {
-        state
-            .fcitx_choices
-            .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, name)| name.clone())
-            .unwrap_or_else(|| key.into())
-    })
+                    move || ui.send(Command::SearchFcitxThemes),
+                )),
+        )
+        .child(
+            virtual_list(
+                move || rows.with(Vec::len),
+                move |at| {
+                    dynamic(move || {
+                        rows.with(|rows| rows.get(at.index()).cloned())
+                            .map(|repository| market_row(ui, repository))
+                            .unwrap_or_else(|| view().into_element())
+                    })
+                },
+            )
+            .keys(move || {
+                rows.with(|rows| {
+                    rows.iter()
+                        .map(|repo| format!("repository-{}", repo.id))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .test_id("theme-market-list")
+            .h(px(340.0))
+            .empty(dynamic(move || {
+                let state = ui.state.get();
+                if state.busy && matches!(state.theme_task, Some(ThemeTask::Search)) {
+                    view().into_element()
+                } else if state.fcitx_catalog_loaded {
+                    caption(ui, "No matching themes.", "没有匹配的主题。")
+                } else {
+                    caption(ui, "Refresh to load themes.", "点击刷新加载主题。")
+                }
+            })),
+        )
+        .into_element()
 }
 
 fn fcitx_appearance(ui: Ui) -> AnyElement {
-    section(ui, "Fcitx5 themes", "Fcitx5 主题")
-        .child(caption(ui, "Choose light and dark themes from the list, then apply. Online sources: fcitx5-theme and fcitx5-skin; duplicate repositories are merged.", "在列表中选择亮色与暗色主题后应用。在线来源：fcitx5-theme 与 fcitx5-skin，重复仓库会合并。"))
-        .child(action(ui, "fetch-fcitx-themes", "Refresh online themes", "刷新在线主题", false, move || ui.send(Command::SearchFcitxThemes)))
-        .child(input().test_id("theme-filter").value(move || ui.theme_filter.get()).placeholder(move || ui.tr("Filter themes or repositories", "筛选主题或仓库")).label(move || SharedString::from(ui.tr("Filter themes or repositories", "筛选主题或仓库"))).min_h(px(38.0)).px_3().text_size(px(14.0)).bg(surface).text_color(ink).rounded(px(6.0)).border_1().border_color(line).focus(|style| style.outline(px(2.0)).outline_color(accent)).on_change(move |value: &str| ui.theme_filter.set(value.to_owned())))
-        .child(text(move || format!("{}: {}\n{}: {}", ui.tr("Light", "亮色"), selected_theme_name(ui,&ui.light_theme.get()), ui.tr("Dark", "暗色"), selected_theme_name(ui,&ui.dark_theme.get()))).text_size(px(13.0)).text_color(muted))
-        .child(dynamic(move || {
-            let filter = ui.theme_filter.get().to_lowercase();
-            let snapshot = ui.state.get();
-            let builtin = skin::fcitx5::builtin_theme_choices();
-            let mut rows = Vec::new();
-            for (key, label) in snapshot.fcitx_choices {
-                if !label.to_lowercase().contains(&filter) { continue; }
-                let source = if builtin.iter().any(|(name, _)| name == &key) { "builtin" } else if key.starts_with("snout-online-") { "online" } else { "installed" };
-                rows.push(ThemeRow::Installed { key, label, source });
-            }
-            for (index, repository) in snapshot.fcitx_repositories.into_iter().enumerate() {
-                if format!("{} {}", repository.full_name, repository.description.as_deref().unwrap_or_default()).to_lowercase().contains(&filter) {
-                    rows.push(ThemeRow::Repository { index, repository });
+    let theme_tab = move |page, id: &'static str, en, zh| {
+        tab()
+            .test_id(id)
+            .selected(move || ui.theme_page.get() == page)
+            .px_3()
+            .py_2()
+            .rounded(px(6.0))
+            .focus(|style| style.outline(px(2.0)).outline_color(accent))
+            .active(|style| style.opacity(0.75))
+            .on_press(move || {
+                if page == ThemePage::Local {
+                    ui.show_local_themes();
+                } else {
+                    ui.theme_page.set(page);
                 }
-            }
-            let rows = std::rc::Rc::new(rows);
-            let count = rows.len(); let keys = rows.clone();
-            virtual_list(count, move |at| {
-                let rows = rows.clone();
-                dynamic(move || rows.get(at.index()).map(|row| theme_row(ui,row.clone())).unwrap_or_else(|| view().into_element()))
-            }).keys(move || keys.iter().map(ThemeRow::identity).collect::<Vec<_>>()).h(px(340.0))
-              .empty(caption(ui, "No matching themes.", "没有匹配的主题。"))
-        }))
-        .child(when(move || !ui.state.with(|state| state.fcitx_catalog_loaded), move || caption(ui, "Online themes have not been fetched. Built-in themes work offline.", "尚未获取在线主题，内置主题可离线使用。")))
-        .child(caption(ui, "Rounded corners require theme support.", "圆角需主题支持。"))
-        .child(rounding(ui, "fcitx-light-rounded", true))
-        .child(rounding(ui, "fcitx-dark-rounded", false))
-        .child(action(ui, "apply-fcitx", "Apply theme pair", "应用主题组合", true, move || ui.request(Pending::Fcitx)))
+                if page == ThemePage::Market
+                    && !ui
+                        .state
+                        .with(|state| state.fcitx_catalog_loaded || state.busy)
+                {
+                    ui.send(Command::SearchFcitxThemes);
+                }
+            })
+            .child(
+                text(move || ui.tr(en, zh))
+                    .text_size(px(14.0))
+                    .text_color(ink),
+            )
+    };
+    section(ui, "Fcitx5 themes", "Fcitx5 主题")
+        .child(
+            tabs()
+                .flex_row()
+                .self_start()
+                .gap_1()
+                .p_1()
+                .rounded(px(8.0))
+                .bg(canvas)
+                .indicator_style(|style| style.top_1().bottom_1().rounded_md().bg(surface))
+                .child(theme_tab(
+                    ThemePage::Local,
+                    "local-themes-tab",
+                    "Local themes",
+                    "本地主题",
+                ))
+                .child(theme_tab(
+                    ThemePage::Market,
+                    "theme-market-tab",
+                    "Theme market",
+                    "主题市场",
+                )),
+        )
+        .child(theme_feedback(ui))
+        .child(
+            when(
+                move || ui.theme_page.get() == ThemePage::Local,
+                move || local_themes(ui),
+            )
+            .otherwise(move || theme_market(ui)),
+        )
         .into_element()
 }
 
@@ -2191,7 +2532,15 @@ mod theme_tests {
             rime: props.rime_path.get().to_string().into(),
             cache: props.cache_path.get().to_string().into(),
         };
-        let ui = new_ui(Controller::start(Some(paths)).expect("isolated controller"));
+        let mut controller = Controller::start(Some(paths)).expect("isolated controller");
+        for _ in 0..250 {
+            controller.poll();
+            if !controller.snapshot.busy {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let ui = new_ui(controller);
         ui.draft.update(|config| config.language = "en".into());
         ui.state.set(Snapshot {
             config: Some(Config::default()),
@@ -2203,26 +2552,170 @@ mod theme_tests {
                 ("catppuccin-latte-sky".into(), "Catppuccin Latte Sky".into()),
                 ("snout-online-42-fixed".into(), "Online fixed theme".into()),
             ],
-            fcitx_repositories: vec![snout::api::ThemeRepository {
-                id: 42,
-                full_name: "owner/sample-theme".into(),
-                default_branch: "main".into(),
-                description: Some("Sample online theme".into()),
-                topics: vec!["fcitx5-theme".into(), "fcitx5-skin".into()],
-                stargazers_count: 1,
-            }],
+            fcitx_repositories: vec![
+                snout::api::ThemeRepository {
+                    id: 42,
+                    full_name: "owner/sample-theme".into(),
+                    default_branch: "main".into(),
+                    description: Some("Sample online theme".into()),
+                    topics: vec!["fcitx5-theme".into(), "fcitx5-skin".into()],
+                    stargazers_count: 1,
+                },
+                snout::api::ThemeRepository {
+                    id: 43,
+                    full_name: "owner/ocean-theme".into(),
+                    default_branch: "main".into(),
+                    description: Some("Ocean theme".into()),
+                    topics: vec!["fcitx5-theme".into()],
+                    stargazers_count: 0,
+                },
+            ],
             fcitx_catalog_loaded: true,
+            fcitx_selection: skin::fcitx5::ThemeSelection {
+                light: Some("OriLight".into()),
+                dark: Some("OriDark".into()),
+            },
+            status: Status::Ready,
             busy: false,
             ..Snapshot::default()
         });
+        if std::path::Path::new(&props.config_path.get().to_string())
+            .with_file_name("bulk-themes")
+            .exists()
+        {
+            ui.state.update(|state| {
+                state
+                    .fcitx_repositories
+                    .extend((100..160).map(|id| snout::api::ThemeRepository {
+                        id,
+                        full_name: format!("owner/pack-{id}"),
+                        default_branch: "main".into(),
+                        description: None,
+                        topics: vec![],
+                        stargazers_count: 0,
+                    }));
+            });
+        }
         ui.light_theme.set("OriLight".into());
         ui.dark_theme.set("OriDark".into());
+        if std::env::var("SNOUT_THEME_REVIEW_PAGE").as_deref() == Ok("market") {
+            ui.theme_page.set(ThemePage::Market);
+        }
+        if std::env::var("SNOUT_THEME_REVIEW_PAGE").as_deref() == Ok("bundle") {
+            ui.state.update(|state| {
+                state.theme_task = Some(ThemeTask::Download {
+                    id: 43,
+                    name: "owner/ocean-theme".into(),
+                });
+                state.theme_download = Some(controller::ThemeDownload {
+                    repository_id: 43,
+                    keys: vec!["snout-online-43-day".into(), "snout-online-43-night".into()],
+                });
+                state.fcitx_choices.extend([
+                    (
+                        "snout-online-43-day".into(),
+                        "owner/ocean-theme · Ocean Day".into(),
+                    ),
+                    (
+                        "snout-online-43-night".into(),
+                        "owner/ocean-theme · Ocean Night".into(),
+                    ),
+                ]);
+                state.status = Status::Success;
+            });
+            ui.show_repository_themes(43);
+        }
+        let show_controls = std::path::Path::new(&props.config_path.get().to_string())
+            .with_file_name("fixture-controls")
+            .exists();
         view()
             .p_6()
             .bg(canvas)
             .text_color(ink)
             .child(fcitx_appearance(ui))
             .child(confirmation(ui))
+            .child(when(move || show_controls, move || fixture_controls(ui)))
+    }
+
+    fn fixture_controls(ui: Ui) -> AnyElement {
+        view()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .child(action(
+                ui,
+                "fixture-download-success",
+                "Finish download",
+                "完成下载",
+                false,
+                move || {
+                    ui.controller.with(Controller::poll);
+                    ui.state.update(|state| {
+                        state.theme_task = Some(ThemeTask::Download {
+                            id: 43,
+                            name: "owner/ocean-theme".into(),
+                        });
+                        state.theme_download = Some(controller::ThemeDownload {
+                            repository_id: 43,
+                            keys: vec![
+                                "snout-online-43-day".into(),
+                                "snout-online-43-night".into(),
+                            ],
+                        });
+                        state.fcitx_choices.extend([
+                            ("snout-online-43-day".into(), "Ocean Day".into()),
+                            ("snout-online-43-night".into(), "Ocean Night".into()),
+                        ]);
+                        state.status = Status::Success;
+                        state.busy = false;
+                        state.error = None;
+                    });
+                },
+            ))
+            .child(action(
+                ui,
+                "fixture-download-error",
+                "Fail download",
+                "下载失败",
+                false,
+                move || {
+                    ui.state.update(|state| {
+                        state.theme_task = Some(ThemeTask::Download {
+                            id: 43,
+                            name: "owner/ocean-theme".into(),
+                        });
+                        state.status = Status::Error;
+                        state.error = Some("Network unavailable".into());
+                    });
+                },
+            ))
+            .child(action(ui, "fixture-apply-error", "Fail apply", "应用失败", false, move || {
+                ui.state.update(|state| {
+                    state.theme_task=Some(ThemeTask::Apply); state.status=Status::Error;
+                    state.error=None; state.report=Some(r#"{"results":[{"success":false,"message":"Could not reload Fcitx5"}]}"#.into());
+                });
+            }))
+            .child(action(ui, "fixture-apply-success", "Finish apply", "完成应用", false, move || {
+                ui.state.update(|state| {
+                    state.theme_task=Some(ThemeTask::Apply); state.status=Status::Success;
+                    state.error=None; state.report=None;
+                    state.fcitx_selection=skin::fcitx5::ThemeSelection {light:Some(ui.light_theme.get()),dark:Some(ui.dark_theme.get())};
+                });
+            }))
+            .child(action(
+                ui,
+                "fixture-refresh",
+                "Refresh snapshot",
+                "刷新快照",
+                false,
+                move || {
+                    let mut next = ui.state.get();
+                    next.revision += 1;
+                    ui.sync_theme_selection(&next);
+                    ui.state.set(next);
+                },
+            ))
+            .into_element()
     }
 
     fn fixture_props(directory: &std::path::Path) -> AppProps {
@@ -2237,71 +2730,152 @@ mod theme_tests {
         }
     }
 
-    #[test]
-    fn topic_list_filters_selects_and_confirms_import_without_applying() {
+    fn fixture() -> (tempfile::TempDir, Headless) {
+        fixture_with(false)
+    }
+
+    fn fixture_with(bulk: bool) -> (tempfile::TempDir, Headless) {
         let directory = tempfile::tempdir().expect("fixture directory");
+        std::fs::write(directory.path().join("fixture-controls"), "").unwrap();
+        if bulk {
+            std::fs::write(directory.path().join("bulk-themes"), "").unwrap();
+        }
         let path = directory.path().to_owned();
         let root = Root::new::<ThemeFixture>(move || fixture_props(&path));
         let mut app = Headless::start(EngineConfig {
-            viewport: Size::new(px(1040.0), px(900.0)),
+            viewport: Size::new(px(1040.0), px(1000.0)),
             ui_sets: vec![nsh_base::registry()],
             ..EngineConfig::new(root)
         })
-        .expect("headless theme fixture");
-        app.first_render().expect("first fixture render");
-        app.wait_for("theme-light-OriDark")
-            .expect("virtualized built-in row");
-        assert!(app.shows("Built-in"));
-        assert!(!app
-            .screen()
-            .matches("fcitx-light-rounded")
-            .expect("rounding visibility"));
-        assert!(!app
-            .screen()
-            .matches("fcitx-dark-rounded")
-            .expect("rounding visibility"));
-        app.press("theme-light-catppuccin-latte-sky")
-            .expect("select theme with optional rounding");
-        app.wait_for("fcitx-light-rounded")
-            .expect("supported rounding switch");
-        assert!(!app
-            .screen()
-            .matches("fcitx-dark-rounded")
-            .expect("rounding visibility"));
-        app.press("theme-light-OriDark").expect("select light");
-        app.wait_until("light selection", Duration::from_secs(5), |screen| {
-            screen
-                .texts()
-                .iter()
-                .any(|text| text.contains("Light: OriDark"))
-        })
-        .expect("selection reflected");
-        assert!(!app
-            .screen()
-            .matches("fcitx-light-rounded")
-            .expect("rounding visibility"));
-        app.press("theme-light-snout-online-42-fixed")
-            .expect("select online theme");
-        assert!(!app
-            .screen()
-            .matches("fcitx-light-rounded")
-            .expect("rounding visibility"));
-        app.type_text("theme-filter", "sample-theme")
-            .expect("filter online");
-        app.wait_for("online-theme-42")
-            .expect("online row after filtering");
-        assert!(app.shows("Online"));
-        assert!(app.shows("fcitx5-theme"));
-        assert!(app.shows("fcitx5-skin"));
-        app.press("import-theme-42").expect("review import");
-        app.wait_for("confirm-cancel").expect("import confirmation");
-        assert!(app
-            .screen()
-            .texts()
-            .iter()
-            .any(|text| text.contains("Download ready-to-use themes.")));
-        app.press("confirm-cancel").expect("cancel import");
+        .expect("headless fixture");
+        app.first_render().unwrap();
+        app.wait_for("fcitx-light-theme").unwrap();
+        (directory, app)
+    }
+
+    fn choose(app: &mut Headless, mode: &str, label: &str) {
+        app.press(&format!("{mode}-trigger"))
+            .expect("open theme picker");
+        let search = if mode == "fcitx-light-theme" {
+            "label:Search Light mode"
+        } else {
+            "label:Search Dark mode"
+        };
+        app.wait_for(search).expect("searchable local themes");
+        app.type_text(search, label).expect("search theme");
+        app.press_key("down").unwrap();
+        app.press_key("enter").unwrap();
+    }
+
+    #[test]
+    fn local_and_market_are_separate_and_mode_drafts_survive_refresh() {
+        let (directory, mut app) = fixture();
+        assert!(app.screen().selected("local-themes-tab").unwrap());
+        assert!(!app.screen().matches("online-theme-43").unwrap());
+        assert!(!app.screen().enabled("apply-fcitx").unwrap());
+        choose(&mut app, "fcitx-light-theme", "Catppuccin Latte Sky");
+        app.wait_for("fcitx-light-rounded").unwrap();
+        assert!(!app.screen().matches("fcitx-dark-rounded").unwrap());
+        choose(&mut app, "fcitx-light-theme", "Online fixed theme");
+        app.wait_for_gone("fcitx-light-rounded", Duration::from_secs(5))
+            .unwrap();
+        app.press("fixture-refresh").unwrap();
+        app.wait_for("theme-unapplied").unwrap();
+        assert!(app.shows("Online fixed theme"));
+        app.press("theme-market-tab").unwrap();
+        app.wait_for("online-theme-43").unwrap();
+        assert!(!app.screen().matches("fcitx-light-theme").unwrap());
+        app.type_text("market-theme-filter", "ocean").unwrap();
+        app.wait_for_gone("online-theme-42", Duration::from_secs(5))
+            .unwrap();
+        app.press("local-themes-tab").unwrap();
+        app.wait_for("fcitx-light-theme").unwrap();
+        assert!(app.screen().enabled("apply-fcitx").unwrap());
         assert!(!directory.path().join("rime").exists());
+    }
+
+    #[test]
+    fn download_result_exposes_count_and_local_entry_with_apply_choices() {
+        let (directory, mut app) = fixture();
+        app.press("theme-market-tab").unwrap();
+        app.wait_for("import-theme-43").unwrap();
+        app.press("fixture-download-error").unwrap();
+        app.wait_for("theme-operation-error").unwrap();
+        assert!(app.shows("Network unavailable"));
+        assert!(app.shows("Retry"));
+        app.press("fixture-download-success").unwrap();
+        app.wait_for("theme-download-success").unwrap();
+        assert!(app.shows("owner/ocean-theme · 2 · themes downloaded"));
+        app.wait_for("use-theme-43").unwrap();
+        app.press("show-downloaded-themes").unwrap();
+        app.wait_for("fcitx-light-theme").unwrap();
+        app.wait_for("local-theme-repository").unwrap();
+        app.wait_for("fcitx-theme-snout-online-43-day").unwrap();
+        app.wait_for("fcitx-theme-snout-online-43-night").unwrap();
+        assert!(!app.screen().matches("fcitx-theme-OriDark").unwrap());
+        choose(&mut app, "fcitx-light-theme", "Ocean Day");
+        choose(&mut app, "fcitx-dark-theme", "Ocean Night");
+        app.wait_for("theme-unapplied").unwrap();
+        assert!(app.screen().enabled("apply-fcitx").unwrap());
+        app.press("all-local-themes").unwrap();
+        app.wait_for("fcitx-theme-OriDark").unwrap();
+        assert!(!app.screen().matches("confirm-apply").unwrap());
+        assert!(!directory.path().join("rime").exists());
+    }
+
+    #[test]
+    fn market_status_updates_keep_the_scrolled_repository_position() {
+        let (_directory, mut app) = fixture_with(true);
+        app.press("theme-market-tab").unwrap();
+        app.wait_for("theme-market-list").unwrap();
+        app.scroll("theme-market-list", px(1100.0)).unwrap();
+        let rows = |app: &Headless| {
+            app.screen()
+                .texts()
+                .into_iter()
+                .filter(|text| text.starts_with("owner/pack-"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let before = rows(&app);
+        assert!(!before.is_empty());
+        app.press("fixture-download-error").unwrap();
+        app.wait_for("theme-operation-error").unwrap();
+        assert_eq!(
+            rows(&app),
+            before,
+            "status updates must not remount and reset the market list"
+        );
+    }
+
+    #[test]
+    fn failed_apply_exposes_reason_and_retry_then_success_disables_apply() {
+        let (_directory, mut app) = fixture();
+        app.press("fixture-apply-error").unwrap();
+        app.wait_for("theme-operation-error").unwrap();
+        assert!(app.shows("Could not reload Fcitx5"));
+        assert!(app.screen().enabled("apply-fcitx").unwrap());
+        app.press("fixture-apply-success").unwrap();
+        app.wait_for("theme-apply-success").unwrap();
+        assert!(!app.screen().enabled("apply-fcitx").unwrap());
+        assert!(!app.screen().matches("theme-operation-error").unwrap());
+    }
+
+    #[test]
+    fn download_and_apply_start_without_a_second_confirmation() {
+        let (_directory, mut app) = fixture();
+        choose(&mut app, "fcitx-light-theme", "Online fixed theme");
+        app.press("apply-fcitx").unwrap();
+        app.wait_for("theme-operation-progress").unwrap();
+        assert!(app.shows("Applying…"));
+        assert!(!app.screen().matches("confirm-cancel").unwrap());
+        let (_directory, mut app) = fixture();
+        app.press("theme-market-tab").unwrap();
+        app.wait_for("import-theme-43").unwrap();
+        app.press("import-theme-43").unwrap();
+        app.wait_for("theme-operation-progress").unwrap();
+        assert!(app.shows("Downloading themes…"));
+        assert!(!app.screen().matches("confirm-cancel").unwrap());
     }
 
     #[cfg(all(target_os = "linux", feature = "native"))]
@@ -2318,7 +2892,7 @@ mod theme_tests {
             platform::AppOptions {
                 title: "snout theme review".into(),
                 app_id: "io.github.snout.theme-review".into(),
-                size: (1040, 900),
+                size: (800, 760),
                 ..Default::default()
             },
         );

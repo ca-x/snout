@@ -33,6 +33,19 @@ pub enum Status {
     Error,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThemeTask {
+    Search,
+    Download { id: u64, name: String },
+    Apply,
+}
+
+#[derive(Clone, Debug)]
+pub struct ThemeDownload {
+    pub repository_id: u64,
+    pub keys: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct Snapshot {
     pub config: Option<Config>,
@@ -50,6 +63,8 @@ pub struct Snapshot {
     pub remote_status: Option<application::status::ConfigStatusSnapshot>,
     pub fcitx_repositories: Vec<snout::api::ThemeRepository>,
     pub fcitx_catalog_loaded: bool,
+    pub theme_task: Option<ThemeTask>,
+    pub theme_download: Option<ThemeDownload>,
     pub fcitx_choices: Vec<(String, String)>,
     pub fcitx_supported: bool,
     pub fcitx_selection: fcitx5::ThemeSelection,
@@ -84,6 +99,8 @@ impl Default for Snapshot {
             remote_status: None,
             fcitx_repositories: Vec::new(),
             fcitx_catalog_loaded: false,
+            theme_task: None,
+            theme_download: None,
             fcitx_choices: Vec::new(),
             fcitx_supported: false,
             fcitx_selection: fcitx5::ThemeSelection::default(),
@@ -135,6 +152,17 @@ pub enum Command {
 }
 
 impl Command {
+    fn theme_task(&self) -> Option<ThemeTask> {
+        match self {
+            Self::SearchFcitxThemes => Some(ThemeTask::Search),
+            Self::ImportFcitxTheme(repository) => Some(ThemeTask::Download {
+                id: repository.id,
+                name: repository.full_name.clone(),
+            }),
+            Self::FcitxThemes { .. } => Some(ThemeTask::Apply),
+            _ => None,
+        }
+    }
     fn report_command(&self) -> Option<&'static str> {
         match self {
             Self::Update { action, .. } => Some(action.command()),
@@ -331,7 +359,9 @@ impl Controller {
         }
         self.stop_countdown();
         let reporting = command.report_command().is_some();
+        let theme_task = command.theme_task();
         self.worker.submit(command)?;
+        self.snapshot.theme_task = theme_task;
         if reporting {
             self.snapshot.report = None;
         }
@@ -395,7 +425,9 @@ impl Controller {
                 }) => {
                     let activity = std::mem::take(&mut self.snapshot.activity);
                     let previous_report = self.snapshot.report.take();
+                    let theme_task = self.snapshot.theme_task.take();
                     self.snapshot = *snapshot;
+                    self.snapshot.theme_task = theme_task;
                     self.snapshot.status = status;
                     self.snapshot.error = error;
                     self.snapshot.busy = false;
@@ -477,6 +509,7 @@ struct WorkerEnvironment {
     remote_status: Option<application::status::ConfigStatusSnapshot>,
     fcitx_repositories: Vec<snout::api::ThemeRepository>,
     fcitx_catalog_loaded: bool,
+    theme_download: Option<ThemeDownload>,
 }
 
 impl WorkerEnvironment {
@@ -498,6 +531,7 @@ impl WorkerEnvironment {
             remote_status: None,
             fcitx_repositories: Vec::new(),
             fcitx_catalog_loaded: false,
+            theme_download: None,
         }
     }
 }
@@ -657,6 +691,7 @@ fn snapshot(manager: &Manager, environment: &WorkerEnvironment, revision: u64) -
         fcitx_selection,
         fcitx_repositories: environment.fcitx_repositories.clone(),
         fcitx_catalog_loaded: environment.fcitx_catalog_loaded,
+        theme_download: environment.theme_download.clone(),
         fcitx_choices: if fcitx_supported {
             fcitx5::available_theme_choices().unwrap_or_else(|error| {
                 warnings.push(format!("Fcitx5 themes / 主题: {error}"));
@@ -813,12 +848,16 @@ async fn execute(
             let archive = client
                 .download_theme_repository(&repository, &request.cancel)
                 .await?;
-            snout::skin::online::import_archive(
+            let keys = snout::skin::online::import_archive(
                 archive.path(),
                 &fcitx5::fcitx_theme_root_path()?,
                 &repository,
                 &request.cancel,
             )?;
+            environment.theme_download = Some(ThemeDownload {
+                repository_id: repository.id,
+                keys,
+            });
         }
         Command::FcitxThemes {
             light,
@@ -930,6 +969,34 @@ mod tests {
     fn run(controller: &mut Controller, command: Command) {
         controller.submit(command).expect("submit command");
         ready(controller);
+    }
+
+    #[test]
+    fn theme_task_result_is_kept_and_preview_rejects_theme_downloads() {
+        let root = TempDir::new().unwrap();
+        let mut controller = Controller::start(Some(paths(&root))).unwrap();
+        ready(&mut controller);
+        let repository = snout::api::ThemeRepository {
+            id: 42,
+            full_name: "owner/bundle".into(),
+            default_branch: "main".into(),
+            description: None,
+            topics: vec![],
+            stargazers_count: 0,
+        };
+        run(&mut controller, Command::ImportFcitxTheme(repository));
+        assert_eq!(controller.snapshot.status, Status::Error);
+        assert_eq!(
+            controller.snapshot.theme_task,
+            Some(ThemeTask::Download {
+                id: 42,
+                name: "owner/bundle".into()
+            })
+        );
+        assert!(controller.snapshot.theme_download.is_none());
+        assert!(!root.path().join("rime").exists());
+        run(&mut controller, Command::Refresh);
+        assert!(controller.snapshot.theme_task.is_none());
     }
 
     #[test]

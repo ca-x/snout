@@ -33,6 +33,7 @@ input and file dialogs. Desktop work does not change the CLI/TUI presentation.
   strip across destinations when the draft changes. Revert restores the loaded
   configuration. Saving uses the existing validation and explicit confirmation.
 - Confirm consequential actions in a modal layer, with Escape/cancel dismissal.
+  Reversible theme downloads and explicit Apply use one direct action and inline feedback.
   Preserve data policy, hook warnings and the explicit destructive alternative.
 - Candidate preview illustrates only count/layout. It does not claim to reproduce
   the installed input engine's skin or deploy changes before Apply.
@@ -60,8 +61,16 @@ real platform visual or input-method testing.
 
 - Hide engine skin panels and the patch-key setting when the current environment
   has no corresponding appearance target.
-- Fcitx5 uses one filterable virtual list. Built-in themes and downloaded variants
-  carry source tags; online repositories show both topic tags when applicable.
-- Merge topic results by GitHub repository identity. Fetch/import does not apply
-  a theme. Apply the chosen light/dark pair explicitly, with visible selected
-  labels, optional rounding only where supported, and standard confirmation.
+- Fcitx5 separates Local themes from Theme market using keyboard-accessible tabs.
+  Each collection has its own filter and virtual list. The theme panel precedes
+  candidate settings when Fcitx5 is available.
+- A market repository is a bundle, not a single theme. Downloads show progress,
+  failure/retry, and the exact number of imported variants. View themes opens
+  that repository's local variants; All themes restores the complete library.
+- Local Light mode and Dark mode selectors share all installed variants, including
+  variants from different repositories. Selection stays a draft until Apply.
+  Downloads and catalog refreshes preserve unapplied selections. Rounding appears
+  only where supported. Apply shows its result inline and can retry failures.
+- Merge topic results by GitHub repository identity. Downloads and updates never
+  change the active theme. Installed bundle counts come from local keys, so they
+  remain visible after restart even before another download.
