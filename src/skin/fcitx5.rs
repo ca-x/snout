@@ -50,6 +50,34 @@ pub fn builtin_theme_choices() -> Vec<(String, String)> {
         .collect()
 }
 
+/// List built-in and installed themes, preserving stable configuration keys.
+pub fn available_theme_choices() -> Result<Vec<(String, String)>> {
+    let mut choices = builtin_theme_choices();
+    for name in installed_theme_names()? {
+        if choices.iter().any(|(key, _)| key == &name) {
+            continue;
+        }
+        let path = fcitx_theme_root_path()?.join(&name);
+        if !path.join("theme.conf").is_file() {
+            continue;
+        }
+        let label = std::fs::read(path.join(".snout-source.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| {
+                Some(format!(
+                    "{} · {}",
+                    value["repository"].as_str()?,
+                    value["name"].as_str()?
+                ))
+            })
+            .unwrap_or_else(|| name.clone());
+        choices.push((name, label));
+    }
+    choices.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(choices)
+}
+
 pub fn builtin_themes_available() -> bool {
     !FCITX5_THEME_NAMES.is_empty()
 }
@@ -112,6 +140,12 @@ pub async fn apply_theme_pair(
     dark_rounded: Option<bool>,
     lang: Lang,
 ) -> Result<()> {
+    for (name, rounded) in [(light_theme, light_rounded), (dark_theme, dark_rounded)] {
+        anyhow::ensure!(
+            rounded != Some(true) || theme_supports_optional_rounding(name),
+            "Theme {name} does not support toggling rounded corners / 主题 {name} 不支持切换圆角"
+        );
+    }
     install_theme(light_theme, light_rounded)?;
     if dark_theme != light_theme || dark_rounded != light_rounded {
         install_theme(dark_theme, dark_rounded)?;
@@ -148,7 +182,21 @@ pub fn installed_theme_rounding(theme_name: &str) -> Result<Option<bool>> {
 
 fn install_theme(theme_name: &str, rounded: Option<bool>) -> Result<()> {
     if !FCITX5_THEME_NAMES.contains(&theme_name) {
-        anyhow::bail!("unknown fcitx5 theme: {theme_name}");
+        anyhow::ensure!(
+            matches!(
+                std::path::Path::new(theme_name)
+                    .components()
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                [std::path::Component::Normal(_)]
+            ) && !theme_name.starts_with('.')
+                && fcitx_theme_root_path()?
+                    .join(theme_name)
+                    .join("theme.conf")
+                    .is_file(),
+            "unknown fcitx5 theme: {theme_name}"
+        );
+        return Ok(());
     }
 
     let root = fcitx_theme_root_path()?;
@@ -410,7 +458,7 @@ fn upsert_theme_values(content: &str, config: &FcitxThemeConfig) -> String {
     }
 }
 
-fn fcitx_theme_root_path() -> Result<PathBuf> {
+pub fn fcitx_theme_root_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("missing home")?;
     Ok(home.join(".local/share/fcitx5/themes"))
 }
@@ -501,6 +549,17 @@ mod tests {
         let rendered = render_theme_conf("# Image=panel.svg\nTheme=Test\n", Some(true));
         assert!(rendered.contains("Image=panel.svg"));
         assert!(!rendered.contains("# Image=panel.svg"));
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_rounding_before_installation() {
+        for name in ["OriDark", "snout-online-42-fixed"] {
+            let result = apply_theme_pair(name, name, Some(true), None, Lang::En).await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("does not support toggling"));
+        }
     }
 
     #[test]

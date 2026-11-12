@@ -30,7 +30,7 @@ pub enum CompletionShell {
     args_conflicts_with_subcommands = true,
     group(
         ArgGroup::new("primary_action")
-            .args(["init", "update", "scheme", "dict", "model"])
+            .args(["init", "update", "scheme", "dict", "model", "list_fcitx5_themes", "fetch_fcitx5_theme"])
             .multiple(false)
     )
 )]
@@ -160,13 +160,22 @@ struct Cli {
     exclude_files: Vec<String>,
 
     /// 覆盖内置皮肤 key / Override skin patch key
-    #[arg(long)]
+    #[arg(long, hide = cfg!(target_os = "linux"))]
     skin_patch_key: Option<String>,
+
+    /// 列出内置、已安装及 GitHub topic 在线主题 / List built-in, installed and online Fcitx5 themes
+    #[arg(long, hide = !cfg!(target_os = "linux"), conflicts_with_all = ["fcitx5_theme_light", "fcitx5_theme_dark", "candidate_page_size", "clear_candidate_page_size"])]
+    list_fcitx5_themes: bool,
+
+    /// 获取在线主题仓库（owner/repo），不改变当前主题 / Get an online theme repository without applying it
+    #[arg(long, value_name = "OWNER/REPO", hide = !cfg!(target_os = "linux"))]
+    fetch_fcitx5_theme: Option<String>,
 
     /// Linux Fcitx5 亮色主题 / Linux Fcitx5 light theme
     #[arg(
         long,
         conflicts_with = "init",
+        hide = !cfg!(target_os = "linux"),
         value_parser = clap::builder::NonEmptyStringValueParser::new()
     )]
     fcitx5_theme_light: Option<String>,
@@ -175,16 +184,17 @@ struct Cli {
     #[arg(
         long,
         conflicts_with = "init",
+        hide = !cfg!(target_os = "linux"),
         value_parser = clap::builder::NonEmptyStringValueParser::new()
     )]
     fcitx5_theme_dark: Option<String>,
 
-    /// Linux Fcitx5 亮色主题启用圆角 / Enable rounded corners for Linux Fcitx5 light theme
-    #[arg(long, action = ArgAction::SetTrue)]
+    /// Linux Fcitx5 亮色主题启用圆角（仅支持切换的主题） / Enable light-theme rounding (themes with a supported toggle only)
+    #[arg(long, action = ArgAction::SetTrue, hide = !cfg!(target_os = "linux"))]
     fcitx5_theme_light_round: bool,
 
-    /// Linux Fcitx5 暗色主题启用圆角 / Enable rounded corners for Linux Fcitx5 dark theme
-    #[arg(long, action = ArgAction::SetTrue)]
+    /// Linux Fcitx5 暗色主题启用圆角（仅支持切换的主题） / Enable dark-theme rounding (themes with a supported toggle only)
+    #[arg(long, action = ArgAction::SetTrue, hide = !cfg!(target_os = "linux"))]
     fcitx5_theme_dark_round: bool,
 
     /// 设置候选词数量 / Set candidate page size
@@ -263,11 +273,90 @@ async fn execute(cli: Cli) -> anyhow::Result<bool> {
         anyhow::bail!("--json requires a non-interactive update or theme action");
     }
     #[cfg(not(target_os = "linux"))]
-    if cli.fcitx5_theme_light.is_some() || cli.fcitx5_theme_dark.is_some() {
+    if cli.fcitx5_theme_light.is_some()
+        || cli.fcitx5_theme_dark.is_some()
+        || cli.list_fcitx5_themes
+        || cli.fetch_fcitx5_theme.is_some()
+    {
         anyhow::bail!("Fcitx5 theme commands are only supported on Linux");
     }
 
     feedback::set_json_active(cli.json);
+
+    if cli.list_fcitx5_themes || cli.fetch_fcitx5_theme.is_some() {
+        let mut manager = config::Manager::new()?;
+        apply_cli_overrides(&mut manager.config, &cli);
+        let client = crate::api::Client::new(&manager.config)?;
+        let cancel = types::CancelSignal::new();
+        let repositories = client.fetch_fcitx5_repositories(&cancel).await?;
+        if let Some(name) = &cli.fetch_fcitx5_theme {
+            let repository = repositories.iter().find(|repository| repository.full_name.eq_ignore_ascii_case(name)).ok_or_else(|| anyhow::anyhow!("Repository not found in fcitx5-theme / fcitx5-skin topics / 主题 topic 中没有找到该仓库"))?;
+            let archive = client
+                .download_theme_repository(repository, &cancel)
+                .await?;
+            let names = crate::skin::online::import_archive(
+                archive.path(),
+                &crate::skin::fcitx5::fcitx_theme_root_path()?,
+                repository,
+                &cancel,
+            )?;
+            let result = updater::BaseUpdater::success_result(
+                updater::UpdateComponent::Fcitx5Theme,
+                "Fcitx5 themes / 主题",
+                "-",
+                "-",
+                &format!(
+                    "Imported / 已获取: {}. Apply separately / 请另行选择并应用。",
+                    names.join(", ")
+                ),
+            );
+            return finish_cli_action(
+                cli.json,
+                cli.action_name(),
+                manager.config.schema,
+                vec![result],
+            );
+        }
+        let builtin = crate::skin::fcitx5::builtin_theme_choices();
+        let themes: Vec<_> = crate::skin::fcitx5::available_theme_choices()?
+            .into_iter()
+            .map(|(key, name)| {
+                let source = if builtin.iter().any(|(builtin, _)| builtin == &key) {
+                    "builtin"
+                } else if key.starts_with("snout-online-") {
+                    "online"
+                } else {
+                    "installed"
+                };
+                serde_json::json!({"key":key,"name":name,"source":source})
+            })
+            .collect();
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({"schema_version":1,"command":"fcitx5-themes","ok":true,"themes":themes,"repositories":repositories})
+                )?
+            );
+        } else {
+            for theme in themes {
+                println!(
+                    "[{}] {}  {}",
+                    theme["source"].as_str().unwrap_or_default(),
+                    theme["key"].as_str().unwrap_or_default(),
+                    theme["name"].as_str().unwrap_or_default()
+                );
+            }
+            for repository in repositories {
+                println!(
+                    "[online] {}  {}",
+                    repository.full_name,
+                    repository.description.as_deref().unwrap_or_default()
+                );
+            }
+        }
+        return Ok(true);
+    }
 
     if cli.init {
         ui::wizard::run_init_wizard(cli.lang.as_deref()).await?;
@@ -425,6 +514,8 @@ impl Cli {
     fn action_name(&self) -> &'static str {
         match self.command {
             Some(Commands::Completions { .. }) => "completions",
+            None if self.list_fcitx5_themes => "fcitx5-themes",
+            None if self.fetch_fcitx5_theme.is_some() => "fcitx5-theme-fetch",
             None if self.init => "init",
             None if self.update => "update",
             None if self.scheme => "scheme",
@@ -438,7 +529,9 @@ impl Cli {
     }
 
     fn has_direct_action(&self) -> bool {
-        self.update
+        self.list_fcitx5_themes
+            || self.fetch_fcitx5_theme.is_some()
+            || self.update
             || self.scheme
             || self.dict
             || self.model
@@ -608,6 +701,33 @@ fn user_data_policy_detail<'a>(config: &types::Config, t: &'a L10n) -> &'a str {
 mod cli_tests {
     use super::*;
     use crate::report::ComponentResult as CliResult;
+
+    #[test]
+    fn new_schemes_and_topic_commands_parse_without_starting_the_updater() {
+        for (name, expected) in [
+            ("jidian", Schema::Wubi86Jidian),
+            ("wubi86-jidian", Schema::Wubi86Jidian),
+            ("abcm", Schema::Abcm),
+            ("abc", Schema::Abcm),
+        ] {
+            let cli =
+                Cli::try_parse_from(["snout", "--schema", name, "--scheme", "--json"]).unwrap();
+            assert_eq!(cli.schema, Some(expected));
+            assert!(!expected.is_wanxiang());
+            assert!(!expected.supports_model_patch());
+            assert_eq!(
+                Schema::from_scheme_archive_name(expected.scheme_zip()),
+                Some(expected)
+            );
+        }
+        let list = Cli::try_parse_from(["snout", "--list-fcitx5-themes", "--json"]).unwrap();
+        assert!(list.has_direct_action());
+        assert_eq!(list.action_name(), "fcitx5-themes");
+        let fetch =
+            Cli::try_parse_from(["snout", "--fetch-fcitx5-theme", "owner/repo", "--json"]).unwrap();
+        assert_eq!(fetch.action_name(), "fcitx5-theme-fetch");
+        assert!(Cli::try_parse_from(["snout", "--update", "--list-fcitx5-themes"]).is_err());
+    }
 
     #[test]
     fn json_flag_selects_a_non_interactive_action() {

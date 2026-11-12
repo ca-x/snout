@@ -86,13 +86,13 @@ preference. The app's semantic light/dark tokens and interaction standards live 
 | Page | Shared CLI/TUI capabilities |
 | --- | --- |
 | Overview | Update all or scheme/dictionary/model separately; installed component versions; remote status check; engine diagnostics; Wanxiang diagnosis; paths; one-time Rime integration; cancellable startup countdown |
-| Schemes | All 13 schemas; shared model-patch setting; save selection before explicit installation |
-| Appearance | Candidate size 1–9 and confirmed reset; Squirrel/Weasel builtin multiselection and default using one atomic core write; Linux Fcitx light/dark pairs and separate optional rounding |
-| Settings | Every `Config` field; Chinese/English labels; terminal-theme preference; user-data policy; mirror/threads; configured and environment proxy status; masked token; automatic setup/update; engine synchronization/link strategy; hooks; exclusion add/edit/remove/reset |
+| Schemes | All 15 schemas (including Jidian Wubi86 and Smart ABC Mod); shared model-patch setting; save selection before explicit installation |
+| Appearance | Candidate size 1–9 and confirmed reset; Squirrel/Weasel builtin multiselection and default using one atomic core write; Linux Fcitx light/dark pairs, filterable virtual list with built-in/online tags, deduplicated GitHub topic catalog and explicit import; separate optional rounding |
+| Settings | Platform-appropriate `Config` fields; Chinese/English labels; terminal-theme preference; user-data policy; mirror/threads; configured and environment proxy status; masked token; automatic setup/update; engine synchronization/link strategy; hooks; exclusion add/edit/remove/reset |
 | Activity | Progress and bounded session history; shared structured JSON reports, including failure/cancellation; credential-redacted display and atomic native-dialog export; real zsh/fish completion exports |
 
 The desktop follows the operating system's light/dark appearance and system
-fonts. Unsupported native capabilities remain visible with explanatory states.
+fonts. Unsupported engine skin settings are hidden. Linux shows Fcitx5 themes only when supported; macOS/Windows show their own engine presets.
 Fcitx optional rounding appears only for themes whose embedded template supports
 it; fixed-rounding themes do not pretend to offer a toggle.
 

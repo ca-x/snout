@@ -55,3 +55,13 @@ keyboard paths, narrower windows, draft persistence and confirmation cancellatio
 Inspect screenshots from the native Linux renderer. Cross-platform CI proves
 compilation and headless behavior on Windows/macOS; it does not substitute for
 real platform visual or input-method testing.
+
+## Platform theme catalog
+
+- Hide engine skin panels and the patch-key setting when the current environment
+  has no corresponding appearance target.
+- Fcitx5 uses one filterable virtual list. Built-in themes and downloaded variants
+  carry source tags; online repositories show both topic tags when applicable.
+- Merge topic results by GitHub repository identity. Fetch/import does not apply
+  a theme. Apply the chosen light/dark pair explicitly, with visible selected
+  labels, optional rounding only where supported, and standard confirmation.

@@ -598,6 +598,10 @@ impl L10n {
         en.insert("schema.ice", "Rime Ice");
         zh.insert("schema.frost", "白霜拼音");
         en.insert("schema.frost", "Rime Frost");
+        zh.insert("schema.wubi86_jidian", "极点五笔86");
+        en.insert("schema.wubi86_jidian", "Jidian Wubi86");
+        zh.insert("schema.abcm", "智能 ABC·改");
+        en.insert("schema.abcm", "Smart ABC Mod");
         zh.insert("schema.mint", "薄荷输入法");
         en.insert("schema.mint", "Mint Input");
         zh.insert("schema.unknown", "未知方案");

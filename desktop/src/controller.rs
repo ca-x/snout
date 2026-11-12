@@ -48,6 +48,9 @@ pub struct Snapshot {
     pub appearance: Option<AppearanceTarget>,
     pub warnings: Vec<String>,
     pub remote_status: Option<application::status::ConfigStatusSnapshot>,
+    pub fcitx_repositories: Vec<snout::api::ThemeRepository>,
+    pub fcitx_catalog_loaded: bool,
+    pub fcitx_choices: Vec<(String, String)>,
     pub fcitx_supported: bool,
     pub fcitx_selection: fcitx5::ThemeSelection,
     pub light_rounded: Option<bool>,
@@ -79,6 +82,9 @@ impl Default for Snapshot {
             appearance: None,
             warnings: Vec::new(),
             remote_status: None,
+            fcitx_repositories: Vec::new(),
+            fcitx_catalog_loaded: false,
+            fcitx_choices: Vec::new(),
             fcitx_supported: false,
             fcitx_selection: fcitx5::ThemeSelection::default(),
             light_rounded: None,
@@ -113,6 +119,8 @@ pub enum Command {
         keys: Vec<String>,
         default: String,
     },
+    SearchFcitxThemes,
+    ImportFcitxTheme(snout::api::ThemeRepository),
     FcitxThemes {
         light: String,
         dark: String,
@@ -467,6 +475,8 @@ struct WorkerEnvironment {
     engines: Vec<String>,
     appearance: Option<AppearanceTarget>,
     remote_status: Option<application::status::ConfigStatusSnapshot>,
+    fcitx_repositories: Vec<snout::api::ThemeRepository>,
+    fcitx_catalog_loaded: bool,
 }
 
 impl WorkerEnvironment {
@@ -486,6 +496,8 @@ impl WorkerEnvironment {
             engines,
             appearance,
             remote_status: None,
+            fcitx_repositories: Vec::new(),
+            fcitx_catalog_loaded: false,
         }
     }
 }
@@ -640,11 +652,21 @@ fn snapshot(manager: &Manager, environment: &WorkerEnvironment, revision: u64) -
         default_skin,
         appearance: environment.appearance.clone(),
         remote_status: environment.remote_status.clone(),
-        warnings,
         light_rounded,
         dark_rounded,
         fcitx_selection,
+        fcitx_repositories: environment.fcitx_repositories.clone(),
+        fcitx_catalog_loaded: environment.fcitx_catalog_loaded,
+        fcitx_choices: if fcitx_supported {
+            fcitx5::available_theme_choices().unwrap_or_else(|error| {
+                warnings.push(format!("Fcitx5 themes / 主题: {error}"));
+                fcitx5::builtin_theme_choices()
+            })
+        } else {
+            Vec::new()
+        },
         fcitx_supported,
+        warnings,
         status: Status::Ready,
         busy: false,
         ..Snapshot::default()
@@ -769,6 +791,34 @@ async fn execute(
             if environment.live {
                 snout::deployer::deploy(Lang::from_str(&manager.config.language))?;
             }
+        }
+        Command::SearchFcitxThemes => {
+            if !environment.live
+                || !matches!(environment.appearance, Some(AppearanceTarget::Fcitx5Theme))
+            {
+                bail!("Fcitx5 requires a live Linux session / Fcitx5 需要 Linux 会话");
+            }
+            let client = snout::api::Client::new(&manager.config)?;
+            environment.fcitx_repositories =
+                client.fetch_fcitx5_repositories(&request.cancel).await?;
+            environment.fcitx_catalog_loaded = true;
+        }
+        Command::ImportFcitxTheme(repository) => {
+            if !environment.live
+                || !matches!(environment.appearance, Some(AppearanceTarget::Fcitx5Theme))
+            {
+                bail!("Fcitx5 requires a live Linux session / Fcitx5 需要 Linux 会话");
+            }
+            let client = snout::api::Client::new(&manager.config)?;
+            let archive = client
+                .download_theme_repository(&repository, &request.cancel)
+                .await?;
+            snout::skin::online::import_archive(
+                archive.path(),
+                &fcitx5::fcitx_theme_root_path()?,
+                &repository,
+                &request.cancel,
+            )?;
         }
         Command::FcitxThemes {
             light,

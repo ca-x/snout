@@ -71,6 +71,24 @@ pub fn set_candidate_page_size(
     write_patch_doc(&path, &doc)
 }
 
+/// Add the installed scheme to the switcher while retaining existing user patches.
+pub fn enable_schema(rime_dir: &Path, schema: Schema) -> Result<()> {
+    let path = rime_dir.join("default.custom.yaml");
+    let mut doc = load_patch_doc(&path)?;
+    let patch = patch_mapping_mut(&mut doc)?;
+    let key = Value::String("schema_list".into());
+    let list = patch
+        .entry(key)
+        .or_insert_with(|| Value::Sequence(Vec::new()));
+    let Value::Sequence(list) = list else {
+        anyhow::bail!("schema_list is not a sequence");
+    };
+    let entry = serde_yaml::to_value(HashMap::from([("schema", schema.schema_id())]))?;
+    list.retain(|value| value.get("schema").and_then(Value::as_str) != Some(schema.schema_id()));
+    list.insert(0, entry);
+    write_patch_doc(&path, &doc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +102,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("snout-custom-{name}-{nanos}"));
         std::fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn enabling_a_scheme_preserves_preferences_and_existing_choices() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("default.custom.yaml"),
+            "patch:\n  menu/page_size: 9\n  schema_list:\n    - schema: rime_ice\n",
+        )
+        .unwrap();
+        enable_schema(root.path(), Schema::Wubi86Jidian).unwrap();
+        enable_schema(root.path(), Schema::Abcm).unwrap();
+        enable_schema(root.path(), Schema::Abcm).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(
+            &std::fs::read_to_string(root.path().join("default.custom.yaml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(doc["patch"]["menu/page_size"].as_u64(), Some(9));
+        let list = doc["patch"]["schema_list"].as_sequence().unwrap();
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0]["schema"].as_str(), Some("abcm"));
+        assert_eq!(list[2]["schema"].as_str(), Some("rime_ice"));
     }
 
     #[test]

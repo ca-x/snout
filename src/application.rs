@@ -225,6 +225,10 @@ pub async fn run_update(
                 updater::frost::FrostUpdater { base }
                     .update_scheme(config, Some(&cancel), progress)
                     .await?
+            } else if matches!(schema, Schema::Wubi86Jidian | Schema::Abcm) {
+                updater::repository::RepositoryUpdater { base }
+                    .update_scheme(&schema, config, Some(&cancel), progress)
+                    .await?
             } else {
                 updater::mint::MintUpdater { base }
                     .update_scheme(config, Some(&cancel), progress)

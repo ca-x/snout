@@ -59,6 +59,7 @@ enum Pending {
     ResetCandidate,
     Skins,
     Fcitx,
+    ImportTheme(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -82,6 +83,7 @@ struct Ui {
     light_round: Signal<bool>,
     dark_round: Signal<bool>,
     diagnostics_open: Signal<bool>,
+    theme_filter: Signal<String>,
 }
 
 impl Ui {
@@ -176,6 +178,15 @@ impl Ui {
                 keys: self.selected_skins.get().into_iter().collect(),
                 default: self.default_skin.get(),
             },
+            Pending::ImportTheme(index) => {
+                let Some(repository) = self
+                    .state
+                    .with(|state| state.fcitx_repositories.get(index).cloned())
+                else {
+                    return;
+                };
+                Command::ImportFcitxTheme(repository)
+            }
             Pending::Fcitx => {
                 let light = self.light_theme.get();
                 let dark = self.dark_theme.get();
@@ -440,19 +451,8 @@ fn config_picker(
     )
 }
 
-#[component]
-pub fn App(props: AppProps) -> impl IntoElement {
-    crate::theme::install();
-    let paths = (!props.config_path.get().is_empty()).then(|| Paths {
-        config: props.config_path.get().to_string().into(),
-        rime: props.rime_path.get().to_string().into(),
-        cache: props.cache_path.get().to_string().into(),
-    });
-    let controller = match Controller::start(paths) {
-        Ok(controller) => controller,
-        Err(error) => return view().p_6().child(text(error.to_string())).into_element(),
-    };
-    let ui = Ui {
+fn new_ui(controller: Controller) -> Ui {
+    Ui {
         controller: stored(controller),
         state: signal_with(Snapshot::default(), SignalEquals::Never),
         draft: signal_with(Config::default(), SignalEquals::Never),
@@ -472,7 +472,23 @@ pub fn App(props: AppProps) -> impl IntoElement {
         light_round: signal(true),
         dark_round: signal(true),
         diagnostics_open: signal(false),
+        theme_filter: signal(String::new()),
+    }
+}
+
+#[component]
+pub fn App(props: AppProps) -> impl IntoElement {
+    crate::theme::install();
+    let paths = (!props.config_path.get().is_empty()).then(|| Paths {
+        config: props.config_path.get().to_string().into(),
+        rime: props.rime_path.get().to_string().into(),
+        cache: props.cache_path.get().to_string().into(),
+    });
+    let controller = match Controller::start(paths) {
+        Ok(controller) => controller,
+        Err(error) => return view().p_6().child(text(error.to_string())).into_element(),
     };
+    let ui = new_ui(controller);
     set_interval(Duration::from_millis(60), move || {
         if !ui.controller.with(Controller::poll) {
             return;
@@ -986,6 +1002,7 @@ fn confirmation(ui: Ui) -> AnyElement {
                                     "写入所选预设和默认皮肤，然后重新部署。",
                                 )
                                 .into(),
+                            Some(Pending::ImportTheme(index)) => format!("{}\n{}", ui.state.with(|state| state.fcitx_repositories.get(index).map(|repo| repo.full_name.clone()).unwrap_or_default()), ui.tr("Download ready-to-use themes. The current theme stays active until you apply a selection.", "获取可直接使用的主题。选择并应用前，当前主题保持不变。")),
                             Some(Pending::Fcitx) => format!(
                                 "{} → {}\n{}",
                                 ui.light_theme.get(),
@@ -1506,9 +1523,9 @@ fn schemes(ui: Ui) -> AnyElement {
         );
     }
     view().gap_6().child(heading(ui, "Choose a scheme", "选择输入方案"))
-        .child(caption(ui, "All 13 schemes share the same updater as the CLI. Save the selection, then explicitly install or update.", "全部 13 个方案使用与命令行相同的更新器。保存选择后，再明确执行安装或更新。"))
+        .child(caption(ui, "All 15 schemes share the same updater as the CLI. Save the selection, then explicitly install or update.", "全部 15 个方案使用与命令行相同的更新器。保存选择后，再明确执行安装或更新。"))
         .child(choices)
-        .child(toggle(ui, "model-patch", "Enable model patch", "启用模型补丁", |config| config.model_patch_enabled, |config, value| config.model_patch_enabled = value))
+        .child(when(move || ui.draft.with(|config| config.schema.supports_model_patch()), move || toggle(ui, "model-patch", "Enable model patch", "启用模型补丁", |config| config.model_patch_enabled, |config, value| config.model_patch_enabled = value)))
         .child(view().flex_row().flex_wrap().gap_3()
             .child(action(ui, "save-scheme", "Save selection", "保存选择", true, move || ui.request(Pending::Save)))
             .child(action(ui, "initialize-scheme", "Install selected scheme", "安装所选方案", false, move || ui.request(Pending::Update(UpdateAction::All)))))
@@ -1606,23 +1623,272 @@ fn appearance(ui: Ui) -> AnyElement {
                         )),
                 ),
         )
-        .child(fcitx_appearance(ui))
-        .child(builtin_appearance(ui))
+        .child(when(
+            move || ui.state.with(|state| state.fcitx_supported),
+            move || fcitx_appearance(ui),
+        ))
+        .child(when(
+            move || {
+                ui.state.with(|state| {
+                    matches!(
+                        state.appearance,
+                        Some(application::AppearanceTarget::ThemePatch(_))
+                    )
+                })
+            },
+            move || builtin_appearance(ui),
+        ))
         .into_element()
 }
 
+fn theme_tag(label: String) -> AnyElement {
+    text(label)
+        .text_size(px(12.0))
+        .text_color(muted)
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .bg(canvas)
+        .into_element()
+}
+
+#[derive(Clone)]
+enum ThemeRow {
+    Installed {
+        key: String,
+        label: String,
+        source: &'static str,
+    },
+    Repository {
+        index: usize,
+        repository: snout::api::ThemeRepository,
+    },
+}
+impl ThemeRow {
+    fn identity(&self) -> String {
+        match self {
+            Self::Installed { key, .. } => key.clone(),
+            Self::Repository { repository, .. } => format!("repository-{}", repository.id),
+        }
+    }
+}
+
+fn theme_choice(ui: Ui, key: String, label: String, light: bool) -> AnyElement {
+    let selected = key.clone();
+    let status = key.clone();
+    button()
+        .test_id(&format!(
+            "theme-{}-{key}",
+            if light { "light" } else { "dark" }
+        ))
+        .disabled(move || ui.locked())
+        .px_3()
+        .py_2()
+        .min_h(px(38.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(line)
+        .accessibility_label(move || {
+            Some(
+                format!(
+                    "{}: {}",
+                    label,
+                    ui.tr(
+                        if light {
+                            "Use for light"
+                        } else {
+                            "Use for dark"
+                        },
+                        if light {
+                            "设为亮色"
+                        } else {
+                            "设为暗色"
+                        }
+                    )
+                )
+                .into(),
+            )
+        })
+        .bg(move || {
+            if (if light {
+                ui.light_theme.get()
+            } else {
+                ui.dark_theme.get()
+            }) == selected
+            {
+                selection()
+            } else {
+                surface()
+            }
+        })
+        .focus(|style| style.outline(px(2.0)).outline_color(accent))
+        .transition_colors()
+        .duration(120.0)
+        .active(|style| style.opacity(0.75))
+        .disabled_style(|style| style.opacity(0.45))
+        .on_press(move || {
+            if light {
+                ui.light_theme.set(key.clone())
+            } else {
+                ui.dark_theme.set(key.clone())
+            }
+        })
+        .child(
+            text(move || {
+                let selected = (if light {
+                    ui.light_theme.get()
+                } else {
+                    ui.dark_theme.get()
+                }) == status;
+                format!(
+                    "{}{}",
+                    if selected { "✓ " } else { "" },
+                    ui.tr(
+                        if light { "Light" } else { "Dark" },
+                        if light { "亮色" } else { "暗色" }
+                    )
+                )
+            })
+            .text_size(px(14.0)),
+        )
+        .into_element()
+}
+
+fn theme_row(ui: Ui, row: ThemeRow) -> AnyElement {
+    match row {
+        ThemeRow::Installed { key, label, source } => view()
+            .test_id(&format!("fcitx-theme-{key}"))
+            .gap_2()
+            .p_3()
+            .border_b_1()
+            .border_color(line)
+            .child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .child(text(label.clone()).text_size(px(14.0)))
+                    .child(theme_tag(
+                        match source {
+                            "builtin" => ui.tr("Built-in", "内置"),
+                            "online" => ui.tr("Online", "在线"),
+                            _ => ui.tr("Installed", "已安装"),
+                        }
+                        .into(),
+                    )),
+            )
+            .child(
+                view()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(theme_choice(ui, key.clone(), label.clone(), true))
+                    .child(theme_choice(ui, key, label, false)),
+            )
+            .into_element(),
+        ThemeRow::Repository { index, repository } => {
+            let mut tags = view()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .child(theme_tag(ui.tr("Online", "在线").into()));
+            for topic in &repository.topics {
+                if matches!(topic.as_str(), "fcitx5-theme" | "fcitx5-skin") {
+                    tags = tags.child(theme_tag(topic.clone()));
+                }
+            }
+            let repository_url = format!("https://github.com/{}", repository.full_name);
+            view()
+                .test_id(&format!("online-theme-{}", repository.id))
+                .gap_2()
+                .p_3()
+                .border_b_1()
+                .border_color(line)
+                .child(text(repository.full_name.clone()).text_size(px(14.0)))
+                .child(tags)
+                .child(
+                    text(repository.description.unwrap_or_default())
+                        .text_size(px(13.0))
+                        .text_color(muted),
+                )
+                .child(action(
+                    ui,
+                    &format!("import-theme-{}", repository.id),
+                    "Get themes",
+                    "获取主题",
+                    false,
+                    move || ui.request(Pending::ImportTheme(index)),
+                ))
+                .child(action(
+                    ui,
+                    &format!("open-theme-{}", repository.id),
+                    "Open repository",
+                    "打开仓库",
+                    false,
+                    move || {
+                        let url = repository_url.clone();
+                        spawn(async move {
+                            if !open_url(url).await {
+                                ui.error.set(Some(
+                                    ui.tr("Could not open the repository.", "无法打开仓库。")
+                                        .into(),
+                                ));
+                            }
+                        });
+                    },
+                ))
+                .into_element()
+        }
+    }
+}
+
+fn selected_theme_name(ui: Ui, key: &str) -> String {
+    ui.state.with(|state| {
+        state
+            .fcitx_choices
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| key.into())
+    })
+}
+
 fn fcitx_appearance(ui: Ui) -> AnyElement {
-    let themes = skin::fcitx5::builtin_theme_choices();
     section(ui, "Fcitx5 themes", "Fcitx5 主题")
-        .child(caption(ui, "Linux only. Choose a light/dark pair; optional rounding is available for Catppuccin themes.", "仅适用于 Linux。选择亮色和暗色主题；Catppuccin 主题支持可选圆角。"))
-        .child(when(move || !ui.state.with(|state| state.fcitx_supported), move || caption(ui, "Fcitx5 is unavailable in this session. Install/start it, then refresh diagnostics.", "当前会话无法使用 Fcitx5。请安装或启动后刷新诊断。")))
-        .child(picker(ui, "fcitx-light", "Light theme", "亮色主题", themes.clone(), move || ui.light_theme.get(), move |value| ui.light_theme.set(value)))
+        .child(caption(ui, "Choose light and dark themes from the list, then apply. Online sources: fcitx5-theme and fcitx5-skin; duplicate repositories are merged.", "在列表中选择亮色与暗色主题后应用。在线来源：fcitx5-theme 与 fcitx5-skin，重复仓库会合并。"))
+        .child(action(ui, "fetch-fcitx-themes", "Refresh online themes", "刷新在线主题", false, move || ui.send(Command::SearchFcitxThemes)))
+        .child(input().test_id("theme-filter").value(move || ui.theme_filter.get()).placeholder(move || ui.tr("Filter themes or repositories", "筛选主题或仓库")).label(move || SharedString::from(ui.tr("Filter themes or repositories", "筛选主题或仓库"))).min_h(px(38.0)).px_3().text_size(px(14.0)).bg(surface).text_color(ink).rounded(px(6.0)).border_1().border_color(line).focus(|style| style.outline(px(2.0)).outline_color(accent)).on_change(move |value: &str| ui.theme_filter.set(value.to_owned())))
+        .child(text(move || format!("{}: {}\n{}: {}", ui.tr("Light", "亮色"), selected_theme_name(ui,&ui.light_theme.get()), ui.tr("Dark", "暗色"), selected_theme_name(ui,&ui.dark_theme.get()))).text_size(px(13.0)).text_color(muted))
+        .child(dynamic(move || {
+            let filter = ui.theme_filter.get().to_lowercase();
+            let snapshot = ui.state.get();
+            let builtin = skin::fcitx5::builtin_theme_choices();
+            let mut rows = Vec::new();
+            for (key, label) in snapshot.fcitx_choices {
+                if !label.to_lowercase().contains(&filter) { continue; }
+                let source = if builtin.iter().any(|(name, _)| name == &key) { "builtin" } else if key.starts_with("snout-online-") { "online" } else { "installed" };
+                rows.push(ThemeRow::Installed { key, label, source });
+            }
+            for (index, repository) in snapshot.fcitx_repositories.into_iter().enumerate() {
+                if format!("{} {}", repository.full_name, repository.description.as_deref().unwrap_or_default()).to_lowercase().contains(&filter) {
+                    rows.push(ThemeRow::Repository { index, repository });
+                }
+            }
+            let rows = std::rc::Rc::new(rows);
+            let count = rows.len(); let keys = rows.clone();
+            virtual_list(count, move |at| {
+                let rows = rows.clone();
+                dynamic(move || rows.get(at.index()).map(|row| theme_row(ui,row.clone())).unwrap_or_else(|| view().into_element()))
+            }).keys(move || keys.iter().map(ThemeRow::identity).collect::<Vec<_>>()).h(px(340.0))
+              .empty(caption(ui, "No matching themes.", "没有匹配的主题。"))
+        }))
+        .child(when(move || !ui.state.with(|state| state.fcitx_catalog_loaded), move || caption(ui, "Online themes have not been fetched. Built-in themes work offline.", "尚未获取在线主题，内置主题可离线使用。")))
+        .child(caption(ui, "Rounded corners require theme support.", "圆角需主题支持。"))
         .child(rounding(ui, "fcitx-light-rounded", true))
-        .child(picker(ui, "fcitx-dark", "Dark theme", "暗色主题", themes, move || ui.dark_theme.get(), move |value| ui.dark_theme.set(value)))
         .child(rounding(ui, "fcitx-dark-rounded", false))
-        .child(button().test_id("apply-fcitx").disabled(move || ui.locked() || !ui.state.with(|state| state.fcitx_supported))
-            .px_4().py_2().rounded(px(6.0)).border_1().border_color(line).focus(|style| style.outline(px(2.0)).outline_color(accent).outline_offset(px(2.0)))
-            .on_press(move || ui.request(Pending::Fcitx)).child(text(move || ui.tr("Apply theme pair", "应用主题组合"))))
+        .child(action(ui, "apply-fcitx", "Apply theme pair", "应用主题组合", true, move || ui.request(Pending::Fcitx)))
         .into_element()
 }
 
@@ -1658,7 +1924,7 @@ fn rounding(ui: Ui, id: &'static str, light: bool) -> AnyElement {
                         ui.dark_round.set(*checked)
                     }
                 })
-                .child(text(move || ui.tr("Rounded corners", "圆角")))
+                .child(text(move || ui.tr(if light { "Light theme rounded corners" } else { "Dark theme rounded corners" }, if light { "亮色主题圆角" } else { "暗色主题圆角" })))
         },
     )
     .into_element()
@@ -1693,12 +1959,49 @@ fn builtin_appearance(ui: Ui) -> AnyElement {
         );
     }
     section(ui, "Built-in skin patches", "内置皮肤补丁")
-        .child(caption(ui, "Squirrel / Weasel presets. Linux uses the Fcitx5 themes above; the patch key remains editable in Settings.", "鼠须管 / 小狼毫预设。Linux 使用上方的 Fcitx5 主题；补丁 key 仍可在设置中编辑。"))
+        .child(caption(
+            ui,
+            "Presets for the current Squirrel / Weasel engine.",
+            "适用于当前鼠须管 / 小狼毫引擎的皮肤预设。",
+        ))
         .child(scroll().h(px(200.0)).child(list))
-        .child(picker(ui, "default-skin", "Default skin", "默认皮肤", presets, move || ui.default_skin.get(), move |value| ui.default_skin.set(value)))
-        .child(button().test_id("apply-skins").disabled(move || ui.locked() || !ui.state.with(|state| matches!(state.appearance, Some(application::AppearanceTarget::ThemePatch(_)))))
-            .px_4().py_2().rounded(px(6.0)).border_1().border_color(line).focus(|style| style.outline(px(2.0)).outline_color(accent).outline_offset(px(2.0)))
-            .on_press(move || ui.request(Pending::Skins)).child(text(move || ui.tr("Write presets & redeploy", "写入预设并部署"))))
+        .child(picker(
+            ui,
+            "default-skin",
+            "Default skin",
+            "默认皮肤",
+            presets,
+            move || ui.default_skin.get(),
+            move |value| ui.default_skin.set(value),
+        ))
+        .child(
+            button()
+                .test_id("apply-skins")
+                .disabled(move || {
+                    ui.locked()
+                        || !ui.state.with(|state| {
+                            matches!(
+                                state.appearance,
+                                Some(application::AppearanceTarget::ThemePatch(_))
+                            )
+                        })
+                })
+                .px_4()
+                .py_2()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(line)
+                .focus(|style| {
+                    style
+                        .outline(px(2.0))
+                        .outline_color(accent)
+                        .outline_offset(px(2.0))
+                })
+                .on_press(move || ui.request(Pending::Skins))
+                .child(text(move || {
+                    ui.tr("Write presets & redeploy", "写入预设并部署")
+                })),
+        )
         .into_element()
 }
 
@@ -1710,7 +2013,7 @@ fn settings(ui: Ui) -> AnyElement {
             .child(caption(ui, "Desktop appearance follows your operating system.", "桌面外观跟随操作系统。"))
             .child(config_picker(ui, "data-policy", "User data policy", "用户数据策略", &[("prompt", "Ask each time / 每次询问"), ("preserve", "Preserve / 保留"), ("discard", "Discard / 丢弃")], |config| config.user_data_policy.clone(), |config, value| config.user_data_policy = value))
             .child(config_picker(ui, "rime-auto-setup", "Rime integration", "Rime 集成", &[("ask", "Ask / 询问"), ("on", "Automatic / 自动"), ("off", "Manual / 手动")], |config| match config.rime_auto_setup { None => "ask", Some(true) => "on", Some(false) => "off" }.into(), |config, value| config.rime_auto_setup = match value.as_str() { "on" => Some(true), "off" => Some(false), _ => None }))
-            .child(field(ui, "skin-patch-key", "Default skin patch key", "默认皮肤补丁 key", false, |config| config.skin_patch_key.clone(), |config, value| config.skin_patch_key = value)))
+            .child(when(move || ui.state.with(|state| matches!(state.appearance, Some(application::AppearanceTarget::ThemePatch(_)))), move || field(ui, "skin-patch-key", "Default skin patch key", "默认皮肤补丁 key", false, |config| config.skin_patch_key.clone(), |config, value| config.skin_patch_key = value))))
         .child(section(ui, "Downloads & network", "下载与网络").min_w(px(300.0)).flex_1()
             .child(toggle(ui, "mirror", "Use CNB mirror", "使用 CNB 镜像", |config| config.use_mirror, |config, value| config.use_mirror = value))
             .child(config_picker(ui, "download-threads", "Download threads", "下载线程数", &[("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5"), ("6", "6"), ("7", "7"), ("8", "8")], |config| config.download_threads.to_string(), |config, value| { if let Ok(value) = value.parse() { config.download_threads = value; } }))
@@ -1871,4 +2174,153 @@ fn activity(ui: Ui) -> AnyElement {
                 .child(action(ui, "export-zsh", "Export zsh…", "导出 zsh…", false, move || ui.export(controller::completion(CompletionShell::Zsh), "_snout")))
                 .child(action(ui, "export-fish", "Export fish…", "导出 fish…", false, move || ui.export(controller::completion(CompletionShell::Fish), "snout.fish")))))
         .into_element()
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+    use nsh_core::{element::Root, Size};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    #[component]
+    fn ThemeFixture(props: AppProps) -> impl IntoElement {
+        crate::theme::install();
+        let paths = Paths {
+            config: props.config_path.get().to_string().into(),
+            rime: props.rime_path.get().to_string().into(),
+            cache: props.cache_path.get().to_string().into(),
+        };
+        let ui = new_ui(Controller::start(Some(paths)).expect("isolated controller"));
+        ui.draft.update(|config| config.language = "en".into());
+        ui.state.set(Snapshot {
+            config: Some(Config::default()),
+            fcitx_supported: true,
+            appearance: Some(application::AppearanceTarget::Fcitx5Theme),
+            fcitx_choices: vec![
+                ("OriDark".into(), "OriDark".into()),
+                ("OriLight".into(), "OriLight".into()),
+                ("catppuccin-latte-sky".into(), "Catppuccin Latte Sky".into()),
+                ("snout-online-42-fixed".into(), "Online fixed theme".into()),
+            ],
+            fcitx_repositories: vec![snout::api::ThemeRepository {
+                id: 42,
+                full_name: "owner/sample-theme".into(),
+                default_branch: "main".into(),
+                description: Some("Sample online theme".into()),
+                topics: vec!["fcitx5-theme".into(), "fcitx5-skin".into()],
+                stargazers_count: 1,
+            }],
+            fcitx_catalog_loaded: true,
+            busy: false,
+            ..Snapshot::default()
+        });
+        ui.light_theme.set("OriLight".into());
+        ui.dark_theme.set("OriDark".into());
+        view()
+            .p_6()
+            .bg(canvas)
+            .text_color(ink)
+            .child(fcitx_appearance(ui))
+            .child(confirmation(ui))
+    }
+
+    fn fixture_props(directory: &std::path::Path) -> AppProps {
+        AppProps {
+            config_path: directory
+                .join("config.json")
+                .to_string_lossy()
+                .to_string()
+                .into(),
+            rime_path: directory.join("rime").to_string_lossy().to_string().into(),
+            cache_path: directory.join("cache").to_string_lossy().to_string().into(),
+        }
+    }
+
+    #[test]
+    fn topic_list_filters_selects_and_confirms_import_without_applying() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().to_owned();
+        let root = Root::new::<ThemeFixture>(move || fixture_props(&path));
+        let mut app = Headless::start(EngineConfig {
+            viewport: Size::new(px(1040.0), px(900.0)),
+            ui_sets: vec![nsh_base::registry()],
+            ..EngineConfig::new(root)
+        })
+        .expect("headless theme fixture");
+        app.first_render().expect("first fixture render");
+        app.wait_for("theme-light-OriDark")
+            .expect("virtualized built-in row");
+        assert!(app.shows("Built-in"));
+        assert!(!app
+            .screen()
+            .matches("fcitx-light-rounded")
+            .expect("rounding visibility"));
+        assert!(!app
+            .screen()
+            .matches("fcitx-dark-rounded")
+            .expect("rounding visibility"));
+        app.press("theme-light-catppuccin-latte-sky")
+            .expect("select theme with optional rounding");
+        app.wait_for("fcitx-light-rounded")
+            .expect("supported rounding switch");
+        assert!(!app
+            .screen()
+            .matches("fcitx-dark-rounded")
+            .expect("rounding visibility"));
+        app.press("theme-light-OriDark").expect("select light");
+        app.wait_until("light selection", Duration::from_secs(5), |screen| {
+            screen
+                .texts()
+                .iter()
+                .any(|text| text.contains("Light: OriDark"))
+        })
+        .expect("selection reflected");
+        assert!(!app
+            .screen()
+            .matches("fcitx-light-rounded")
+            .expect("rounding visibility"));
+        app.press("theme-light-snout-online-42-fixed")
+            .expect("select online theme");
+        assert!(!app
+            .screen()
+            .matches("fcitx-light-rounded")
+            .expect("rounding visibility"));
+        app.type_text("theme-filter", "sample-theme")
+            .expect("filter online");
+        app.wait_for("online-theme-42")
+            .expect("online row after filtering");
+        assert!(app.shows("Online"));
+        assert!(app.shows("fcitx5-theme"));
+        assert!(app.shows("fcitx5-skin"));
+        app.press("import-theme-42").expect("review import");
+        app.wait_for("confirm-cancel").expect("import confirmation");
+        assert!(app
+            .screen()
+            .texts()
+            .iter()
+            .any(|text| text.contains("Download ready-to-use themes.")));
+        app.press("confirm-cancel").expect("cancel import");
+        assert!(!directory.path().join("rime").exists());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    #[ignore = "requires a native display; used for screenshot review"]
+    fn native_theme_catalog_visual() {
+        use nsh_platform_linux as platform;
+        platform::gtk4::init().expect("GTK display");
+        let directory = tempfile::tempdir().expect("visual sandbox");
+        let path = directory.path().to_owned();
+        let root = platform::Root::new::<ThemeFixture>(move || fixture_props(&path));
+        let _ = platform::run_app(
+            platform::AppSource::Rust(root),
+            platform::AppOptions {
+                title: "snout theme review".into(),
+                app_id: "io.github.snout.theme-review".into(),
+                size: (1040, 900),
+                ..Default::default()
+            },
+        );
+    }
 }

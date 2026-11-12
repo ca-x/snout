@@ -429,7 +429,13 @@ fn detect_schema_from_record(cache_dir: &Path, rime_dir: &Path) -> Option<Schema
 }
 
 fn detect_schema_from_files(config: &Config, rime_dir: &Path) -> Option<Schema> {
-    for schema in [Schema::Ice, Schema::Frost, Schema::Mint] {
+    for schema in [
+        Schema::Ice,
+        Schema::Frost,
+        Schema::Mint,
+        Schema::Wubi86Jidian,
+        Schema::Abcm,
+    ] {
         if schema_record_matches_files(schema, rime_dir) {
             return Some(schema);
         }
@@ -545,6 +551,9 @@ fn schema_record_matches_files(schema: Schema, rime_dir: &Path) -> bool {
         Schema::Ice => rime_dir.join("rime_ice.schema.yaml").exists(),
         Schema::Frost => rime_dir.join("rime_frost.schema.yaml").exists(),
         Schema::Mint => rime_dir.join("rime_mint.schema.yaml").exists(),
+        Schema::Wubi86Jidian | Schema::Abcm => rime_dir
+            .join(format!("{}.schema.yaml", schema.schema_id()))
+            .exists(),
     }
 }
 

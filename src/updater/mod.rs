@@ -4,6 +4,7 @@ pub mod ice;
 pub mod mint;
 pub mod model_patch;
 pub mod progress;
+pub mod repository;
 pub mod wanxiang;
 
 pub use self::base::{BaseUpdater, UpdateResult};
@@ -175,6 +176,20 @@ pub async fn update_all(
                 UpdateComponent::Scheme,
                 t.t("update.scheme"),
                 &e,
+            )),
+        }
+    } else if matches!(schema, Schema::Wubi86Jidian | Schema::Abcm) {
+        match (repository::RepositoryUpdater { base })
+            .update_scheme(schema, config, Some(&cancel), |event| {
+                emit(rescale_event(event, 0.05, 0.65))
+            })
+            .await
+        {
+            Ok(result) => results.push(result),
+            Err(error) => results.push(BaseUpdater::fail_result(
+                UpdateComponent::Scheme,
+                t.t("update.scheme"),
+                &error,
             )),
         }
     } else {

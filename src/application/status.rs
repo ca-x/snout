@@ -86,6 +86,11 @@ pub async fn build_config_status_snapshot(
             .check_scheme_update(None)
             .await
             .ok()
+    } else if matches!(schema, Schema::Wubi86Jidian | Schema::Abcm) {
+        updater::repository::RepositoryUpdater { base }
+            .check_scheme_update(&schema, None)
+            .await
+            .ok()
     } else {
         updater::mint::MintUpdater { base }
             .check_scheme_update(None)

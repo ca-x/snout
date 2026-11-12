@@ -53,6 +53,8 @@ pub enum Schema {
     Ice,   // 雾凇
     Frost, // 白霜
     Mint,  // 薄荷
+    Wubi86Jidian,
+    Abcm,
 }
 
 impl Schema {
@@ -71,6 +73,8 @@ impl Schema {
             Schema::Ice,
             Schema::Frost,
             Schema::Mint,
+            Schema::Wubi86Jidian,
+            Schema::Abcm,
         ]
     }
 
@@ -89,6 +93,8 @@ impl Schema {
             Schema::Ice => "schema.ice",
             Schema::Frost => "schema.frost",
             Schema::Mint => "schema.mint",
+            Schema::Wubi86Jidian => "schema.wubi86_jidian",
+            Schema::Abcm => "schema.abcm",
         }
     }
 
@@ -107,6 +113,8 @@ impl Schema {
             Schema::Ice => ICE_OWNER,
             Schema::Frost => FROST_OWNER,
             Schema::Mint => MINT_OWNER,
+            Schema::Wubi86Jidian => "KyleBing",
+            Schema::Abcm => "cloudwu",
             _ => WX_OWNER,
         }
     }
@@ -117,6 +125,8 @@ impl Schema {
             Schema::Ice => ICE_REPO,
             Schema::Frost => FROST_REPO,
             Schema::Mint => MINT_REPO,
+            Schema::Wubi86Jidian => "rime-wubi86-jidian",
+            Schema::Abcm => "abcm",
             _ => WX_REPO,
         }
     }
@@ -137,6 +147,8 @@ impl Schema {
             Schema::Ice => "full.zip",
             Schema::Frost => "rime-frost-schemas.zip",
             Schema::Mint => MINT_ARCHIVE,
+            Schema::Wubi86Jidian => "rime-wubi86-jidian.zip",
+            Schema::Abcm => "abcm.zip",
         }
     }
 
@@ -156,6 +168,7 @@ impl Schema {
             Schema::Ice => Some("all_dicts.zip"),
             Schema::Frost => None, // 白霜词库内嵌在方案 zip 中
             Schema::Mint => None,  // 薄荷随方案仓库一起分发
+            Schema::Wubi86Jidian | Schema::Abcm => None,
         }
     }
 
@@ -171,12 +184,15 @@ impl Schema {
 
     /// 是否为万象系方案
     pub fn is_wanxiang(&self) -> bool {
-        !matches!(self, Schema::Ice | Schema::Frost | Schema::Mint)
+        !matches!(
+            self,
+            Schema::Ice | Schema::Frost | Schema::Mint | Schema::Wubi86Jidian | Schema::Abcm
+        )
     }
 
     /// 是否支持将万象模型 patch 到当前方案
     pub fn supports_model_patch(&self) -> bool {
-        true
+        !matches!(self, Schema::Wubi86Jidian | Schema::Abcm)
     }
 
     /// Rime schema id (用于 patch 文件名)
@@ -195,6 +211,8 @@ impl Schema {
             Schema::Ice => "rime_ice",
             Schema::Frost => "rime_frost",
             Schema::Mint => "rime_mint",
+            Schema::Wubi86Jidian => "wubi86_jidian",
+            Schema::Abcm => "abcm",
         }
     }
 
@@ -222,6 +240,10 @@ impl Schema {
             "ice" | "wusong" | "雾凇" => Ok(Schema::Ice),
             "frost" | "baishuang" | "白霜" => Ok(Schema::Frost),
             "mint" | "bohe" | "薄荷" => Ok(Schema::Mint),
+            "jidian" | "wubi86-jidian" | "wubi86_jidian" | "极点五笔" => {
+                Ok(Schema::Wubi86Jidian)
+            }
+            "abcm" | "abc" | "智能ABC" | "智能abc" => Ok(Schema::Abcm),
             _ => anyhow::bail!("{}: {}", L10n::new(lang).t("schema.unknown"), s),
         }
     }
@@ -241,6 +263,8 @@ impl Schema {
             "full.zip" => Some(Schema::Ice),
             "rime-frost-schemas.zip" => Some(Schema::Frost),
             MINT_ARCHIVE => Some(Schema::Mint),
+            "rime-wubi86-jidian.zip" => Some(Schema::Wubi86Jidian),
+            "abcm.zip" => Some(Schema::Abcm),
             _ => None,
         }
     }

@@ -68,7 +68,7 @@ impl Client {
 
         Ok(UpdateInfo {
             name: archive_name.into(),
-            url: format!("https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"),
+            url: format!("https://codeload.github.com/{owner}/{repo}/zip/{sha}"),
             update_time: String::new(),
             tag: sha.into(),
             description: format!("{owner}/{repo}@{branch}"),
@@ -334,7 +334,7 @@ fn find_matching_asset_info(
         })
 }
 
-fn github_status_error(
+pub(super) fn github_status_error(
     client: &Client,
     status: reqwest::StatusCode,
     headers: &reqwest::header::HeaderMap,

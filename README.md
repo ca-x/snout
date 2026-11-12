@@ -8,14 +8,14 @@
 >
 > The snout of a weevil — long, precise, reaching exactly where it needs to go. Just like that, snout reaches into every component of your Rime setup.
 
-Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](https://github.com/ca-x/rime-wanxiang-updater)，支持 **万象**、**雾凇**、**白霜**、**薄荷** 四大方案。
+Rime 输入法初始化与更新工具，Rust 重写的 [rime-wanxiang-updater](https://github.com/ca-x/rime-wanxiang-updater)，支持 **万象**、**雾凇**、**白霜**、**薄荷**、**极点五笔86** 和 **智能 ABC·改**。
 
 ## 特性
 
 - 🔄 **一键更新**: 方案、词库、模型一键检查并更新
 - 🎨 **TUI 界面**: ratatui 终端界面，键盘操作
 - 🖥️ **原生桌面端**: NSH 构建的 Windows / macOS / Linux 工作台，与 CLI/TUI 共用 Rust 核心
-- 🌐 **多方案**: 万象 (10 变体) + 雾凇 + 白霜 + 薄荷
+- 🌐 **多方案**: 万象 (10 变体) + 雾凇 + 白霜 + 薄荷 + 极点五笔86 + 智能 ABC·改
 - 🧠 **模型 Patch**: 自动下载万象语法模型，并可按方案写入对应 schema patch
 - 🎭 **皮肤 Patch**: 内置 6 个主题一键切换
 - 🌍 **中英双语**: `--lang en` / `--lang zh`
@@ -209,6 +209,45 @@ snout --lang en --update
 | 雾凇拼音 | [iDvel/rime-ice](https://github.com/iDvel/rime-ice) | 16.6k ⭐ |
 | 白霜拼音 | [gaboolic/rime-frost](https://github.com/gaboolic/rime-frost) | 3.1k ⭐ |
 | 薄荷输入法 | [Mintimate/oh-my-rime](https://github.com/Mintimate/oh-my-rime) | 薄荷系配置模板与词库 |
+| 极点五笔86 | [KyleBing/rime-wubi86-jidian](https://github.com/KyleBing/rime-wubi86-jidian) | 五笔86；`--schema jidian` |
+| 智能 ABC·改 | [cloudwu/abcm](https://github.com/cloudwu/abcm) | 智能 ABC 改版；`--schema abcm` |
+
+### 极点五笔86与智能 ABC·改
+
+桌面端选择方案并保存后，点击“安装所选方案”；CLI 使用：
+
+```bash
+snout --schema jidian --scheme
+snout --schema abcm --scheme
+```
+
+`jidian`（别名 `wubi86-jidian`）使用 `KyleBing/rime-wubi86-jidian`；
+`abcm`（别名 `abc`）使用 `cloudwu/abcm`。两者按上游 `master` 提交检查更新，
+词库随方案安装，不提供独立词库更新或万象模型补丁。ABC 会在缺少本地词典时补齐
+`rime/rime-luna-pinyin` 的词典，需要 Rime Lua 插件。已有个性化 `.custom.yaml` 和平台皮肤不会被上游模板覆盖；新方案会加入切换菜单。
+
+### Linux Fcitx5 在线主题
+
+桌面主题页使用可筛选列表，以“内置 / 在线”标签区分来源；本机另外安装的主题标记“已安装”。
+点击“刷新在线主题”从 GitHub 的 `fcitx5-theme`、`fcitx5-skin` topic 获取仓库，跨 topic 按仓库 ID 去重。
+获取主题后，选择亮色与暗色并应用；获取本身不会切换当前主题。
+
+```bash
+# 列出内置、已安装和去重后的在线仓库；支持 --json
+snout --list-fcitx5-themes --json
+
+# 将指定 topic 仓库中的可用主题导入本地
+snout --fetch-fcitx5-theme thep0y/fcitx5-themes-candlelight --json
+
+# 使用列表或获取结果中的主题 key 应用亮暗组合
+snout --fcitx5-theme-light <light-key> --fcitx5-theme-dark <dark-key>
+```
+
+在线查询使用共享 GitHub 认证（配置 Token、`GH_TOKEN`、`GITHUB_TOKEN`、可选的本机 `gh`）。
+仅导入包含 `theme.conf` 的可直接使用主题，不执行仓库安装脚本；需先生成的仓库会提示参阅 README。
+内置主题保持离线可用；TUI 的主题选择器也会列出已获取的在线主题。
+圆角需主题支持，仅为支持切换的主题显示开关。
+桌面端按实际引擎隐藏不适用的皮肤选项，Linux 不显示鼠须管 / 小狼毫补丁设置，其他平台不显示 Fcitx5 设置。
 
 ### 功能支持矩阵
 

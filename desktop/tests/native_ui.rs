@@ -419,3 +419,13 @@ fn navigation_waits_for_a_queued_engine_event_before_querying_page_controls() {
     assert_ne!(persisted(&paths).auto_update_countdown, 99);
     assert!(!paths.rime.exists());
 }
+
+#[test]
+fn unavailable_engine_skin_controls_are_hidden_in_preview() {
+    let (_root, _paths, mut app) = workbench();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    assert!(!app.shows("Fcitx5 themes"));
+    assert!(!app.shows("Built-in skin patches"));
+    navigate(&mut app, "nav-settings", "General");
+    assert!(!app.shows("Default skin patch key"));
+}

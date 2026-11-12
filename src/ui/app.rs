@@ -1434,7 +1434,23 @@ fn refresh_config_status(app: &mut App) {
 
 fn available_skin_choices(app: &App) -> Vec<(String, String)> {
     match skin_menu_target(app) {
-        Some(SkinMenuTarget::Fcitx5Theme) => crate::skin::fcitx5::builtin_theme_choices(),
+        Some(SkinMenuTarget::Fcitx5Theme) => crate::skin::fcitx5::available_theme_choices()
+            .unwrap_or_else(|_| crate::skin::fcitx5::builtin_theme_choices())
+            .into_iter()
+            .map(|(key, name)| {
+                let source = if key.starts_with("snout-online-") {
+                    "在线 / Online"
+                } else if crate::skin::fcitx5::builtin_theme_choices()
+                    .iter()
+                    .any(|(builtin, _)| builtin == &key)
+                {
+                    "内置 / Built-in"
+                } else {
+                    "已安装 / Installed"
+                };
+                (key, format!("[{source}] {name}"))
+            })
+            .collect(),
         Some(SkinMenuTarget::ThemePatch(_)) => {
             crate::skin::builtin::list_available_skins(app.t.lang())
         }
@@ -2844,7 +2860,7 @@ mod tests {
     #[test]
     fn current_schema_index_tracks_active_schema() {
         assert_eq!(current_schema_index(Schema::WanxiangBase), 0);
-        assert_eq!(current_schema_index(Schema::Mint), Schema::all().len() - 1);
+        assert_eq!(current_schema_index(Schema::Abcm), Schema::all().len() - 1);
     }
 
     #[test]

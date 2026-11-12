@@ -1,6 +1,8 @@
 mod auth;
 mod download;
 mod releases;
+mod themes;
+pub use themes::ThemeRepository;
 
 use crate::i18n::{L10n, Lang};
 use crate::types::*;
