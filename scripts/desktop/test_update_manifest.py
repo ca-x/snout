@@ -21,7 +21,7 @@ class UpdateManifestTests(unittest.TestCase):
 
     def test_manifest_covers_all_platforms_with_pinned_urls_and_verified_sizes(self):
         self.assets()
-        manifest = json.loads(write_manifest(self.root, "v1.2.3", "更新说明").read_text())
+        manifest = json.loads(write_manifest(self.root, "v1.2.3", "更新说明").read_text(encoding="utf-8"))
         self.assertEqual(manifest["id"], "io.github.snout.desktop")
         self.assertEqual(manifest["version"], "1.2.3")
         self.assertEqual(manifest["notes"], "更新说明")
