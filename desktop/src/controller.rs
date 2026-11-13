@@ -40,6 +40,12 @@ pub enum ThemeTask {
     Apply,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppearanceTask {
+    Candidate,
+    Skins,
+}
+
 #[derive(Clone, Debug)]
 pub struct ThemeDownload {
     pub repository_id: u64,
@@ -49,6 +55,8 @@ pub struct ThemeDownload {
 #[derive(Clone)]
 pub struct Snapshot {
     pub config: Option<Config>,
+    pub settings_saved: Option<bool>,
+    pub appearance_task: Option<AppearanceTask>,
     pub revision: u64,
     pub paths: Option<Paths>,
     pub engines: Vec<String>,
@@ -85,6 +93,8 @@ impl Default for Snapshot {
     fn default() -> Self {
         Self {
             config: None,
+            settings_saved: None,
+            appearance_task: None,
             revision: 0,
             paths: None,
             engines: Vec::new(),
@@ -123,6 +133,10 @@ pub enum Command {
     Refresh,
     CheckUpdates,
     Save(Box<Config>),
+    InstallScheme {
+        config: Box<Config>,
+        preserve: bool,
+    },
     Update {
         action: UpdateAction,
         preserve: bool,
@@ -166,6 +180,7 @@ impl Command {
     fn report_command(&self) -> Option<&'static str> {
         match self {
             Self::Update { action, .. } => Some(action.command()),
+            Self::InstallScheme { .. } => Some("install"),
             Self::FcitxThemes { .. } => Some("fcitx5-theme"),
             _ => None,
         }
@@ -360,8 +375,14 @@ impl Controller {
         self.stop_countdown();
         let reporting = command.report_command().is_some();
         let theme_task = command.theme_task();
+        let appearance_task = match command {
+            Command::CandidateSize(_) => Some(AppearanceTask::Candidate),
+            Command::ApplySkins { .. } => Some(AppearanceTask::Skins),
+            _ => None,
+        };
         self.worker.submit(command)?;
         self.snapshot.theme_task = theme_task;
+        self.snapshot.appearance_task = appearance_task;
         if reporting {
             self.snapshot.report = None;
         }
@@ -426,14 +447,30 @@ impl Controller {
                     let activity = std::mem::take(&mut self.snapshot.activity);
                     let previous_report = self.snapshot.report.take();
                     let theme_task = self.snapshot.theme_task.take();
+                    let appearance_task = self.snapshot.appearance_task.take();
                     self.snapshot = *snapshot;
                     self.snapshot.theme_task = theme_task;
+                    self.snapshot.appearance_task = appearance_task;
                     self.snapshot.status = status;
                     self.snapshot.error = error;
                     self.snapshot.busy = false;
                     self.snapshot.progress = if status == Status::Success { 1.0 } else { 0.0 };
                     self.snapshot.activity = activity;
                     self.snapshot.report = report.or(previous_report);
+                    if let Some(saved) = self.snapshot.settings_saved {
+                        self.snapshot.activity.push(settings_result(saved).message);
+                        self.snapshot.activity.push(
+                            match status {
+                                Status::Success => "Installation completed / 安装完成",
+                                Status::PartialFailure => {
+                                    "Installation partially failed / 安装部分失败"
+                                }
+                                Status::Cancelled => "Installation cancelled / 安装已取消",
+                                _ => "Installation not completed / 安装未完成",
+                            }
+                            .into(),
+                        );
+                    }
                     self.snapshot.activity.push(match &self.snapshot.error {
                         Some(error) => error.clone(),
                         None => format!("{status:?}"),
@@ -510,6 +547,7 @@ struct WorkerEnvironment {
     fcitx_repositories: Vec<snout::api::ThemeRepository>,
     fcitx_catalog_loaded: bool,
     theme_download: Option<ThemeDownload>,
+    settings_saved: Option<bool>,
 }
 
 impl WorkerEnvironment {
@@ -532,6 +570,7 @@ impl WorkerEnvironment {
             fcitx_repositories: Vec::new(),
             fcitx_catalog_loaded: false,
             theme_download: None,
+            settings_saved: None,
         }
     }
 }
@@ -671,6 +710,7 @@ fn snapshot(manager: &Manager, environment: &WorkerEnvironment, revision: u64) -
     };
     Snapshot {
         config: Some(config.clone()),
+        settings_saved: environment.settings_saved,
         revision,
         paths: Some(Paths {
             config: manager.config_path.clone(),
@@ -735,27 +775,8 @@ fn worker_loop(
         let report_command = request.command.report_command();
         let result = runtime.block_on(execute(&mut manager, &mut environment, request, events));
         revision += 1;
-        let (report, status, error) = match result {
-            Ok((report, status)) => (report, status, None),
-            Err(error) => {
-                let status = if error.downcast_ref::<UpdateCancelled>().is_some() {
-                    Status::Cancelled
-                } else {
-                    Status::Error
-                };
-                let error = redact(&error.to_string(), &manager.config);
-                let report = report_command
-                    .map(|command| {
-                        let mut report =
-                            Report::from_results(command, manager.config.schema, Vec::new());
-                        report.ok = false;
-                        report.error = Some(error.clone());
-                        report_json(report, &manager.config)
-                    })
-                    .transpose()?;
-                (report, status, Some(error))
-            }
-        };
+        let (report, status, error) =
+            command_outcome(result, report_command, &manager, &environment)?;
         let snapshot = snapshot(&manager, &environment, revision);
         events.send(Event::Finished {
             snapshot: Box::new(snapshot),
@@ -768,12 +789,49 @@ fn worker_loop(
     Ok(())
 }
 
+fn command_outcome(
+    result: Result<(Option<String>, Status)>,
+    report_command: Option<&'static str>,
+    manager: &Manager,
+    environment: &WorkerEnvironment,
+) -> Result<(Option<String>, Status, Option<String>)> {
+    Ok(match result {
+        Ok((report, status)) => (report, status, None),
+        Err(error) => {
+            let status = if error.downcast_ref::<UpdateCancelled>().is_some() {
+                Status::Cancelled
+            } else {
+                Status::Error
+            };
+            let completed = snout::updater::completed_results(&error);
+            let error = redact(&error.to_string(), &manager.config);
+            let report = report_command
+                .map(|command| {
+                    let mut report =
+                        Report::from_results(command, manager.config.schema, completed);
+                    report.ok = false;
+                    report.error = Some(error.clone());
+                    if command == "install" {
+                        report
+                            .results
+                            .insert(0, settings_result(environment.settings_saved == Some(true)));
+                    }
+                    report_json(report, &manager.config)
+                })
+                .transpose()?;
+            (report, status, Some(error))
+        }
+    })
+}
+
 async fn execute(
     manager: &mut Manager,
     environment: &mut WorkerEnvironment,
     request: Request,
     events: &Sender<Event>,
 ) -> Result<(Option<String>, Status)> {
+    environment.settings_saved =
+        matches!(request.command, Command::InstallScheme { .. }).then_some(false);
     request.cancel.checkpoint()?;
     match request.command {
         Command::Refresh => {
@@ -804,6 +862,23 @@ async fn execute(
             }
         }
         Command::Save(config) => application::save_settings(manager, *config)?,
+        Command::InstallScheme { config, preserve } => {
+            return install_scheme(
+                manager,
+                environment,
+                *config,
+                preserve,
+                request.cancel,
+                |operation, cancel| async move {
+                    application::run_update(UpdateAction::All, &operation, cancel, |mut event| {
+                        event.detail = redact(&event.detail, &operation.config);
+                        let _ = events.send(Event::Progress(event));
+                    })
+                    .await
+                },
+            )
+            .await;
+        }
         Command::AddExclusion(pattern) => manager.add_exclude_pattern(pattern)?,
         Command::EditExclusion(index, pattern) => manager.update_exclude_pattern(index, pattern)?,
         Command::RemoveExclusion(index) => manager.remove_exclude_pattern(index)?,
@@ -921,14 +996,86 @@ async fn execute(
     Ok((None, Status::Success))
 }
 
-fn report_outcome(report: Report, config: &Config) -> Result<(Option<String>, Status)> {
-    let status = if report.ok {
+fn settings_result(saved: bool) -> snout::report::ComponentResult {
+    snout::report::ComponentResult {
+        component: "settings",
+        display_name: "Settings / 设置".into(),
+        old_version: "-".into(),
+        new_version: "-".into(),
+        success: saved,
+        message: if saved {
+            "Settings saved / 设置已保存"
+        } else {
+            "Settings not saved / 设置未保存"
+        }
+        .into(),
+    }
+}
+
+async fn install_scheme<F, Fut>(
+    manager: &mut Manager,
+    environment: &mut WorkerEnvironment,
+    config: Config,
+    preserve: bool,
+    cancel: CancelSignal,
+    install: F,
+) -> Result<(Option<String>, Status)>
+where
+    F: FnOnce(Manager, CancelSignal) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<snout::updater::UpdateResult>>>,
+{
+    if !environment.live {
+        bail!("Updates are disabled in isolated preview / 隔离预览中已禁用更新");
+    }
+    let mut saved = false;
+    let results = save_then_install(manager, config, preserve, cancel, &mut saved, install).await;
+    environment.settings_saved = Some(saved);
+    let mut report = Report::from_results("install", manager.config.schema, results?);
+    // Saving preferences must not count as a successful installation component.
+    let status = report_status(&report);
+    report.results.insert(0, settings_result(saved));
+    Ok((Some(report_json(report, &manager.config)?), status))
+}
+
+async fn save_then_install<F, Fut>(
+    manager: &mut Manager,
+    config: Config,
+    preserve: bool,
+    cancel: CancelSignal,
+    saved: &mut bool,
+    install: F,
+) -> Result<Vec<snout::updater::UpdateResult>>
+where
+    F: FnOnce(Manager, CancelSignal) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<snout::updater::UpdateResult>>>,
+{
+    *saved = false;
+    cancel.checkpoint()?;
+    application::save_settings(manager, config)?;
+    *saved = true;
+    cancel.checkpoint()?;
+    let mut operation = Manager {
+        config: manager.config.clone(),
+        config_path: manager.config_path.clone(),
+        rime_dir: manager.rime_dir.clone(),
+        cache_dir: manager.cache_dir.clone(),
+    };
+    operation.config.user_data_policy = if preserve { "preserve" } else { "discard" }.into();
+    install(operation, cancel).await
+}
+
+fn report_status(report: &Report) -> Status {
+    if report.ok {
         Status::Success
     } else if report.results.iter().any(|result| result.success) {
         Status::PartialFailure
     } else {
         Status::Error
-    };
+    }
+}
+
+fn report_outcome(report: Report, config: &Config) -> Result<(Option<String>, Status)> {
+    let status = report_status(&report);
     Ok((Some(report_json(report, config)?), status))
 }
 
@@ -969,6 +1116,384 @@ mod tests {
     fn run(controller: &mut Controller, command: Command) {
         controller.submit(command).expect("submit command");
         ready(controller);
+    }
+
+    fn install_fixture(root: &TempDir) -> (Manager, WorkerEnvironment) {
+        let paths = paths(root);
+        let manager = Manager::with_paths(paths.config, paths.rime, paths.cache).unwrap();
+        manager.save().unwrap();
+        // Mark only the environment live; never detect or touch host input methods.
+        let mut environment = WorkerEnvironment::new(false, &manager);
+        environment.live = true;
+        (manager, environment)
+    }
+
+    fn install_json(
+        result: Result<(Option<String>, Status)>,
+        manager: &Manager,
+        environment: &WorkerEnvironment,
+    ) -> (serde_json::Value, Status, Option<String>) {
+        let (json, status, error) =
+            command_outcome(result, Some("install"), manager, environment).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json.unwrap()).unwrap();
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["command"], "install");
+        assert!(json.get("config").is_none());
+        (json, status, error)
+    }
+
+    #[tokio::test]
+    async fn saved_settings_survive_install_error_or_cancellation_and_errors_are_redacted() {
+        for cancelled in [false, true] {
+            let root = TempDir::new().unwrap();
+            let (mut manager, mut environment) = install_fixture(&root);
+            std::fs::write(manager.scheme_record_path(), "installed A").unwrap();
+            let proposed = Config {
+                schema: Schema::Ice,
+                github_token: "install-secret-token".into(),
+                proxy_address: "user:password@localhost:1080".into(),
+                ..manager.config.clone()
+            };
+            let expected = serde_json::to_value(&proposed).unwrap();
+            let result = install_scheme(
+                &mut manager,
+                &mut environment,
+                proposed,
+                true,
+                CancelSignal::new(),
+                |operation, cancel| async move {
+                    let persisted: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&operation.config_path).unwrap())
+                            .unwrap();
+                    assert_eq!(
+                        persisted["schema"],
+                        serde_json::to_value(Schema::Ice).unwrap()
+                    );
+                    let message = format!(
+                        "{} via {}",
+                        operation.config.github_token, operation.config.proxy_address
+                    );
+                    if cancelled {
+                        cancel.cancel();
+                        cancel.checkpoint().with_context(|| message.clone())?;
+                    }
+                    bail!(message)
+                },
+            )
+            .await;
+            assert_eq!(environment.settings_saved, Some(true));
+            assert_eq!(serde_json::to_value(&manager.config).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(
+                    &std::fs::read(&manager.config_path).unwrap()
+                )
+                .unwrap(),
+                expected
+            );
+            assert_eq!(
+                std::fs::read_to_string(manager.scheme_record_path()).unwrap(),
+                "installed A"
+            );
+            assert!(!manager.rime_dir.exists());
+            let (report, status, error) = install_json(result, &manager, &environment);
+            assert_eq!(
+                status,
+                if cancelled {
+                    Status::Cancelled
+                } else {
+                    Status::Error
+                }
+            );
+            assert_eq!(report["ok"], false);
+            assert_eq!(report["schema"], serde_json::to_value(Schema::Ice).unwrap());
+            assert_eq!(report["results"][0]["component"], "settings");
+            assert_eq!(report["results"][0]["success"], true);
+            for output in [report.to_string(), error.unwrap()] {
+                assert!(!output.contains("install-secret-token"));
+                assert!(!output.contains("password"));
+                assert!(output.contains("[redacted]"));
+                assert!(output.contains("[redacted proxy]"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn install_pre_cancel_and_invalid_save_never_enter_install_or_write() {
+        for pre_cancelled in [false, true] {
+            let root = TempDir::new().unwrap();
+            let (mut manager, mut environment) = install_fixture(&root);
+            let original = std::fs::read(&manager.config_path).unwrap();
+            let mut proposed = manager.config.clone();
+            proposed.download_threads = if pre_cancelled { 8 } else { 0 };
+            let cancel = CancelSignal::new();
+            if pre_cancelled {
+                cancel.cancel();
+            }
+            let result = install_scheme(
+                &mut manager,
+                &mut environment,
+                proposed,
+                true,
+                cancel,
+                |_, _| async { panic!("install must not start") },
+            )
+            .await;
+            let (report, status, _) = install_json(result, &manager, &environment);
+            assert_eq!(
+                status,
+                if pre_cancelled {
+                    Status::Cancelled
+                } else {
+                    Status::Error
+                }
+            );
+            assert_eq!(environment.settings_saved, Some(false));
+            assert_eq!(report["results"][0]["success"], false);
+            assert_eq!(std::fs::read(&manager.config_path).unwrap(), original);
+            assert_eq!(manager.config.download_threads, 4);
+            assert!(!manager.rime_dir.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn install_preserve_overrides_only_operation_config_and_settings_do_not_mask_status() {
+        use snout::updater::{BaseUpdater, UpdateComponent};
+        for preserve in [false, true] {
+            for expected_status in [Status::Success, Status::PartialFailure, Status::Error] {
+                let root = TempDir::new().unwrap();
+                let (mut manager, mut environment) = install_fixture(&root);
+                let proposed = manager.config.clone();
+                let result = install_scheme(
+                    &mut manager,
+                    &mut environment,
+                    proposed,
+                    preserve,
+                    CancelSignal::new(),
+                    |operation, _| async move {
+                        assert_eq!(
+                            operation.config.user_data_policy,
+                            if preserve { "preserve" } else { "discard" }
+                        );
+                        let persisted: Config =
+                            serde_json::from_slice(&std::fs::read(&operation.config_path).unwrap())
+                                .unwrap();
+                        assert_eq!(persisted.user_data_policy, "prompt");
+                        let success = BaseUpdater::success_result(
+                            UpdateComponent::Scheme,
+                            "Scheme",
+                            "old",
+                            "new",
+                            "Installed",
+                        );
+                        let failure = BaseUpdater::error_result(
+                            UpdateComponent::Dict,
+                            "Dictionary",
+                            "Unavailable",
+                        );
+                        Ok(match expected_status {
+                            Status::Success => vec![success],
+                            Status::PartialFailure => vec![success, failure],
+                            _ => vec![failure],
+                        })
+                    },
+                )
+                .await;
+                let (report, status, error) = install_json(result, &manager, &environment);
+                assert_eq!(status, expected_status);
+                assert!(error.is_none());
+                assert_eq!(report["ok"], expected_status == Status::Success);
+                assert_eq!(report["results"][0]["success"], true);
+                assert_eq!(manager.config.user_data_policy, "prompt");
+                if expected_status != Status::Error {
+                    assert_eq!(report["results"][1]["component"], "scheme");
+                    assert_eq!(report["results"][1]["old_version"], "old");
+                    assert_eq!(report["results"][1]["new_version"], "new");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_install_keeps_core_completed_results_separate_from_saved_settings() {
+        use snout::updater::{UpdateComponent, UpdatePhase};
+        let root = TempDir::new().unwrap();
+        let (mut manager, mut environment) = install_fixture(&root);
+        let proposed = Config {
+            schema: Schema::Ice,
+            // Avoid ambient credential discovery when constructing the client.
+            github_token: "isolated-test-token".into(),
+            ..manager.config.clone()
+        };
+        let result = install_scheme(
+            &mut manager,
+            &mut environment,
+            proposed,
+            true,
+            CancelSignal::new(),
+            |operation, cancel| async move {
+                let signal = cancel.clone();
+                snout::updater::update_all(
+                    &operation.config.schema,
+                    &operation.config,
+                    operation.cache_dir.clone(),
+                    operation.rime_dir.clone(),
+                    cancel,
+                    |event| {
+                        assert_eq!(
+                            event.component,
+                            UpdateComponent::Scheme,
+                            "no later stage may start"
+                        );
+                        if event.phase == UpdatePhase::Checking {
+                            signal.cancel(); // Before the release request: deterministic, no network.
+                        }
+                    },
+                )
+                .await
+            },
+        )
+        .await;
+        let error = result.as_ref().unwrap_err();
+        assert!(error.downcast_ref::<UpdateCancelled>().is_some());
+        assert_eq!(snout::updater::completed_results(error).len(), 1);
+        let (report, status, _) = install_json(result, &manager, &environment);
+        assert_eq!(status, Status::Cancelled);
+        assert_eq!(report["ok"], false);
+        assert_eq!(report["results"].as_array().unwrap().len(), 2);
+        assert_eq!(report["results"][0]["component"], "settings");
+        assert_eq!(report["results"][0]["success"], true);
+        assert_eq!(report["results"][1]["component"], "scheme");
+        assert_eq!(report["results"][1]["success"], false);
+        assert!(!manager.rime_dir.exists());
+    }
+
+    #[test]
+    fn preview_install_rejects_before_save_and_pre_cancel_marks_settings_unsaved() {
+        let root = TempDir::new().unwrap();
+        let (manager, _) = install_fixture(&root);
+        let original = std::fs::read(&manager.config_path).unwrap();
+        let mut controller = Controller::start(Some(paths(&root))).unwrap();
+        ready(&mut controller);
+        for pre_cancelled in [false, true] {
+            let mut config = controller.snapshot.config.clone().unwrap();
+            config.schema = Schema::Ice;
+            let cancel = CancelSignal::new();
+            if pre_cancelled {
+                cancel.cancel();
+            }
+            controller
+                .worker
+                .sender
+                .send(Request {
+                    command: Command::InstallScheme {
+                        config: Box::new(config),
+                        preserve: true,
+                    },
+                    cancel,
+                })
+                .unwrap();
+            controller.snapshot.busy = true;
+            ready(&mut controller);
+            assert_eq!(
+                controller.snapshot.status,
+                if pre_cancelled {
+                    Status::Cancelled
+                } else {
+                    Status::Error
+                }
+            );
+            assert_eq!(controller.snapshot.settings_saved, Some(false));
+            assert_eq!(std::fs::read(&manager.config_path).unwrap(), original);
+            assert!(!manager.rime_dir.exists());
+            assert!(controller
+                .snapshot
+                .activity
+                .iter()
+                .any(|line| line == "Settings not saved / 设置未保存"));
+            if !pre_cancelled {
+                assert!(controller
+                    .snapshot
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains("isolated preview"));
+            }
+        }
+        run(&mut controller, Command::Refresh);
+        assert_eq!(controller.snapshot.settings_saved, None);
+    }
+
+    #[test]
+    fn poll_activity_explains_saved_stage_and_installation_outcome_without_json() {
+        for (saved, status, outcome) in [
+            (true, Status::Success, "Installation completed / 安装完成"),
+            (
+                true,
+                Status::PartialFailure,
+                "Installation partially failed / 安装部分失败",
+            ),
+            (
+                true,
+                Status::Error,
+                "Installation not completed / 安装未完成",
+            ),
+            (
+                true,
+                Status::Cancelled,
+                "Installation cancelled / 安装已取消",
+            ),
+            (
+                false,
+                Status::Error,
+                "Installation not completed / 安装未完成",
+            ),
+            (
+                false,
+                Status::Cancelled,
+                "Installation cancelled / 安装已取消",
+            ),
+        ] {
+            let (events, receiver) = mpsc::channel();
+            let (sender, _requests) = mpsc::channel();
+            let mut controller = Controller {
+                receiver,
+                worker: Arc::new(Worker {
+                    sender,
+                    state: Mutex::new(WorkerState {
+                        cancel: CancelSignal::new(),
+                        closed: false,
+                    }),
+                    handle: Mutex::new(None),
+                    process_owned: false,
+                }),
+                closed: false,
+                deadline: None,
+                snapshot: Snapshot {
+                    activity: vec!["Earlier operation".into()],
+                    ..Snapshot::default()
+                },
+            };
+            events
+                .send(Event::Finished {
+                    snapshot: Box::new(Snapshot {
+                        settings_saved: Some(saved),
+                        ..Snapshot::default()
+                    }),
+                    report: None,
+                    status,
+                    error: None,
+                })
+                .unwrap();
+            assert!(controller.poll());
+            assert_eq!(controller.snapshot.activity[0], "Earlier operation");
+            assert_eq!(
+                controller.snapshot.activity[1],
+                settings_result(saved).message
+            );
+            assert_eq!(controller.snapshot.activity[2], outcome);
+            assert_eq!(controller.snapshot.status, status);
+            assert!(!controller.snapshot.busy);
+        }
     }
 
     #[test]

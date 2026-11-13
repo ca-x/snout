@@ -8,7 +8,7 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// 更新结果
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct UpdateResult {
     pub kind: UpdateComponent,
     pub component: String,

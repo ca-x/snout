@@ -12,9 +12,9 @@ input and file dialogs. Desktop work does not change the CLI/TUI presentation.
 - A persistent 208 point sidebar groups the five existing destinations. Selection
   uses a filled rounded surface, matching text and vector icon, and the accessible
   selected state. No floating navigation or custom window chrome.
-- The page header identifies the current destination and keeps Update all in a
-  stable position. Overview emphasizes the current scheme, then installed
-  components, then engine integration. Diagnostic details are disclosed on demand.
+- The page header identifies the current destination. Update all and Check updates
+  belong to Overview. Component updates sit beside their status, with unsupported
+  actions hidden. Diagnostic refresh belongs inside its disclosure.
 - `desktop/src/theme.json` owns every light/dark color. Rust reads `theme()`;
   component part classes use the same semantic tokens. Blue denotes actions and
   selection; destructive actions and errors use the destructive role.
@@ -31,10 +31,19 @@ input and file dialogs. Desktop work does not change the CLI/TUI presentation.
   App helpers style their parts, disabled, focus, active and selected states.
 - Keep drafts separate from persisted configuration. Show a fixed save/revert
   strip across destinations when the draft changes. Revert restores the loaded
-  configuration. Saving uses the existing validation and explicit confirmation.
+  configuration. Ordinary saves run directly after validation; model patch changes
+  require confirmation. Schemes use one context action strip: Install, or Save &
+  install with Save only. Mod+S always saves only. Installation reports settings
+  persistence separately from installation success and cancellation.
 - Confirm consequential actions in a modal layer, with Escape/cancel dismissal.
   Reversible theme downloads and explicit Apply use one direct action and inline feedback.
   Preserve data policy, hook warnings and the explicit destructive alternative.
+- Candidate size includes Scheme default and one Apply action. Appearance drafts
+  survive unrelated operations; Apply waits for configuration to be saved or
+  reverted. Each appearance section reports its own progress and result.
+- Activity prioritizes readable results; JSON is a disclosure. Completion exports
+  belong to Settings tools. Restore focus before removing the configuration strip,
+  and never move it back after the user has focused somewhere else.
 - Candidate preview illustrates only count/layout. It does not claim to reproduce
   the installed input engine's skin or deploy changes before Apply.
 - Keyboard: Tab/Shift+Tab and Enter/Space through native controls, Mod+1…5 for

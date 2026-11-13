@@ -81,7 +81,7 @@ fn actual_root_navigates_all_five_pages_and_lists_every_schema() {
     for (navigation, expected) in [
         ("nav-appearance", "Candidate window"),
         ("nav-settings", "General"),
-        ("nav-activity", "Update activity"),
+        ("nav-activity", "Activity"),
         ("nav-overview", "Selected scheme"),
     ] {
         navigate(&mut app, navigation, expected);
@@ -95,7 +95,7 @@ fn actual_root_navigates_all_five_pages_and_lists_every_schema() {
 #[test]
 fn draft_actions_follow_navigation_and_revert_without_writing() {
     let (_root, paths, mut app) = workbench();
-    app.press("browse-schemes").expect("scheme shortcut");
+    app.press("nav-schemes").expect("scheme navigation");
     wait_for_navigation(&mut app, "nav-schemes", "Choose a scheme");
     app.press("schema-Ice").expect("select another scheme");
     app.wait_for("unsaved-changes").expect("draft visible");
@@ -111,7 +111,7 @@ fn draft_actions_follow_navigation_and_revert_without_writing() {
 
 #[test]
 fn keyboard_navigation_save_and_escape_keep_confirmation_safe() {
-    let (_root, paths, mut app) = workbench();
+    let (_root, paths, mut app) = workbench_with(|config| config.model_patch_enabled = true);
     app.press_key("mod+2").expect("scheme shortcut");
     wait_for_navigation(&mut app, "nav-schemes", "Choose a scheme");
     app.press("schema-Ice").expect("change selection");
@@ -131,7 +131,11 @@ fn keyboard_navigation_save_and_escape_keep_confirmation_safe() {
     app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
         .expect("clean state");
     assert_eq!(persisted(&paths).schema, Schema::Ice);
-    assert!(!paths.rime.exists());
+    assert!(paths.rime.join("rime_ice.custom.yaml").exists());
+    assert!(
+        !paths.rime.join("rime_ice.schema.yaml").exists(),
+        "save shortcut must not install"
+    );
 }
 
 #[test]
@@ -151,7 +155,7 @@ fn diagnostics_disclosure_and_preview_work_in_dark_reduced_motion_at_small_size(
     app.press("toggle-diagnostics").expect("close details");
     app.wait_for_gone("Locations", Duration::from_secs(2))
         .expect("details hidden");
-    app.press("open-appearance").expect("appearance shortcut");
+    app.press("nav-appearance").expect("appearance navigation");
     wait_for_navigation(&mut app, "nav-appearance", "Candidate window");
     app.wait_for("candidate-preview").expect("layout preview");
     assert!(app.shows("你好"));
@@ -170,7 +174,7 @@ fn actual_root_confirms_updates_and_cancel_does_not_run_anything() {
     let (_root, paths, mut app) = workbench();
     app.press("update-all").expect("request update");
     app.wait_for("confirmation").expect("explicit confirmation");
-    assert!(app.shows("Continue · preserve user data"));
+    assert!(app.shows("Preserve data & run"));
     assert!(app.shows("Discard user data and continue"));
     app.press("confirm-cancel").expect("cancel confirmation");
     app.wait_for_gone("confirmation", Duration::from_secs(2))
@@ -179,7 +183,7 @@ fn actual_root_confirms_updates_and_cancel_does_not_run_anything() {
 }
 
 #[test]
-fn actual_root_edits_settings_then_persists_only_after_confirmation() {
+fn actual_root_edits_settings_then_saves_without_redundant_confirmation() {
     let (_root, paths, mut app) = workbench();
     navigate(&mut app, "nav-settings", "General");
     app.press("mirror").expect("change mirror preference");
@@ -187,9 +191,8 @@ fn actual_root_edits_settings_then_persists_only_after_confirmation() {
         !persisted(&paths).use_mirror,
         "draft must not write immediately"
     );
-    app.press("save-settings").expect("save request");
-    app.wait_for("confirmation").expect("save confirmation");
-    app.press("confirm-continue").expect("confirm persistence");
+    app.press("save-draft").expect("save request");
+    assert!(!app.shows("confirmation"));
     app.wait_for("Completed")
         .expect("shared core save finished");
     assert!(persisted(&paths).use_mirror);
@@ -242,7 +245,7 @@ fn actual_root_exports_real_completion_through_native_save_dialog() {
     let target = root.path().join("snout.fish");
     app.on_pick_save_path(Some(target.clone()))
         .expect("native save dialog response");
-    navigate(&mut app, "nav-activity", "Update activity");
+    navigate(&mut app, "nav-settings", "General");
     app.press("export-fish").expect("export completion");
     app.wait_for("Completed").expect("export worker completed");
     assert_eq!(
@@ -287,14 +290,14 @@ fn invalid_settings_keep_draft_and_do_not_open_save_confirmation() {
     navigate(&mut app, "nav-settings", "General");
     app.clear("countdown").expect("clear countdown");
     app.type_text("countdown", "99").expect("invalid countdown");
-    app.press("save-settings").expect("request save");
+    app.press("save-draft").expect("request save");
     assert!(!app.shows("confirmation"));
     assert_eq!(
         app.screen().input_text("countdown").expect("input"),
         Some("99")
     );
     assert_ne!(persisted(&paths).auto_update_countdown, 99);
-    app.press("revert-settings").expect("revert draft");
+    app.press("discard-draft").expect("revert draft");
     assert_ne!(
         app.screen().input_text("countdown").expect("input"),
         Some("99")
@@ -302,27 +305,27 @@ fn invalid_settings_keep_draft_and_do_not_open_save_confirmation() {
 }
 
 #[test]
-fn candidate_override_and_confirmed_reset_use_shared_core() {
+fn candidate_override_and_scheme_default_use_one_apply_action() {
     let (_root, paths, mut app) = workbench();
     navigate(&mut app, "nav-appearance", "Candidate window");
-    app.press("apply-candidate")
-        .expect("apply default candidate size");
-    app.wait_for("Completed")
-        .expect("candidate override written");
+    app.press("candidate-size-trigger").unwrap();
+    app.wait_for("role:option[5]").unwrap();
+    app.press("role:option[5]").unwrap();
+    app.press("apply-candidate").unwrap();
+    app.wait_for("Applied").unwrap();
     assert_eq!(
-        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase)
-            .expect("candidate override"),
+        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).unwrap(),
         Some(5)
     );
-    app.press("reset-candidate").expect("request reset");
-    app.wait_for("confirmation").expect("reset confirmation");
-    app.press("confirm-continue").expect("confirm reset");
-    app.wait_for("Completed").expect("reset complete");
-    assert_eq!(
-        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase)
-            .expect("scheme default"),
-        None
-    );
+    app.press("candidate-size-trigger").unwrap();
+    app.wait_for("role:option[Scheme default]").unwrap();
+    app.press("role:option[Scheme default]").unwrap();
+    app.press("apply-candidate").unwrap();
+    app.wait_until("default persisted", Duration::from_secs(5), |_| {
+        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).ok() == Some(None)
+    })
+    .unwrap();
+    assert!(!app.shows("reset-candidate"));
 }
 
 #[test]
@@ -331,11 +334,14 @@ fn json_export_matches_shared_report_for_real_failed_operation() {
         config.schema = Schema::Frost;
         config.github_token = "never-export-this-token".into();
     });
-    app.press("update-dict").expect("dictionary update request");
+    app.press("update-scheme").expect("scheme update request");
+    app.wait_for("confirmation").unwrap();
     app.press("confirm-continue")
         .expect("confirm real core dispatch");
     app.wait_for("Needs attention")
         .expect("unsupported standalone dictionary fails visibly");
+    app.press("toggle-json").unwrap();
+    app.wait_for("report-json").unwrap();
     let displayed = app
         .screen()
         .input_text("report-json")
@@ -350,7 +356,7 @@ fn json_export_matches_shared_report_for_real_failed_operation() {
     let content = std::fs::read_to_string(target).expect("JSON export");
     assert_eq!(content, displayed);
     let report: serde_json::Value = serde_json::from_str(&content).expect("structured report");
-    assert_eq!(report["command"], "dict");
+    assert_eq!(report["command"], "scheme");
     assert_eq!(report["ok"], false);
     assert_eq!(report["schema_version"], 1);
     assert!(!content.contains("never-export-this-token"));
@@ -430,4 +436,166 @@ fn unavailable_engine_skin_controls_are_hidden_in_preview() {
     assert!(!app.shows("Built-in skin patches"));
     navigate(&mut app, "nav-settings", "General");
     assert!(!app.shows("Default skin patch key"));
+}
+
+#[test]
+fn maintenance_actions_are_scoped_and_configuration_has_one_commit_area() {
+    let (_root, _paths, mut app) = workbench();
+    assert!(app.screen().matches("update-all").unwrap());
+    assert!(!app.screen().matches("browse-schemes").unwrap());
+    assert!(!app.screen().matches("open-appearance").unwrap());
+    for (page, title) in [
+        ("nav-schemes", "Choose a scheme"),
+        ("nav-appearance", "Candidate window"),
+        ("nav-settings", "General"),
+        ("nav-activity", "Activity"),
+    ] {
+        navigate(&mut app, page, title);
+        assert!(!app.screen().matches("update-all").unwrap(), "{page}");
+        assert!(!app.screen().matches("save-settings").unwrap());
+        assert!(!app.screen().matches("save-scheme").unwrap());
+    }
+    navigate(&mut app, "nav-settings", "General");
+    app.press("mirror").unwrap();
+    app.wait_for("save-draft").unwrap();
+    app.press("mirror").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+}
+
+#[test]
+fn unapplied_candidate_survives_save_and_global_draft_blocks_apply() {
+    let (_root, paths, mut app) = workbench();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    assert!(!app.screen().enabled("apply-candidate").unwrap());
+    app.press("candidate-size-trigger").unwrap();
+    app.wait_for("role:option[7]").unwrap();
+    app.press("role:option[7]").unwrap();
+    navigate(&mut app, "nav-settings", "General");
+    app.press("mirror").unwrap();
+    app.wait_for("save-draft").unwrap();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    app.wait_for("Save or revert configuration first").unwrap();
+    assert!(!app.screen().enabled("apply-candidate").unwrap());
+    app.press("save-draft").unwrap();
+    app.wait_for("Completed").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+    assert!(app.screen().enabled("apply-candidate").unwrap());
+    app.press("apply-candidate").unwrap();
+    app.wait_for("Applied").unwrap();
+    assert_eq!(
+        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).unwrap(),
+        Some(7)
+    );
+}
+
+#[test]
+fn combined_install_has_one_confirmation_and_preview_keeps_unsaved_draft() {
+    let (_root, paths, mut app) = workbench();
+    navigate(&mut app, "nav-settings", "General");
+    app.press("mirror").unwrap();
+    app.wait_for("save-draft").unwrap();
+    navigate(&mut app, "nav-schemes", "Choose a scheme");
+    app.wait_for("Save only").unwrap();
+    app.press("schema-Ice").unwrap();
+    app.press("initialize-scheme").unwrap();
+    app.wait_for("confirmation").unwrap();
+    assert!(app
+        .screen()
+        .texts()
+        .iter()
+        .any(|text| text.contains("Other configuration changes are saved too.")));
+    assert!(app
+        .screen()
+        .texts()
+        .iter()
+        .any(|text| text.contains(paths.rime.to_str().unwrap())));
+    app.press("confirm-continue").unwrap();
+    app.wait_for("Needs attention").unwrap();
+    assert!(app.screen().selected("nav-activity").unwrap());
+    assert!(app.screen().matches("unsaved-changes").unwrap());
+    assert_eq!(persisted(&paths).schema, Schema::WanxiangBase);
+    assert!(!persisted(&paths).use_mirror);
+    assert!(!paths.rime.exists());
+}
+
+#[test]
+fn keyboard_revert_restores_focus_before_the_commit_area_disappears() {
+    let (_root, _paths, mut app) = workbench();
+    app.set_environment("full keyboard navigation", |env| {
+        env.os = nsh_core::platform::Os::MacOs
+    })
+    .unwrap();
+    navigate(&mut app, "nav-settings", "General");
+    app.press("mirror").unwrap();
+    app.wait_for("save-draft").unwrap();
+    // Start from the end: operation status, Save, then Revert.
+    app.press_key("shift+tab").unwrap();
+    app.press_key("shift+tab").unwrap();
+    app.press_key("shift+tab").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+    // Revert returned focus to Settings in the sidebar. Its previous stop is Appearance.
+    app.press_key("shift+tab").unwrap();
+    app.press_key("enter").unwrap();
+    wait_for_navigation(&mut app, "nav-appearance", "Candidate window");
+}
+
+fn focus_save_only_and_confirm(app: &mut Headless) {
+    app.set_environment("full keyboard navigation", |env| {
+        env.os = nsh_core::platform::Os::MacOs
+    })
+    .unwrap();
+    app.press_key("shift+tab").unwrap(); // status
+    app.press_key("shift+tab").unwrap(); // install
+    app.press_key("shift+tab").unwrap(); // save only
+    app.press_key("enter").unwrap();
+    app.wait_for("confirmation").unwrap();
+    app.press("confirm-continue").unwrap();
+}
+
+#[test]
+fn confirmed_save_restores_focus_to_retained_install_button() {
+    let (_root, _paths, mut app) = workbench_with(|config| config.model_patch_enabled = true);
+    navigate(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("schema-Ice").unwrap();
+    app.wait_for("Save only").unwrap();
+    focus_save_only_and_confirm(&mut app);
+    app.wait_for("Completed").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+    app.wait_until(
+        "focus returned to install",
+        Duration::from_secs(2),
+        |screen| {
+            let target = screen.press_target("initialize-scheme").unwrap();
+            screen.commands().iter().any(|(node, command)| {
+                Some(*node) == target && matches!(command, nsh_core::Command::Focus)
+            })
+        },
+    )
+    .unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("confirmation").unwrap();
+    app.press_key("escape").unwrap();
+}
+
+#[test]
+fn confirmed_save_does_not_reclaim_focus_after_user_navigates() {
+    let (_root, _paths, mut app) = workbench_with(|config| config.model_patch_enabled = true);
+    navigate(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("schema-Ice").unwrap();
+    app.wait_for("Save only").unwrap();
+    focus_save_only_and_confirm(&mut app);
+    navigate(&mut app, "nav-settings", "General");
+    app.wait_for("Completed").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+    let target = app.screen().press_target("nav-settings").unwrap();
+    assert!(!app.screen().commands().iter().any(
+        |(node, command)| Some(*node) == target && matches!(command, nsh_core::Command::Focus)
+    ));
+    assert!(app.screen().selected("nav-settings").unwrap());
 }

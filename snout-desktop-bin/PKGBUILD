@@ -1,5 +1,5 @@
 pkgname=snout-desktop-bin
-pkgver=0.5.1
+pkgver=0.5.2
 pkgrel=1
 pkgdesc="Native desktop workbench for Rime input method schemes, models, and themes"
 arch=('x86_64')

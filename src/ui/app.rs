@@ -106,8 +106,18 @@ pub struct App {
 
 #[derive(Debug)]
 enum UpdateTaskError {
-    Cancelled,
+    Cancelled(Vec<updater::UpdateResult>),
     Failed(String),
+}
+
+impl From<anyhow::Error> for UpdateTaskError {
+    fn from(error: anyhow::Error) -> Self {
+        if error.is::<crate::types::UpdateCancelled>() {
+            Self::Cancelled(updater::completed_results(&error))
+        } else {
+            Self::Failed(error.to_string())
+        }
+    }
 }
 
 use crate::application::{
@@ -1505,13 +1515,7 @@ async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
         })
         .await;
         let _ = result_tx.send(UpdateTaskResult {
-            results: match results {
-                Ok(value) => Ok(value),
-                Err(e) if e.is::<crate::types::UpdateCancelled>() => {
-                    Err(UpdateTaskError::Cancelled)
-                }
-                Err(e) => Err(UpdateTaskError::Failed(e.to_string())),
-            },
+            results: results.map_err(UpdateTaskError::from),
         });
     });
     app.update_task = Some(handle);
@@ -1553,7 +1557,12 @@ fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, Upda
                 UpdateOutcome::Failure
             });
         }
-        Err(UpdateTaskError::Cancelled) => {
+        Err(UpdateTaskError::Cancelled(completed)) => {
+            for result in completed {
+                let icon = if result.success { "✅" } else { "❌" };
+                app.update_results
+                    .push(format!("{icon} {} - {}", result.component, result.message));
+            }
             app.update_results
                 .push(format!("⚠️ {}", app.t.t("update.cancelled")));
             app.update_msg = app.t.t("update.cancelled").into();
@@ -2745,6 +2754,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_update_shows_completed_components_without_success_prompt() {
+        let (_root, manager) = isolated_manager();
+        let mut app = App::new(&manager);
+        app.offer_rime_setup = true;
+        app.update_in_progress = true;
+        app.cancel_signal = Some(crate::types::CancelSignal::new());
+        let (error, _) = updater::cancel_after_completed_scheme().await;
+        finish_update(&mut app, Err(UpdateTaskError::from(error)));
+        assert_eq!(app.update_outcome, Some(UpdateOutcome::Cancelled));
+        assert_eq!(app.update_msg, app.t.t("update.cancelled"));
+        assert_eq!(app.update_results.len(), 2);
+        assert_eq!(app.update_results[0], "✅ scheme - installed");
+        assert!(app.update_results[1].contains(app.t.t("update.cancelled")));
+        assert!(matches!(app.screen, AppScreen::Result));
+        assert!(app.update_done);
+        assert!(!app.update_in_progress);
+        assert!(app.cancel_signal.is_none());
+        assert!(!app.offer_rime_setup);
+    }
+
+    #[tokio::test]
     async fn rime_setup_prompt_only_follows_successful_eligible_install() {
         let (_root, manager) = isolated_manager();
         for (eligible, results, expect_prompt) in [
@@ -2779,7 +2809,7 @@ mod tests {
                 )]),
                 false,
             ),
-            (true, Err(UpdateTaskError::Cancelled), false),
+            (true, Err(UpdateTaskError::Cancelled(Vec::new())), false),
         ] {
             let mut app = App::new(&manager);
             app.offer_rime_setup = eligible;

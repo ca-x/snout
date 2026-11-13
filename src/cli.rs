@@ -455,49 +455,19 @@ async fn execute(cli: Cli) -> anyhow::Result<bool> {
                 eprintln!("{message}");
             }
         }
-        match crate::application::run_update(
+        dispatch_cli_update(
+            &mut results,
             action,
-            &manager,
-            types::CancelSignal::new(),
-            |event| print_progress(cli.json, event),
+            &t,
+            cli.json,
+            tokio::signal::ctrl_c(),
+            |cancel| {
+                crate::application::run_update(action, &manager, cancel, |event| {
+                    print_progress(cli.json, event);
+                })
+            },
         )
-        .await
-        {
-            Ok(update_results) => {
-                if !cli.json {
-                    for result in &update_results {
-                        if result.kind == updater::UpdateComponent::ModelPatch && !result.success {
-                            eprintln!("{}", result.message);
-                        }
-                    }
-                }
-                results.extend(update_results);
-            }
-            Err(error) => {
-                let (component, label) = match action {
-                    crate::application::UpdateAction::All => {
-                        (updater::UpdateComponent::Update, t.t("menu.update_all"))
-                    }
-                    crate::application::UpdateAction::Scheme => {
-                        (updater::UpdateComponent::Scheme, t.t("update.scheme"))
-                    }
-                    crate::application::UpdateAction::Dict => {
-                        (updater::UpdateComponent::Dict, t.t("update.dict"))
-                    }
-                    crate::application::UpdateAction::Model => {
-                        (updater::UpdateComponent::Model, t.t("update.model"))
-                    }
-                    crate::application::UpdateAction::RimeSetup => {
-                        unreachable!("not a CLI update action")
-                    }
-                };
-                results.push(if action == crate::application::UpdateAction::All {
-                    updater::BaseUpdater::error_result(component, label, &error.to_string())
-                } else {
-                    updater::BaseUpdater::fail_result(component, label, &error)
-                });
-            }
-        }
+        .await;
         if unsupported_message.is_none() {
             print_progress_end(cli.json);
         }
@@ -570,6 +540,78 @@ fn print_progress_end(json: bool) {
     if !json {
         println!();
     }
+}
+
+// Keep the operation alive after Ctrl+C so its checkpoints can return committed results.
+async fn dispatch_cli_update<I, F, Fut>(
+    results: &mut Vec<updater::UpdateResult>,
+    action: crate::application::UpdateAction,
+    t: &L10n,
+    json: bool,
+    interrupt: I,
+    update: F,
+) where
+    I: std::future::Future<Output = std::io::Result<()>> + Send + 'static,
+    F: FnOnce(types::CancelSignal) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Vec<updater::UpdateResult>>>,
+{
+    let cancel = types::CancelSignal::new();
+    let listener_cancel = cancel.clone();
+    // JoinSet aborts its listener even if the enclosing dispatch future is dropped.
+    let mut listeners = tokio::task::JoinSet::new();
+    listeners.spawn(async move {
+        match interrupt.await {
+            Ok(()) => listener_cancel.cancel(),
+            Err(error) => eprintln!("Cannot listen for Ctrl+C: {error}"),
+        }
+    });
+    let outcome = update(cancel).await;
+    listeners.abort_all();
+    while listeners.join_next().await.is_some() {}
+    match outcome {
+        Ok(update_results) => {
+            if !json {
+                for result in &update_results {
+                    if result.kind == updater::UpdateComponent::ModelPatch && !result.success {
+                        eprintln!("{}", result.message);
+                    }
+                }
+            }
+            results.extend(update_results);
+        }
+        Err(error) => append_update_error(results, action, t, &error),
+    }
+}
+
+fn append_update_error(
+    results: &mut Vec<updater::UpdateResult>,
+    action: crate::application::UpdateAction,
+    t: &L10n,
+    error: &anyhow::Error,
+) {
+    results.extend(updater::completed_results(error));
+    let (component, label) = match action {
+        crate::application::UpdateAction::All => {
+            (updater::UpdateComponent::Update, t.t("menu.update_all"))
+        }
+        crate::application::UpdateAction::Scheme => {
+            (updater::UpdateComponent::Scheme, t.t("update.scheme"))
+        }
+        crate::application::UpdateAction::Dict => {
+            (updater::UpdateComponent::Dict, t.t("update.dict"))
+        }
+        crate::application::UpdateAction::Model => {
+            (updater::UpdateComponent::Model, t.t("update.model"))
+        }
+        crate::application::UpdateAction::RimeSetup => {
+            unreachable!("not a CLI update action")
+        }
+    };
+    results.push(if action == crate::application::UpdateAction::All {
+        updater::BaseUpdater::error_result(component, label, &error.to_string())
+    } else {
+        updater::BaseUpdater::fail_result(component, label, error)
+    });
 }
 
 fn finish_cli_action(
@@ -701,6 +743,98 @@ fn user_data_policy_detail<'a>(config: &types::Config, t: &'a L10n) -> &'a str {
 mod cli_tests {
     use super::*;
     use crate::report::ComponentResult as CliResult;
+
+    #[tokio::test]
+    async fn cancelled_dispatch_waits_for_update_and_keeps_completed_components() {
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+        let mut results = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatch_cli_update(
+                &mut results,
+                crate::application::UpdateAction::All,
+                &L10n::new(Lang::En),
+                true,
+                async move {
+                    completed_rx
+                        .await
+                        .expect("component completed before interruption");
+                    Ok(())
+                },
+                |cancel| async move {
+                    // Use the shared collector's completed-stage cancellation error.
+                    let (error, events) = updater::cancel_after_completed_scheme().await;
+                    assert_eq!(events.len(), 1, "later core stages did not start");
+                    assert!(updater::completed_results(&error)[0].success);
+                    assert!(cancel.checkpoint().is_ok(), "no premature interruption");
+                    completed_tx.send(()).expect("listener still running");
+                    while cancel.checkpoint().is_ok() {
+                        tokio::task::yield_now().await;
+                    }
+                    // This return must be awaited, not dropped when the interrupt arrives.
+                    Err(error)
+                },
+            ),
+        )
+        .await
+        .expect("dispatch cooperatively finishes after interruption");
+        let report = CliReport::from_results("update", Schema::Ice, results);
+        let json = serde_json::to_value(&report).expect("serialize cancellation report");
+        assert!(!report.ok);
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["results"].as_array().expect("results array").len(), 2);
+        assert_eq!(json["results"][0]["component"], "scheme");
+        assert_eq!(json["results"][0]["success"], true);
+        assert_eq!(json["results"][0]["new_version"], "v2");
+        assert_eq!(json["results"][1]["component"], "update");
+        assert_eq!(json["results"][1]["success"], false);
+        assert!(report.results[1].message.contains("update cancelled"));
+    }
+
+    #[tokio::test]
+    async fn successful_dispatch_drops_pending_interrupt_listener() {
+        struct Dropped(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marker = Dropped(dropped.clone());
+        let (listening_tx, listening_rx) = tokio::sync::oneshot::channel();
+        let mut results = Vec::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatch_cli_update(
+                &mut results,
+                crate::application::UpdateAction::All,
+                &L10n::new(Lang::En),
+                true,
+                async move {
+                    let _marker = marker;
+                    listening_tx.send(()).expect("dispatch running");
+                    std::future::pending::<std::io::Result<()>>().await
+                },
+                |cancel| async move {
+                    listening_rx.await.expect("listener started");
+                    assert!(cancel.checkpoint().is_ok());
+                    Ok(vec![updater::BaseUpdater::success_result(
+                        updater::UpdateComponent::Scheme,
+                        "scheme",
+                        "v1",
+                        "v2",
+                        "installed",
+                    )])
+                },
+            ),
+        )
+        .await
+        .expect("dispatch does not wait for an interrupt after success");
+        assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+        let report = CliReport::from_results("update", Schema::Ice, results);
+        assert!(report.ok);
+        assert_eq!(report.results.len(), 1);
+    }
 
     #[test]
     fn new_schemes_and_topic_commands_parse_without_starting_the_updater() {

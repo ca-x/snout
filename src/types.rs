@@ -307,7 +307,7 @@ impl Engine {
 }
 
 // ── 配置 ──
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub schema: Schema,

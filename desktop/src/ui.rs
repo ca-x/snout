@@ -1,4 +1,6 @@
-use crate::controller::{self, Command, Controller, Paths, Snapshot, Status, ThemeTask};
+use crate::controller::{
+    self, AppearanceTask, Command, Controller, Paths, Snapshot, Status, ThemeTask,
+};
 use crate::theme::{
     accent, canvas, danger, ink, line, muted, on_accent, selection, sidebar_surface, surface,
 };
@@ -52,11 +54,19 @@ enum Page {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonStyle {
+    Primary,
+    Secondary,
+    Quiet,
+    Destructive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Update(UpdateAction),
     Save,
     ResetExclusions,
-    ResetCandidate,
+    Install,
     Skins,
 }
 
@@ -79,7 +89,7 @@ struct Ui {
     pending: Signal<Option<Pending>>,
     exclusion: Signal<String>,
     editing_exclusion: Signal<Option<usize>>,
-    candidate: Signal<String>,
+    candidate: Signal<Option<u8>>,
     selected_skins: Signal<HashSet<String>>,
     default_skin: Signal<String>,
     light_theme: Signal<String>,
@@ -91,6 +101,14 @@ struct Ui {
     market_filter: Signal<String>,
     theme_page: Signal<ThemePage>,
     theme_repository: Signal<Option<u64>>,
+    commit_focused: Signal<bool>,
+    save_focus: Signal<bool>,
+    content_ref: ElementRef,
+    commit_ref: ElementRef,
+    navigation_refs: [ElementRef; 5],
+    install_ref: ElementRef,
+    status_ref: ElementRef,
+    json_open: Signal<bool>,
 }
 
 impl Ui {
@@ -112,12 +130,22 @@ impl Ui {
         self.controller.with(Controller::stop_countdown);
         self.state.update(|state| state.countdown = None);
         self.draft.update(update);
-        self.dirty.set(true);
+        self.dirty.set(self.state.with(|state| {
+            state
+                .config
+                .as_ref()
+                .is_none_or(|saved| saved != &self.draft.get())
+        }));
         self.error.set(None);
     }
 
     fn send(self, command: Command) {
-        if self.dirty.get() && !matches!(command, Command::Save(_) | Command::Export { .. }) {
+        if self.dirty.get()
+            && !matches!(
+                command,
+                Command::Save(_) | Command::InstallScheme { .. } | Command::Export { .. }
+            )
+        {
             self.error.set(Some(
                 self.tr(
                     "Save or revert your settings first.",
@@ -148,8 +176,16 @@ impl Ui {
         }
         self.controller.with(Controller::stop_countdown);
         if pending == Pending::Save {
+            self.save_focus.set(self.commit_focused.get());
+        }
+        if matches!(pending, Pending::Save | Pending::Install) {
             if let Err(error) = application::validate_settings(&self.draft.get()) {
                 self.error.set(Some(error.to_string()));
+                return;
+            }
+            if pending == Pending::Save && !self.patch_will_change() {
+                self.saving.set(true);
+                self.send(Command::Save(Box::new(self.draft.get())));
                 return;
             }
         } else if self.dirty.get() {
@@ -180,13 +216,70 @@ impl Ui {
                 Command::Save(Box::new(self.draft.get()))
             }
             Pending::ResetExclusions => Command::ResetExclusions,
-            Pending::ResetCandidate => Command::CandidateSize(None),
+            Pending::Install => {
+                self.saving.set(true);
+                self.page.set(Page::Activity);
+                self.status_ref.focus();
+                Command::InstallScheme {
+                    config: Box::new(self.draft.get()),
+                    preserve,
+                }
+            }
             Pending::Skins => Command::ApplySkins {
                 keys: self.selected_skins.get().into_iter().collect(),
                 default: self.default_skin.get(),
             },
         };
         self.send(command);
+    }
+
+    fn patch_will_change(self) -> bool {
+        self.state.with(|state| {
+            state.config.as_ref().is_some_and(|saved| {
+                let draft = self.draft.get();
+                saved.model_patch_enabled != draft.model_patch_enabled
+                    || (saved.schema != draft.schema && draft.model_patch_enabled)
+            })
+        })
+    }
+
+    fn cancel_confirmation(self) {
+        self.save_focus.set(false);
+        self.pending.set(None);
+    }
+
+    fn restore_saved_focus(self) {
+        spawn(async move {
+            next_frame().await;
+            if self.save_focus.get() {
+                self.save_focus.set(false);
+                if self.page.get() == Page::Schemes {
+                    self.install_ref.focus();
+                } else {
+                    self.navigation_refs[self.page.get() as usize].focus();
+                }
+            }
+        });
+    }
+
+    fn restore_commit_focus(self) {
+        if self.commit_focused.get() {
+            self.commit_focused.set(false);
+            if self.page.get() == Page::Schemes {
+                self.install_ref.focus();
+            } else {
+                self.navigation_refs[self.page.get() as usize].focus();
+            }
+        }
+    }
+
+    fn revert(self) {
+        if let Some(config) = self.state.with(|state| state.config.clone()) {
+            self.restore_commit_focus();
+            self.draft.set(config);
+            self.dirty.set(false);
+            self.error.set(None);
+        }
     }
 
     fn sync_theme_selection(self, next: &Snapshot) {
@@ -226,6 +319,9 @@ impl Ui {
     }
 
     fn can_apply_theme(self) -> bool {
+        if self.dirty.get() {
+            return false;
+        }
         self.theme_changed()
             || self.state.with(|state| {
                 matches!(state.theme_task, Some(ThemeTask::Apply))
@@ -317,10 +413,51 @@ fn action(
     id: &str,
     en: &'static str,
     zh: &'static str,
-    primary: bool,
+    style: ButtonStyle,
     run: impl Fn() + 'static,
 ) -> AnyElement {
-    action_enabled(ui, id, en, zh, primary, || true, run)
+    action_enabled(ui, id, en, zh, style, || true, run)
+}
+
+fn styled_action(
+    ui: Ui,
+    style: ButtonStyle,
+    enabled: impl Fn() -> bool + 'static,
+) -> nsh_base::ButtonElement {
+    button()
+        .disabled(move || ui.locked() || !enabled())
+        .px_4()
+        .py_2()
+        .min_h(px(38.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(move || match style {
+            ButtonStyle::Primary => accent(),
+            ButtonStyle::Quiet => canvas().opacity(0.0),
+            ButtonStyle::Destructive => danger(),
+            ButtonStyle::Secondary => line(),
+        })
+        .bg(move || match style {
+            ButtonStyle::Primary => accent(),
+            ButtonStyle::Quiet => canvas().opacity(0.0),
+            _ => surface(),
+        })
+        .text_color(move || match style {
+            ButtonStyle::Primary => on_accent(),
+            ButtonStyle::Destructive => danger(),
+            _ => ink(),
+        })
+        .focus(|style| {
+            style
+                .outline(px(2.0))
+                .outline_color(accent)
+                .outline_offset(px(2.0))
+        })
+        .hover(|state| state.opacity(0.88))
+        .transition_colors()
+        .duration(120.0)
+        .active(|style| style.opacity(0.75))
+        .disabled_style(|style| style.opacity(0.45))
 }
 
 fn action_enabled(
@@ -328,31 +465,12 @@ fn action_enabled(
     id: &str,
     en: &'static str,
     zh: &'static str,
-    primary: bool,
+    style: ButtonStyle,
     enabled: impl Fn() -> bool + 'static,
     run: impl Fn() + 'static,
 ) -> AnyElement {
-    button()
+    styled_action(ui, style, enabled)
         .test_id(id)
-        .disabled(move || ui.locked() || !enabled())
-        .px_4()
-        .py_2()
-        .min_h(px(38.0))
-        .rounded(px(8.0))
-        .border_1()
-        .border_color(if primary { accent } else { line })
-        .bg(move || if primary { accent() } else { surface() })
-        .text_color(move || if primary { on_accent() } else { ink() })
-        .focus(|style| {
-            style
-                .outline(px(2.0))
-                .outline_color(accent)
-                .outline_offset(px(2.0))
-        })
-        .transition_colors()
-        .duration(120.0)
-        .active(|style| style.opacity(0.75))
-        .disabled_style(|style| style.opacity(0.45))
         .on_press(run)
         .child(
             text(move || ui.tr(en, zh))
@@ -538,7 +656,7 @@ fn new_ui(controller: Controller) -> Ui {
         pending: signal(None),
         exclusion: signal(String::new()),
         editing_exclusion: signal(None),
-        candidate: signal("5".to_string()),
+        candidate: signal(None),
         selected_skins: signal(HashSet::new()),
         default_skin: signal(String::new()),
         light_theme: signal(String::new()),
@@ -550,6 +668,20 @@ fn new_ui(controller: Controller) -> Ui {
         market_filter: signal(String::new()),
         theme_page: signal(ThemePage::Local),
         theme_repository: signal(None),
+        commit_focused: signal(false),
+        save_focus: signal(false),
+        content_ref: element_ref(),
+        commit_ref: element_ref(),
+        navigation_refs: [
+            element_ref(),
+            element_ref(),
+            element_ref(),
+            element_ref(),
+            element_ref(),
+        ],
+        install_ref: element_ref(),
+        status_ref: element_ref(),
+        json_open: signal(false),
     }
 }
 
@@ -566,6 +698,21 @@ pub fn App(props: AppProps) -> impl IntoElement {
         Err(error) => return view().p_6().child(text(error.to_string())).into_element(),
     };
     let ui = new_ui(controller);
+    ui.commit_ref
+        .on_focus_in(move || ui.commit_focused.set(true));
+    ui.commit_ref
+        .on_focus_out(move || ui.commit_focused.set(false));
+    for target in ui
+        .navigation_refs
+        .into_iter()
+        .chain([ui.content_ref, ui.status_ref])
+    {
+        target.on_focus_in(move || {
+            if ui.saving.get() {
+                ui.save_focus.set(false);
+            }
+        });
+    }
     set_interval(Duration::from_millis(60), move || {
         if !ui.controller.with(Controller::poll) {
             return;
@@ -580,7 +727,10 @@ pub fn App(props: AppProps) -> impl IntoElement {
                 ui.saving_exclusion.set(false);
             }
             if ui.saving.get() && !next.busy {
-                if next.status == Status::Success {
+                if next.settings_saved == Some(true)
+                    || (next.settings_saved.is_none() && next.status == Status::Success)
+                {
+                    ui.restore_saved_focus();
                     ui.dirty.set(false);
                 }
                 ui.saving.set(false);
@@ -590,11 +740,24 @@ pub fn App(props: AppProps) -> impl IntoElement {
                     ui.draft.set(config.clone());
                 }
             }
-            ui.candidate
-                .set(next.candidate_size.unwrap_or(5).to_string());
-            ui.selected_skins.set(next.skins.clone());
-            ui.default_skin
-                .set(next.default_skin.clone().unwrap_or_default());
+            let previous = ui.state.get();
+            if next.candidate_size != previous.candidate_size
+                || next.config.as_ref().map(|c| c.schema)
+                    != previous.config.as_ref().map(|c| c.schema)
+                || (next.appearance_task == Some(AppearanceTask::Candidate)
+                    && next.status == Status::Success)
+            {
+                ui.candidate.set(next.candidate_size);
+            }
+            if next.skins != previous.skins
+                || next.default_skin != previous.default_skin
+                || (next.appearance_task == Some(AppearanceTask::Skins)
+                    && next.status == Status::Success)
+            {
+                ui.selected_skins.set(next.skins.clone());
+                ui.default_skin
+                    .set(next.default_skin.clone().unwrap_or_default());
+            }
             ui.sync_theme_selection(&next);
         }
         let auto_due = next.auto_update_due;
@@ -626,6 +789,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
     ] {
         on_key(shortcut, move |_| {
             if ui.pending.get().is_none() {
+                ui.save_focus.set(false);
                 ui.page.set(page);
             }
         });
@@ -647,7 +811,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
                 view().mx_6().my_2().p_3().rounded(px(6.0)).border_1().border_color(danger).role(AccessibilityRole::Alert)
                     .child(text(move || ui.error.get().or_else(|| ui.state.with(|state| state.error.clone())).unwrap_or_default()).test_id("operation-error").text_size(px(14.0)))
             }))
-            .child(scroll().test_id("content-scroll").flex_1().child(view().p_6().gap_6().w_full().max_w(px(1120.0))
+            .child(scroll().test_id("content-scroll").element_ref(&ui.content_ref).flex_1().child(view().p_6().gap_6().w_full().max_w(px(1120.0))
                 .child(dynamic(move || match ui.page.get() {
                     Page::Overview => overview(ui), Page::Schemes => schemes(ui), Page::Appearance => appearance(ui),
                     Page::Settings => settings(ui), Page::Activity => activity(ui),
@@ -727,6 +891,7 @@ fn sidebar(ui: Ui) -> AnyElement {
         sidebar = sidebar.child(
             button()
                 .test_id(id)
+                .element_ref(&ui.navigation_refs[page as usize])
                 .selected(move || ui.page.get() == page)
                 .disabled(move || ui.pending.get().is_some())
                 .flex_row()
@@ -759,7 +924,10 @@ fn sidebar(ui: Ui) -> AnyElement {
                 .transition_colors()
                 .duration(140.0)
                 .active(|style| style.opacity(0.7))
-                .on_press(move || ui.page.set(page))
+                .on_press(move || {
+                    ui.save_focus.set(false);
+                    ui.page.set(page);
+                })
                 .child(icon(page))
                 .child(
                     text(move || ui.tr(en, zh))
@@ -850,60 +1018,99 @@ fn header(ui: Ui) -> AnyElement {
                     .text_size(px(13.0)),
                 ),
         )
-        .child(action(
-            ui,
-            "update-all",
-            "Update all",
-            "更新全部",
-            true,
-            move || ui.request(Pending::Update(UpdateAction::All)),
-        ))
         .into_element()
 }
 
 fn draft_bar(ui: Ui) -> AnyElement {
     when(
-        move || ui.dirty.get(),
+        move || ui.dirty.get() || ui.page.get() == Page::Schemes,
         move || {
             view()
-                .test_id("unsaved-changes")
-                .bind_motion(&reveal())
+                .test_id("configuration-actions")
+                .element_ref(&ui.commit_ref)
                 .flex_row()
                 .flex_wrap()
                 .items_center()
                 .gap_3()
                 .px_6()
                 .py_3()
-                .bg(selection)
+                .bg(surface)
                 .border_t_1()
                 .border_color(line)
                 .child(
-                    text(move || ui.tr("Unsaved changes", "有尚未保存的修改"))
-                        .flex_1()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM),
-                )
-                .child(action(
-                    ui,
-                    "discard-draft",
-                    "Revert",
-                    "还原",
-                    false,
-                    move || {
-                        if let Some(config) = ui.state.with(|state| state.config.clone()) {
-                            ui.draft.set(config);
-                            ui.dirty.set(false);
-                            ui.error.set(None);
+                    text(move || {
+                        if ui.dirty.get() {
+                            ui.tr("Unsaved configuration changes", "有未保存的配置修改")
+                                .to_string()
+                        } else {
+                            ui.draft.with(|config| {
+                                config
+                                    .schema
+                                    .display_name_lang(Lang::from_str(&config.language))
+                            })
                         }
+                    })
+                    .flex_1()
+                    .text_size(px(13.0)),
+                )
+                .child(when(
+                    move || ui.dirty.get(),
+                    move || {
+                        view()
+                            .test_id("unsaved-changes")
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(action(
+                                ui,
+                                "discard-draft",
+                                "Revert all",
+                                "还原全部修改",
+                                ButtonStyle::Quiet,
+                                move || ui.revert(),
+                            ))
+                            .child(dynamic(move || {
+                                action(
+                                    ui,
+                                    "save-draft",
+                                    if ui.page.get() == Page::Schemes {
+                                        "Save only"
+                                    } else {
+                                        "Save changes"
+                                    },
+                                    if ui.page.get() == Page::Schemes {
+                                        "仅保存"
+                                    } else {
+                                        "保存修改"
+                                    },
+                                    if ui.page.get() == Page::Schemes {
+                                        ButtonStyle::Secondary
+                                    } else {
+                                        ButtonStyle::Primary
+                                    },
+                                    move || ui.request(Pending::Save),
+                                )
+                            }))
                     },
                 ))
-                .child(action(
-                    ui,
-                    "save-draft",
-                    "Save changes",
-                    "保存修改",
-                    true,
-                    move || ui.request(Pending::Save),
+                .child(when(
+                    move || ui.page.get() == Page::Schemes,
+                    move || {
+                        styled_action(ui, ButtonStyle::Primary, || true)
+                            .test_id("initialize-scheme")
+                            .element_ref(&ui.install_ref)
+                            .on_press(move || ui.request(Pending::Install))
+                            .child(
+                                text(move || {
+                                    if ui.dirty.get() {
+                                        ui.tr("Save & install…", "保存并安装…")
+                                    } else {
+                                        ui.tr("Install selected scheme…", "安装所选方案…")
+                                    }
+                                })
+                                .text_size(px(14.0)),
+                            )
+                    },
                 ))
         },
     )
@@ -957,6 +1164,8 @@ fn status_bar(ui: Ui) -> AnyElement {
                         }
                     })
                     .test_id("operation-status")
+                    .element_ref(&ui.status_ref)
+                    .focusable(true)
                     .text_size(px(12.0))
                     .text_color(muted),
                 )
@@ -995,7 +1204,7 @@ fn confirmation(ui: Ui) -> AnyElement {
             let pending = ui.pending.get();
             nsh_base::dialog()
                 .close_on_escape(true)
-                .on_cancel(move || ui.pending.set(None))
+                .on_cancel(move || ui.cancel_confirmation())
                 .flex_1()
                 .child(
                     view()
@@ -1023,8 +1232,8 @@ fn confirmation(ui: Ui) -> AnyElement {
                                         .role(AccessibilityRole::Alert)
                                         .child(heading(
                                             ui,
-                                            "Review before continuing",
-                                            "继续前，请确认",
+                                            "Review action",
+                                            "确认操作",
                                         ))
                                         .child(
                                             text(move || {
@@ -1054,12 +1263,7 @@ fn confirmation(ui: Ui) -> AnyElement {
                                     "使用内置默认值替换所有排除规则。",
                                 )
                                 .into(),
-                            Some(Pending::ResetCandidate) => ui
-                                .tr(
-                                    "Remove the candidate page-size override and redeploy.",
-                                    "移除候选数量覆盖值，并重新部署。",
-                                )
-                                .into(),
+                            Some(Pending::Install) => format!("{}\n{}\n{}\n{}", config.schema.display_name_lang(Lang::from_str(&config.language)), ui.state.with(|state| state.paths.as_ref().map(|paths| paths.rime.display().to_string()).unwrap_or_default()), ui.tr("Save configuration, then install the scheme and its supported components.", "保存配置，安装方案及其支持的组件。"), ui.tr("Other configuration changes are saved too.", "同时保存其他配置修改。")),
                             Some(Pending::Skins) => ui
                                 .tr(
                                     "Write selected presets and the default skin, then redeploy.",
@@ -1068,7 +1272,7 @@ fn confirmation(ui: Ui) -> AnyElement {
                                 .into(),
                             None => String::new(),
                         };
-                                                if matches!(pending, Some(Pending::Update(_))) {
+                                                if matches!(pending, Some(Pending::Update(_) | Pending::Install)) {
                                                     summary.push_str(&format!(
                                                         "\n{}: {}",
                                                         ui.tr("User data policy", "用户数据策略"),
@@ -1111,9 +1315,9 @@ fn confirmation(ui: Ui) -> AnyElement {
                                                                 .outline_color(accent)
                                                                 .outline_offset(px(2.0))
                                                         })
-                                                        .on_press(move || ui.pending.set(None))
+                                                        .on_press(move || ui.cancel_confirmation())
                                                         .child(text(move || {
-                                                            ui.tr("Go back", "返回")
+                                                            ui.tr("Cancel", "取消")
                                                         })),
                                                 )
                                                 .child(
@@ -1134,20 +1338,20 @@ fn confirmation(ui: Ui) -> AnyElement {
                                                         .child(text(move || {
                                                             if matches!(
                                                                 pending,
-                                                                Some(Pending::Update(_))
+                                                                Some(Pending::Update(_) | Pending::Install)
                                                             ) {
                                                                 ui.tr(
-                                                                    "Continue · preserve user data",
-                                                                    "继续 · 保留用户数据",
+                                                                    "Preserve data & run",
+                                                                    "保留数据并执行",
                                                                 )
                                                             } else {
-                                                                ui.tr("Confirm", "确认")
+                                                                ui.tr("Apply changes", "应用修改")
                                                             }
                                                         })),
                                                 )
                                                 .child(when(
                                                     move || {
-                                                        matches!(pending, Some(Pending::Update(_)))
+                                                        matches!(pending, Some(Pending::Update(_) | Pending::Install))
                                                             && ui.draft.with(|config| {
                                                                 config.user_data_policy
                                                                     != "preserve"
@@ -1216,7 +1420,7 @@ fn overview(ui: Ui) -> AnyElement {
                         .items_center()
                         .justify_between()
                         .gap_3()
-                        .child(caption(ui, "Selected scheme", "当前方案"))
+                        .child(caption(ui, "Selected scheme", "所选方案"))
                         .child(
                             text(move || ui.tr("RIME", "RIME"))
                                 .text_size(px(11.0))
@@ -1230,10 +1434,16 @@ fn overview(ui: Ui) -> AnyElement {
                 )
                 .child(
                     text(move || {
-                        ui.draft.with(|config| {
-                            config
-                                .schema
-                                .display_name_lang(Lang::from_str(&config.language))
+                        ui.state.with(|state| {
+                            state
+                                .config
+                                .as_ref()
+                                .map(|config| {
+                                    config
+                                        .schema
+                                        .display_name_lang(Lang::from_str(&config.language))
+                                })
+                                .unwrap_or_default()
                         })
                     })
                     .text_size(px(28.0))
@@ -1249,21 +1459,23 @@ fn overview(ui: Ui) -> AnyElement {
                         .flex_row()
                         .flex_wrap()
                         .gap_3()
-                        .child(action(
+                        .child(action_enabled(
                             ui,
-                            "browse-schemes",
-                            "Change scheme",
-                            "切换方案",
-                            false,
-                            move || ui.page.set(Page::Schemes),
+                            "update-all",
+                            "Update all…",
+                            "更新全部…",
+                            ButtonStyle::Primary,
+                            move || !ui.dirty.get(),
+                            move || ui.request(Pending::Update(UpdateAction::All)),
                         ))
-                        .child(action(
+                        .child(action_enabled(
                             ui,
-                            "open-appearance",
-                            "Customize appearance",
-                            "调整外观",
-                            false,
-                            move || ui.page.set(Page::Appearance),
+                            "check-updates",
+                            "Check for updates",
+                            "检查更新",
+                            ButtonStyle::Secondary,
+                            move || !ui.dirty.get(),
+                            move || ui.send(Command::CheckUpdates),
                         )),
                 ),
         )
@@ -1283,7 +1495,7 @@ fn overview(ui: Ui) -> AnyElement {
                         "cancel-countdown",
                         "Not now",
                         "暂不更新",
-                        false,
+                        ButtonStyle::Secondary,
                         move || {
                             ui.controller.with(Controller::stop_countdown);
                             ui.state
@@ -1292,83 +1504,84 @@ fn overview(ui: Ui) -> AnyElement {
                     ))
             },
         ))
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .child(heading(ui, "Components", "组件状态"))
-                .child(action(
-                    ui,
-                    "check-updates",
-                    "Check remote versions",
-                    "检查远端版本",
-                    false,
-                    move || ui.send(Command::CheckUpdates),
-                )),
-        )
+        .child(heading(ui, "Components", "组件状态"))
         .child(dynamic(move || {
-            let mut cards = view()
-                .test_id("component-cards")
-                .flex_row()
-                .flex_wrap()
-                .gap_3();
-            for (name, version) in ui.state.with(|state| state.versions.clone()) {
-                cards = cards.child(
+            let mut rows = view().test_id("component-cards").gap_2();
+            let schema = ui
+                .state
+                .with(|state| state.config.as_ref().map(|config| config.schema))
+                .unwrap_or(Schema::WanxiangBase);
+            for ((name, version), (id, en, zh, action, supported)) in ui
+                .state
+                .with(|state| state.versions.clone())
+                .into_iter()
+                .zip([
+                    (
+                        "update-scheme",
+                        "Update scheme…",
+                        "更新方案…",
+                        UpdateAction::Scheme,
+                        true,
+                    ),
+                    (
+                        "update-dict",
+                        "Update dictionary…",
+                        "更新词库…",
+                        UpdateAction::Dict,
+                        schema.dict_zip().is_some(),
+                    ),
+                    (
+                        "update-model",
+                        "Update model…",
+                        "更新模型…",
+                        UpdateAction::Model,
+                        schema.supports_model_patch(),
+                    ),
+                ])
+            {
+                rows = rows.child(
                     view()
-                        .flex_1()
-                        .min_w(px(160.0))
-                        .p_4()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
                         .gap_3()
-                        .rounded(px(10.0))
+                        .p_4()
+                        .rounded(px(8.0))
                         .bg(surface)
-                        .border_1()
-                        .border_color(line)
                         .child(
-                            text(localized_component(ui, &name))
-                                .text_size(px(13.0))
-                                .text_color(muted),
+                            view()
+                                .flex_1()
+                                .min_w(px(180.0))
+                                .gap_1()
+                                .child(
+                                    text(localized_component(ui, &name))
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM),
+                                )
+                                .child(
+                                    text(localized_component(ui, &version))
+                                        .text_size(px(12.0))
+                                        .text_color(muted),
+                                ),
                         )
-                        .child(
-                            text(localized_component(ui, &version))
-                                .text_size(px(14.0))
-                                .font_weight(FontWeight::SEMIBOLD),
-                        ),
+                        .child(when(
+                            move || supported,
+                            move || {
+                                action_enabled(
+                                    ui,
+                                    id,
+                                    en,
+                                    zh,
+                                    ButtonStyle::Quiet,
+                                    move || !ui.dirty.get(),
+                                    move || ui.request(Pending::Update(action)),
+                                )
+                            },
+                        )),
                 );
             }
-            cards
+            rows
         }))
-        .child(
-            view()
-                .flex_row()
-                .flex_wrap()
-                .gap_2()
-                .child(action(
-                    ui,
-                    "update-scheme",
-                    "Update scheme",
-                    "更新方案",
-                    false,
-                    move || ui.request(Pending::Update(UpdateAction::Scheme)),
-                ))
-                .child(action(
-                    ui,
-                    "update-dict",
-                    "Update dictionary",
-                    "更新词库",
-                    false,
-                    move || ui.request(Pending::Update(UpdateAction::Dict)),
-                ))
-                .child(action(
-                    ui,
-                    "update-model",
-                    "Update model",
-                    "更新模型",
-                    false,
-                    move || ui.request(Pending::Update(UpdateAction::Model)),
-                )),
-        )
         .child(when(
             move || ui.state.with(|state| state.remote_status.is_some()),
             move || {
@@ -1412,28 +1625,14 @@ fn overview(ui: Ui) -> AnyElement {
                     "Check Rime integration without changing your automatic setup preference.",
                     "检查 Rime 集成，不改变自动集成偏好，也不会安装软件包。",
                 ))
-                .child(
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_3()
-                        .child(action(
-                            ui,
-                            "setup-rime",
-                            "Check / set up Rime",
-                            "检查 / 设置 Rime",
-                            false,
-                            move || ui.request(Pending::Update(UpdateAction::RimeSetup)),
-                        ))
-                        .child(action(
-                            ui,
-                            "refresh-status",
-                            "Refresh diagnostics",
-                            "刷新诊断",
-                            false,
-                            move || ui.send(Command::Refresh),
-                        )),
-                ),
+                .child(view().flex_row().flex_wrap().gap_3().child(action(
+                    ui,
+                    "setup-rime",
+                    "Set up Rime…",
+                    "配置 Rime…",
+                    ButtonStyle::Secondary,
+                    move || ui.request(Pending::Update(UpdateAction::RimeSetup)),
+                ))),
         )
         .child(
             button()
@@ -1475,6 +1674,14 @@ fn overview(ui: Ui) -> AnyElement {
                 view()
                     .gap_4()
                     .bind_motion(&reveal())
+                    .child(action(
+                        ui,
+                        "refresh-status",
+                        "Refresh diagnostics",
+                        "刷新诊断",
+                        ButtonStyle::Quiet,
+                        move || ui.send(Command::Refresh),
+                    ))
                     .child(
                         section(ui, "Wanxiang diagnosis", "万象诊断").child(
                             text(move || ui.state.with(|state| state.diagnosis.clone()))
@@ -1576,13 +1783,28 @@ fn schemes(ui: Ui) -> AnyElement {
                 ),
         );
     }
-    view().gap_6().child(heading(ui, "Choose a scheme", "选择输入方案"))
-        .child(caption(ui, "All 15 schemes share the same updater as the CLI. Save the selection, then explicitly install or update.", "全部 15 个方案使用与命令行相同的更新器。保存选择后，再明确执行安装或更新。"))
+    view()
+        .gap_6()
+        .child(heading(ui, "Choose a scheme", "选择输入方案"))
+        .child(caption(
+            ui,
+            "Choose a scheme, then install it below.",
+            "选择方案后，在底部安装。",
+        ))
         .child(choices)
-        .child(when(move || ui.draft.with(|config| config.schema.supports_model_patch()), move || toggle(ui, "model-patch", "Enable model patch", "启用模型补丁", |config| config.model_patch_enabled, |config, value| config.model_patch_enabled = value)))
-        .child(view().flex_row().flex_wrap().gap_3()
-            .child(action(ui, "save-scheme", "Save selection", "保存选择", true, move || ui.request(Pending::Save)))
-            .child(action(ui, "initialize-scheme", "Install selected scheme", "安装所选方案", false, move || ui.request(Pending::Update(UpdateAction::All)))))
+        .child(when(
+            move || ui.draft.with(|config| config.schema.supports_model_patch()),
+            move || {
+                toggle(
+                    ui,
+                    "model-patch",
+                    "Enable model patch",
+                    "启用模型补丁",
+                    |config| config.model_patch_enabled,
+                    |config, value| config.model_patch_enabled = value,
+                )
+            },
+        ))
         .into_element()
 }
 
@@ -1608,7 +1830,7 @@ fn candidate_preview(ui: Ui) -> AnyElement {
                     let samples = [
                         "你好", "您好", "你号", "拟好", "霓好", "呢好", "你", "呢", "拟",
                     ];
-                    let count = ui.candidate.get().parse::<usize>().unwrap_or(5).clamp(1, 9);
+                    let count = usize::from(ui.candidate.get().unwrap_or(5)).clamp(1, 9);
                     let mut candidates = view()
                         .test_id("candidate-preview")
                         .flex_row()
@@ -1635,51 +1857,56 @@ fn candidate_preview(ui: Ui) -> AnyElement {
 }
 
 fn appearance(ui: Ui) -> AnyElement {
-    let candidates = (1..=9)
-        .map(|size| (size.to_string(), size.to_string()))
-        .collect();
+    let mut candidates = vec![("default".into(), ui.tr("Scheme default", "方案默认").into())];
+    candidates.extend((1..=9).map(|size| (size.to_string(), size.to_string())));
     view()
         .gap_6()
         .child(when(
             move || ui.state.with(|state| state.fcitx_supported),
             move || fcitx_appearance(ui),
         ))
-        .child(candidate_preview(ui))
         .child(
             section(ui, "Candidate window", "候选窗口")
+                .child(candidate_preview(ui))
                 .child(picker(
                     ui,
                     "candidate-size",
                     "Candidates per page",
                     "每页候选数",
                     candidates,
-                    move || ui.candidate.get(),
-                    move |size| ui.candidate.set(size),
+                    move || {
+                        ui.candidate
+                            .get()
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "default".into())
+                    },
+                    move |value| ui.candidate.set(value.parse().ok()),
                 ))
-                .child(
-                    view()
-                        .flex_row()
-                        .gap_3()
-                        .child(action(
+                .child(when(
+                    move || ui.candidate.get().is_none(),
+                    move || {
+                        caption(
                             ui,
-                            "apply-candidate",
-                            "Apply & redeploy",
-                            "应用并部署",
-                            false,
-                            move || match ui.candidate.get().parse::<u8>() {
-                                Ok(size) => ui.send(Command::CandidateSize(Some(size))),
-                                Err(error) => ui.error.set(Some(error.to_string())),
-                            },
-                        ))
-                        .child(action(
-                            ui,
-                            "reset-candidate",
-                            "Use scheme default",
-                            "使用方案默认值",
-                            false,
-                            move || ui.request(Pending::ResetCandidate),
-                        )),
-                ),
+                            "Scheme default · layout preview only",
+                            "方案默认 · 仅展示布局",
+                        )
+                    },
+                ))
+                .child(appearance_guard(ui))
+                .child(action_enabled(
+                    ui,
+                    "apply-candidate",
+                    "Apply",
+                    "应用",
+                    ButtonStyle::Secondary,
+                    move || {
+                        !ui.dirty.get()
+                            && (ui.candidate.get() != ui.state.with(|state| state.candidate_size)
+                                || appearance_failed(ui, AppearanceTask::Candidate))
+                    },
+                    move || ui.send(Command::CandidateSize(ui.candidate.get())),
+                ))
+                .child(appearance_feedback(ui, AppearanceTask::Candidate)),
         )
         .child(when(
             move || {
@@ -1693,6 +1920,68 @@ fn appearance(ui: Ui) -> AnyElement {
             move || builtin_appearance(ui),
         ))
         .into_element()
+}
+
+fn appearance_guard(ui: Ui) -> AnyElement {
+    when(
+        move || ui.dirty.get(),
+        move || caption(ui, "Save or revert configuration first", "先保存或还原配置"),
+    )
+    .into_element()
+}
+
+fn appearance_failed(ui: Ui, task: AppearanceTask) -> bool {
+    ui.state.with(|state| {
+        state.appearance_task == Some(task)
+            && matches!(
+                state.status,
+                Status::Error | Status::PartialFailure | Status::Cancelled
+            )
+    })
+}
+
+fn appearance_changed(ui: Ui, task: AppearanceTask) -> bool {
+    ui.state.with(|state| match task {
+        AppearanceTask::Candidate => ui.candidate.get() != state.candidate_size,
+        AppearanceTask::Skins => {
+            ui.selected_skins.get() != state.skins
+                || ui.default_skin.get() != state.default_skin.clone().unwrap_or_default()
+        }
+    })
+}
+
+fn appearance_feedback(ui: Ui, task: AppearanceTask) -> AnyElement {
+    when(
+        move || {
+            appearance_changed(ui, task)
+                || ui.state.with(|state| state.appearance_task == Some(task))
+        },
+        move || {
+            text(move || {
+                ui.state.with(|state| {
+                    if state.busy && state.appearance_task == Some(task) {
+                        ui.tr("Applying…", "正在应用…").into()
+                    } else if appearance_changed(ui, task) && !appearance_failed(ui, task) {
+                        ui.tr("Not applied", "待应用").into()
+                    } else if state.status == Status::Success {
+                        ui.tr("Applied", "已应用").into()
+                    } else {
+                        state.error.clone().unwrap_or_else(|| {
+                            ui.tr("Could not apply. Try again.", "应用未完成，可重试。")
+                                .into()
+                        })
+                    }
+                })
+            })
+            .test_id(match task {
+                AppearanceTask::Candidate => "candidate-feedback",
+                AppearanceTask::Skins => "skin-feedback",
+            })
+            .text_size(px(13.0))
+            .text_color(muted)
+        },
+    )
+    .into_element()
 }
 
 fn theme_tag(label: String) -> AnyElement {
@@ -1767,12 +2056,12 @@ fn market_row(ui: Ui, repository: snout::api::ThemeRepository) -> AnyElement {
                 let retry = active && matches!(snapshot.status, Status::Error | Status::Cancelled);
                 if repository_theme_count(&snapshot, id) > 0 {
                     return view().flex_row().gap_2()
-                        .child(action(ui, &format!("use-theme-{id}"), "View themes", "查看主题", false, move || ui.show_repository_themes(id)))
-                        .child(action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Update" }, if retry { "重试" } else { "更新" }, false, move || ui.send(Command::ImportFcitxTheme(source.clone())))).into_element();
+                        .child(action(ui, &format!("use-theme-{id}"), "View themes", "查看主题", ButtonStyle::Secondary, move || ui.show_repository_themes(id)))
+                        .child(action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Update" }, if retry { "重试" } else { "更新" }, ButtonStyle::Secondary, move || ui.send(Command::ImportFcitxTheme(source.clone())))).into_element();
                 }
-                action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Download" }, if retry { "重试" } else { "下载" }, false, move || ui.send(Command::ImportFcitxTheme(source.clone())))
+                action(ui, &format!("import-theme-{id}"), if retry { "Retry" } else { "Download" }, if retry { "重试" } else { "下载" }, ButtonStyle::Secondary, move || ui.send(Command::ImportFcitxTheme(source.clone())))
             }))
-            .child(action(ui, &format!("open-theme-{id}"), "Repository", "仓库", false, move || {
+            .child(action(ui, &format!("open-theme-{id}"), "Repository", "仓库", ButtonStyle::Secondary, move || {
                 let url = url.clone();
                 spawn(async move { if !open_url(url).await { ui.error.set(Some(ui.tr("Could not open the repository.", "无法打开仓库。").into())); } });
             })))
@@ -1863,7 +2152,7 @@ fn theme_feedback(ui: Ui) -> AnyElement {
                                     "show-downloaded-themes",
                                     "View local themes",
                                     "查看本地主题",
-                                    false,
+                                    ButtonStyle::Secondary,
                                     move || ui.show_repository_themes(id),
                                 )
                             },
@@ -1980,7 +2269,7 @@ fn local_themes(ui: Ui) -> AnyElement {
                     "apply-fcitx",
                     "Apply",
                     "应用",
-                    true,
+                    ButtonStyle::Secondary,
                     move || ui.can_apply_theme(),
                     move || ui.apply_theme(),
                 ))
@@ -2028,11 +2317,12 @@ fn local_themes(ui: Ui) -> AnyElement {
                         "all-local-themes",
                         "All themes",
                         "全部主题",
-                        false,
+                        ButtonStyle::Secondary,
                         move || ui.show_local_themes(),
                     ))
             },
         ))
+        .child(appearance_guard(ui))
         .child(theme_filter(ui, false))
         .child(
             virtual_list(
@@ -2131,7 +2421,7 @@ fn theme_market(ui: Ui) -> AnyElement {
                     "fetch-fcitx-themes",
                     "Refresh",
                     "刷新",
-                    false,
+                    ButtonStyle::Secondary,
                     move || ui.send(Command::SearchFcitxThemes),
                 )),
         )
@@ -2315,34 +2605,24 @@ fn builtin_appearance(ui: Ui) -> AnyElement {
             move || ui.default_skin.get(),
             move |value| ui.default_skin.set(value),
         ))
-        .child(
-            button()
-                .test_id("apply-skins")
-                .disabled(move || {
-                    ui.locked()
-                        || !ui.state.with(|state| {
-                            matches!(
-                                state.appearance,
-                                Some(application::AppearanceTarget::ThemePatch(_))
-                            )
-                        })
-                })
-                .px_4()
-                .py_2()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(line)
-                .focus(|style| {
-                    style
-                        .outline(px(2.0))
-                        .outline_color(accent)
-                        .outline_offset(px(2.0))
-                })
-                .on_press(move || ui.request(Pending::Skins))
-                .child(text(move || {
-                    ui.tr("Write presets & redeploy", "写入预设并部署")
-                })),
-        )
+        .child(appearance_guard(ui))
+        .child(action_enabled(
+            ui,
+            "apply-skins",
+            "Apply",
+            "应用",
+            ButtonStyle::Secondary,
+            move || {
+                !ui.dirty.get()
+                    && (ui.state.with(|state| {
+                        state.skins != ui.selected_skins.get()
+                            || state.default_skin.clone().unwrap_or_default()
+                                != ui.default_skin.get()
+                    }) || appearance_failed(ui, AppearanceTask::Skins))
+            },
+            move || ui.request(Pending::Skins),
+        ))
+        .child(appearance_feedback(ui, AppearanceTask::Skins))
         .into_element()
 }
 
@@ -2373,10 +2653,8 @@ fn settings(ui: Ui) -> AnyElement {
             .child(field(ui, "pre-hook", "Pre-update hook", "更新前钩子", false, |config| config.pre_update_hook.clone(), |config, value| config.pre_update_hook = value))
             .child(field(ui, "post-hook", "Post-update hook", "更新后钩子", false, |config| config.post_update_hook.clone(), |config, value| config.post_update_hook = value))
             .child(caption(ui, "Hooks run local commands with your permissions. Review them before every update.", "钩子以你的权限执行本地命令。每次更新前请仔细核对。")))
-        .child(view().w_full().flex_row().flex_wrap().gap_3()
-            .child(action(ui, "save-settings", "Save settings", "保存设置", true, move || ui.request(Pending::Save)))
-            .child(action(ui, "revert-settings", "Revert changes", "还原修改", false, move || { if let Some(config) = ui.state.with(|state| state.config.clone()) { ui.draft.set(config); ui.dirty.set(false); ui.error.set(None); } })))
         .child(view().min_w(px(300.0)).flex_1().child(exclusions(ui)))
+        .child(completion_tools(ui))
         .into_element()
 }
 
@@ -2418,7 +2696,7 @@ fn exclusions(ui: Ui) -> AnyElement {
                                     &format!("edit-exclusion-{index}"),
                                     "Edit",
                                     "编辑",
-                                    false,
+                                    ButtonStyle::Secondary,
                                     move || {
                                         ui.exclusion.set(selected.clone());
                                         ui.editing_exclusion.set(Some(index));
@@ -2429,7 +2707,7 @@ fn exclusions(ui: Ui) -> AnyElement {
                                     &format!("remove-exclusion-{index}"),
                                     "Remove",
                                     "移除",
-                                    false,
+                                    ButtonStyle::Secondary,
                                     move || ui.send(Command::RemoveExclusion(index)),
                                 )),
                         ),
@@ -2469,7 +2747,7 @@ fn exclusions(ui: Ui) -> AnyElement {
                     "save-exclusion",
                     "Add / save rule",
                     "添加 / 保存规则",
-                    false,
+                    ButtonStyle::Secondary,
                     move || {
                         if ui.dirty.get() {
                             ui.error
@@ -2487,33 +2765,106 @@ fn exclusions(ui: Ui) -> AnyElement {
                 .child(action(
                     ui,
                     "reset-exclusions",
-                    "Reset rules",
-                    "重置规则",
-                    false,
+                    "Reset rules…",
+                    "重置规则…",
+                    ButtonStyle::Destructive,
                     move || ui.request(Pending::ResetExclusions),
                 )),
         )
         .into_element()
 }
 
+fn completion_tools(ui: Ui) -> AnyElement {
+    section(ui, "Tools", "工具")
+        .child(
+            view()
+                .flex_row()
+                .flex_wrap()
+                .gap_3()
+                .child(action(
+                    ui,
+                    "export-zsh",
+                    "Export zsh completions…",
+                    "导出 zsh 补全…",
+                    ButtonStyle::Quiet,
+                    move || ui.export(controller::completion(CompletionShell::Zsh), "_snout"),
+                ))
+                .child(action(
+                    ui,
+                    "export-fish",
+                    "Export fish completions…",
+                    "导出 fish 补全…",
+                    ButtonStyle::Quiet,
+                    move || ui.export(controller::completion(CompletionShell::Fish), "snout.fish"),
+                )),
+        )
+        .into_element()
+}
+
 fn activity(ui: Ui) -> AnyElement {
-    view().gap_6()
-        .child(section(ui, "Update activity", "更新活动")
-            .child(when(move || ui.state.with(|state| state.activity.is_empty()), move || caption(ui, "Nothing has run in this session. Updates and changes appear here.", "本次会话尚无操作。更新和修改记录将显示在这里。")))
-            .child(text(move || ui.state.with(|state| state.activity.join("\n"))).text_size(px(14.0))))
-        .child(section(ui, "Structured results", "结构化结果")
-            .child(caption(ui, "The same JSON report as the CLI. Credentials are redacted before display or export.", "与命令行相同的 JSON 报告。凭据在显示和导出前均会脱敏。"))
-            .child(input().test_id("report-json").readonly(true).multiline(true).h(px(240.0)).text_size(px(12.0)).bg(surface).text_color(ink)
-                .value(move || ui.state.with(|state| state.report.clone().unwrap_or_else(|| ui.tr("No update report yet.", "尚无更新报告。").into()))))
-            .child(button().test_id("export-json").disabled(move || ui.locked() || ui.state.with(|state| state.report.is_none()))
-                .px_4().py_2().rounded(px(6.0)).border_1().border_color(line).focus(|style| style.outline(px(2.0)).outline_color(accent).outline_offset(px(2.0)))
-                .on_press(move || { if let Some(content) = ui.state.with(|state| state.report.clone()) { ui.export(content, "snout-report.json"); } })
-                .child(text(move || ui.tr("Export JSON…", "导出 JSON…")))))
-        .child(section(ui, "Shell completions", "Shell 自动补全")
-            .child(caption(ui, "Generated from the real CLI command definition.", "从真实命令行定义生成。"))
-            .child(view().flex_row().gap_3()
-                .child(action(ui, "export-zsh", "Export zsh…", "导出 zsh…", false, move || ui.export(controller::completion(CompletionShell::Zsh), "_snout")))
-                .child(action(ui, "export-fish", "Export fish…", "导出 fish…", false, move || ui.export(controller::completion(CompletionShell::Fish), "snout.fish")))))
+    view()
+        .gap_6()
+        .child(
+            section(ui, "Activity", "操作记录")
+                .child(when(
+                    move || ui.state.with(|state| state.activity.is_empty()),
+                    move || caption(ui, "Nothing has run in this session.", "本次会话尚无操作。"),
+                ))
+                .child(
+                    text(move || ui.state.with(|state| state.activity.join("\n")))
+                        .text_size(px(14.0)),
+                ),
+        )
+        .child(
+            section(ui, "Result details", "结果详情")
+                .child(action(
+                    ui,
+                    "toggle-json",
+                    "JSON report",
+                    "JSON 报告",
+                    ButtonStyle::Quiet,
+                    move || ui.json_open.update(|open| *open = !*open),
+                ))
+                .child(when(
+                    move || ui.json_open.get(),
+                    move || {
+                        view()
+                            .gap_3()
+                            .child(
+                                input()
+                                    .test_id("report-json")
+                                    .readonly(true)
+                                    .multiline(true)
+                                    .h(px(240.0))
+                                    .text_size(px(12.0))
+                                    .bg(surface)
+                                    .text_color(ink)
+                                    .value(move || {
+                                        ui.state.with(|state| {
+                                            state.report.clone().unwrap_or_else(|| {
+                                                ui.tr("No report yet.", "尚无报告。").into()
+                                            })
+                                        })
+                                    }),
+                            )
+                            .child(action_enabled(
+                                ui,
+                                "export-json",
+                                "Export JSON…",
+                                "导出 JSON…",
+                                ButtonStyle::Quiet,
+                                move || ui.state.with(|state| state.report.is_some()),
+                                move || {
+                                    if let Some(content) =
+                                        ui.state.with(|state| state.report.clone())
+                                    {
+                                        ui.export(content, "snout-report.json");
+                                    }
+                                },
+                            ))
+                    },
+                )),
+        )
         .into_element()
 }
 
@@ -2646,8 +2997,7 @@ mod theme_tests {
                 ui,
                 "fixture-download-success",
                 "Finish download",
-                "完成下载",
-                false,
+                "完成下载", ButtonStyle::Secondary,
                 move || {
                     ui.controller.with(Controller::poll);
                     ui.state.update(|state| {
@@ -2676,8 +3026,7 @@ mod theme_tests {
                 ui,
                 "fixture-download-error",
                 "Fail download",
-                "下载失败",
-                false,
+                "下载失败", ButtonStyle::Secondary,
                 move || {
                     ui.state.update(|state| {
                         state.theme_task = Some(ThemeTask::Download {
@@ -2689,13 +3038,13 @@ mod theme_tests {
                     });
                 },
             ))
-            .child(action(ui, "fixture-apply-error", "Fail apply", "应用失败", false, move || {
+            .child(action(ui, "fixture-apply-error", "Fail apply", "应用失败", ButtonStyle::Secondary, move || {
                 ui.state.update(|state| {
                     state.theme_task=Some(ThemeTask::Apply); state.status=Status::Error;
                     state.error=None; state.report=Some(r#"{"results":[{"success":false,"message":"Could not reload Fcitx5"}]}"#.into());
                 });
             }))
-            .child(action(ui, "fixture-apply-success", "Finish apply", "完成应用", false, move || {
+            .child(action(ui, "fixture-apply-success", "Finish apply", "完成应用", ButtonStyle::Secondary, move || {
                 ui.state.update(|state| {
                     state.theme_task=Some(ThemeTask::Apply); state.status=Status::Success;
                     state.error=None; state.report=None;
@@ -2706,8 +3055,7 @@ mod theme_tests {
                 ui,
                 "fixture-refresh",
                 "Refresh snapshot",
-                "刷新快照",
-                false,
+                "刷新快照", ButtonStyle::Secondary,
                 move || {
                     let mut next = ui.state.get();
                     next.revision += 1;
@@ -2876,6 +3224,28 @@ mod theme_tests {
         app.wait_for("theme-operation-progress").unwrap();
         assert!(app.shows("Downloading themes…"));
         assert!(!app.screen().matches("confirm-cancel").unwrap());
+    }
+
+    #[cfg(all(target_os = "linux", feature = "native"))]
+    #[test]
+    #[ignore = "requires a native display; used for screenshot review"]
+    fn native_actions_visual() {
+        use nsh_platform_linux as platform;
+        platform::gtk4::init().expect("GTK display");
+        let directory = tempfile::tempdir().expect("visual sandbox");
+        let path = directory.path().to_owned();
+        let root = platform::Root::new::<App>(move || fixture_props(&path));
+        let _ = platform::run_app(
+            platform::AppSource::Rust(root),
+            platform::AppOptions {
+                title: "snout actions review".into(),
+                app_id: "io.github.snout.actions-review".into(),
+                size: (800, 640),
+                appearance: platform::Appearance::Dark,
+                ..Default::default()
+            },
+        );
+        assert!(!directory.path().join("rime").exists());
     }
 
     #[cfg(all(target_os = "linux", feature = "native"))]
