@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 from pathlib import Path
 import plistlib
 import shutil
+import subprocess
+import sys
 import tarfile
 import tempfile
 import tomllib
@@ -21,7 +24,7 @@ TARGETS = {
 }
 
 
-def package_desktop(target, version, target_dir, output_dir):
+def package_desktop(target, version, target_dir, output_dir, sign=False):
     suffix = TARGETS[target]
     windows = target.endswith("windows-msvc")
     executable = "snout-desktop.exe" if windows else "snout-desktop"
@@ -30,11 +33,13 @@ def package_desktop(target, version, target_dir, output_dir):
         raise FileNotFoundError(f"desktop binary not found: {binary}")
 
     name = f"snout-desktop-v{version}-{suffix}"
+    metadata = json.dumps({"id": APP_ID, "version": version}) + "\n"
     output_dir.mkdir(parents=True, exist_ok=True)
     if windows:
         artifact = output_dir / f"{name}.zip"
         with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.write(binary, executable)
+            archive.write(binary, f"{name}/{executable}")
+            archive.writestr(f"{name}/nsh/app.json", metadata)
         return artifact
 
     with tempfile.TemporaryDirectory(prefix="snout-desktop-") as directory:
@@ -90,6 +95,11 @@ def package_desktop(target, version, target_dir, output_dir):
             )
         shutil.copyfile(binary, installed_binary)
         installed_binary.chmod(0o755)
+        resources = package / ("Contents/Resources/nsh" if target.endswith("apple-darwin") else "nsh")
+        resources.mkdir(parents=True, exist_ok=True)
+        (resources / "app.json").write_text(metadata, encoding="utf-8", newline="\n")
+        if sign and target.endswith("apple-darwin"):
+            subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(package)], check=True)
         artifact = output_dir / f"{name}.tar.gz"
         executable_entry = installed_binary.relative_to(staging).as_posix()
 
@@ -120,7 +130,8 @@ def main():
         parser.error(f"release tag {arguments.tag!r} does not match desktop version v{version}")
     print(
         package_desktop(
-            arguments.target, version, arguments.target_dir, arguments.output_dir
+            arguments.target, version, arguments.target_dir, arguments.output_dir,
+            sign=sys.platform == "darwin",
         )
     )
 

@@ -74,6 +74,13 @@ impl L10n {
         en.insert("menu.switch_scheme", "Switch Scheme");
         zh.insert("menu.config", "配置");
         en.insert("menu.config", "Config");
+        zh.insert("menu.program_update", "程序更新");
+        en.insert("menu.program_update", "Program Update");
+        zh.insert(
+            "menu.desc.program_update",
+            "检查 snout 程序新版，确认后安装。AUR / 包管理器安装禁用自更新。",
+        );
+        en.insert("menu.desc.program_update", "Check snout program updates and confirm installation. Disabled for package-managed installations.");
         zh.insert("menu.quit", "退出");
         en.insert("menu.quit", "Quit");
         zh.insert("menu.action_ready", "可执行");

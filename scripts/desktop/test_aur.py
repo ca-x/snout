@@ -6,10 +6,29 @@ import unittest
 
 
 PKGBUILD = Path(__file__).resolve().parents[2] / "snout-desktop-bin" / "PKGBUILD"
+CLI_PKGBUILD = PKGBUILD.parent.parent / "snout-bin" / "PKGBUILD"
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Arch Linux package contract")
 class DesktopAurTests(unittest.TestCase):
+    def test_terminal_packages_mark_both_architectures_as_package_managed(self):
+        for architecture in ["x86_64", "aarch64"]:
+            with self.subTest(architecture=architecture), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "source"
+                source.mkdir()
+                binary = source / f"snout-9.8.7-linux-{architecture}"
+                binary.write_bytes(b"terminal fixture")
+                package = root / "package"
+                subprocess.run([
+                    "bash", "-euc", 'source "$1"; pkgver=9.8.7; srcdir="$2"; pkgdir="$3"; CARCH="$4"; package',
+                    "aur-test", str(CLI_PKGBUILD), str(source), str(package), architecture,
+                ], check=True)
+                self.assertEqual((package / "usr/bin/snout").read_bytes(), binary.read_bytes())
+                marker = package / "usr/share/snout/package-managed"
+                self.assertEqual(marker.read_text(), "pacman\n")
+                self.assertEqual(marker.stat().st_mode & 0o777, 0o644)
+
     def test_metadata_keeps_desktop_separate_from_cli(self):
         result = subprocess.run(
             [
@@ -91,6 +110,10 @@ class DesktopAurTests(unittest.TestCase):
             self.assertEqual(installed_license.read_bytes(), license_file.read_bytes())
             self.assertEqual(installed_license.stat().st_mode & 0o777, 0o644)
             self.assertFalse((package_dir / "usr/bin/snout").exists())
+            managed = package_dir / "usr/share/snout-desktop/package-managed"
+            self.assertEqual(managed.read_text(), "pacman\n")
+            self.assertEqual(managed.stat().st_mode & 0o777, 0o644)
+            self.assertFalse((package_dir / "usr/nsh/app.json").exists())
 
 
 if __name__ == "__main__":

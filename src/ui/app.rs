@@ -35,6 +35,7 @@ use tokio::task::JoinHandle;
 
 // ── 应用状态 ──
 pub enum AppScreen {
+    ProgramUpdate,
     Menu,
     Updating,
     Result,
@@ -55,6 +56,7 @@ pub enum AppScreen {
 }
 
 pub struct App {
+    program_update: crate::ui::program_update::ProgramUpdate,
     pub should_quit: bool,
     pub screen: AppScreen,
     pub menu_selected: usize,
@@ -160,6 +162,7 @@ impl App {
         let engines = config::detect_installed_engines();
         let skin_target = crate::application::appearance_target(&manager.rime_dir, &engines);
         Self {
+            program_update: crate::ui::program_update::ProgramUpdate::new(),
             should_quit: false,
             screen: AppScreen::Menu,
             menu_selected: 0,
@@ -232,6 +235,7 @@ impl App {
             ("6", skin_label),
             ("7", self.t.t("menu.switch_scheme")),
             ("8", self.t.t("menu.config")),
+            ("U", self.t.t("menu.program_update")),
             ("Q", self.t.t("menu.quit")),
         ]
     }
@@ -250,6 +254,9 @@ impl App {
 
     fn current_hint(&self) -> String {
         match self.screen {
+            AppScreen::ProgramUpdate => {
+                "Enter: confirm / 确认  C: check / 检查  Esc: cancel / 返回".into()
+            }
             AppScreen::Updating => format!(
                 "{}  q/Esc {}",
                 self.t.t("hint.wait"),
@@ -344,11 +351,14 @@ fn resolve_update_context(app: &App, mode: &UpdateMode) -> anyhow::Result<Resolv
 pub async fn run_tui() -> Result<()> {
     let manager = Manager::new()?;
     let mut app = App::new(&manager);
+    app.program_update.check(manager.config.clone());
     let _session = TerminalSession::enter()?;
     crate::ui::style::query_terminal_background();
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    run_app(&mut terminal, &mut app, &manager).await
+    let result = run_app(&mut terminal, &mut app, &manager).await;
+    app.program_update.shutdown().await;
+    result
 }
 
 struct TerminalSession;
@@ -396,6 +406,13 @@ async fn run_app(
     // 只在状态变化时重绘：空闲不再每 100 ms 付一次整帧成本。
     let mut dirty = true;
     loop {
+        let had_release = app.program_update.release.is_some();
+        if app.program_update.poll() {
+            dirty = true;
+            if !had_release && app.program_update.release.is_some() {
+                app.notify("New snout version available — U to review / snout 有新版，按 U 查看");
+            }
+        }
         let mut progress_events = Vec::new();
         if let Some(rx) = &app.progress_rx {
             while let Ok(event) = rx.try_recv() {
@@ -461,6 +478,7 @@ async fn run_app(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match app.screen {
+                        AppScreen::ProgramUpdate => handle_program_update_key(app, key.code),
                         AppScreen::Menu => handle_menu_key(app, key.code).await?,
                         AppScreen::Updating => handle_updating_key(app, key.code),
                         AppScreen::Result => handle_result_key(app, key.code),
@@ -508,6 +526,12 @@ async fn run_app(
 
 async fn handle_menu_key(app: &mut App, key: KeyCode) -> Result<()> {
     match key {
+        KeyCode::Char('u' | 'U') => {
+            app.screen = AppScreen::ProgramUpdate;
+            if app.program_update.release.is_none() {
+                app.program_update.check(app.config_snapshot.clone());
+            }
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             app.menu_selected = app.menu_selected.saturating_sub(1);
         }
@@ -594,7 +618,13 @@ async fn handle_menu_key(app: &mut App, key: KeyCode) -> Result<()> {
                     app.screen = AppScreen::SchemeSelector;
                 }
                 8 => enter_config_view(app),
-                9 => app.should_quit = true,
+                9 => {
+                    app.screen = AppScreen::ProgramUpdate;
+                    if app.program_update.release.is_none() {
+                        app.program_update.check(app.config_snapshot.clone());
+                    }
+                }
+                10 => app.should_quit = true,
                 _ => {}
             }
         }
@@ -604,6 +634,31 @@ async fn handle_menu_key(app: &mut App, key: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn handle_program_update_key(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            if app.program_update.confirm {
+                app.program_update.confirm = false;
+            } else if app.program_update.busy {
+                app.program_update.cancel();
+            } else {
+                app.screen = AppScreen::Menu;
+            }
+        }
+        KeyCode::Char('c' | 'C') => app.program_update.check(app.config_snapshot.clone()),
+        KeyCode::Enter if !app.program_update.busy => {
+            if app.program_update.installed {
+                app.should_quit = true;
+            } else if app.program_update.confirm {
+                app.program_update.install(app.config_snapshot.clone());
+            } else if app.program_update.release.is_some() {
+                app.program_update.confirm = true;
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn handle_update_confirm_key(app: &mut App, key: KeyCode) -> Result<()> {
@@ -1660,6 +1715,9 @@ fn current_schema_index(schema: Schema) -> usize {
 }
 
 fn menu_unavailable_reason(app: &App, idx: usize) -> Option<String> {
+    if app.program_update.installing && idx != 9 {
+        return Some("Cancel or finish the program update first / 请先取消或完成程序更新".into());
+    }
     match idx {
         3 if app.schema.dict_zip().is_none() => Some(format!(
             "{}: {}",
@@ -1697,6 +1755,45 @@ fn ui(f: &mut Frame, app: &App) {
 
     // Body - 根据屏幕渲染
     match app.screen {
+        AppScreen::ProgramUpdate => {
+            let mut lines = vec![
+                Line::styled(
+                    format!("snout {}", env!("CARGO_PKG_VERSION")),
+                    section_title_text(),
+                ),
+                Line::from(""),
+                Line::from(app.program_update.message.clone()),
+                Line::from(""),
+                Line::from(
+                    "Program updates do not change Rime data. / 程序更新不会更改 Rime 数据。",
+                ),
+            ];
+            if app.program_update.confirm {
+                lines.push(Line::styled(
+                    "Enter: download, verify and replace snout / 下载、校验并替换 snout",
+                    accent_text(),
+                ));
+                lines.push(Line::from("Esc: cancel / 取消"));
+            } else if let Some(release) = &app.program_update.release {
+                lines.push(Line::styled(
+                    "Enter: review installation / 确认安装",
+                    accent_text(),
+                ));
+                lines.extend(
+                    release
+                        .notes
+                        .lines()
+                        .take(16)
+                        .map(|line| Line::from(line.to_owned())),
+                );
+            }
+            f.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(panel_block(app.t.t("menu.program_update"))),
+                chunks[1],
+            );
+        }
         AppScreen::Menu => render_menu(f, chunks[1], app),
         AppScreen::Updating => crate::ui::update_view::render_updating(
             f,
@@ -1896,6 +1993,7 @@ fn current_engine_label(app: &App) -> String {
 
 fn current_screen_label(app: &App) -> &str {
     match app.screen {
+        AppScreen::ProgramUpdate => app.t.t("menu.program_update"),
         AppScreen::Menu => app
             .menu_items()
             .get(app.menu_selected)
@@ -2731,7 +2829,8 @@ fn menu_description(app: &App, idx: usize) -> String {
         6 => app.t.t("menu.desc.skin_patch").into(),
         7 => app.t.t("menu.desc.switch_scheme").into(),
         8 => app.t.t("menu.desc.config").into(),
-        9 => app.t.t("menu.desc.quit").into(),
+        9 => app.t.t("menu.desc.program_update").into(),
+        10 => app.t.t("menu.desc.quit").into(),
         _ => String::new(),
     }
 }
@@ -2740,6 +2839,33 @@ fn menu_description(app: &App, idx: usize) -> String {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    #[tokio::test]
+    async fn program_update_has_a_separate_menu_and_development_cannot_start_network_work() {
+        let (_root, manager) = isolated_manager();
+        let mut app = App::new(&manager);
+        assert_eq!(app.menu_items()[8].0, "U");
+        assert_eq!(app.menu_items()[9].0, "Q");
+        handle_menu_key(&mut app, KeyCode::Char('u')).await.unwrap();
+        assert!(matches!(app.screen, AppScreen::ProgramUpdate));
+        assert!(app.program_update.disabled);
+        assert!(!app.program_update.busy);
+        handle_program_update_key(&mut app, KeyCode::Enter);
+        assert!(!app.program_update.confirm);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|frame| ui(frame, &app)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Rime"));
+        handle_program_update_key(&mut app, KeyCode::Esc);
+        assert!(matches!(app.screen, AppScreen::Menu));
+        assert!(!app.should_quit);
+    }
 
     fn isolated_manager() -> (tempfile::TempDir, Manager) {
         let root = tempfile::tempdir().expect("temporary configuration root");

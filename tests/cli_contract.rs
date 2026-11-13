@@ -59,3 +59,51 @@ fn completions_and_help_remain_available_without_initialization() {
         );
     }
 }
+
+#[test]
+fn program_update_is_distinct_from_data_updates_and_keeps_json_errors() {
+    let help = run(&["self-update", "--help"]);
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("--check"));
+    assert!(text.contains("--yes"));
+    for arguments in [
+        vec!["self-update", "--check", "--json"],
+        vec!["self-update", "--yes", "--json"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(output.status.code(), Some(1));
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["command"], "self-update");
+        assert_eq!(report["ok"], false);
+        assert!(report["error"].as_str().unwrap().contains("development"));
+    }
+}
+
+#[test]
+fn package_marker_disables_terminal_updates_before_configuration_or_network() {
+    let root = tempfile::tempdir().unwrap();
+    let bin = root.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let executable = bin.join(if cfg!(windows) { "snout.exe" } else { "snout" });
+    std::fs::copy(env!("CARGO_BIN_EXE_snout"), &executable).unwrap();
+    let marker = root.path().join("share/snout/package-managed");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(marker, "pacman\n").unwrap();
+    let config = root.path().join("config");
+    let output = Command::new(executable)
+        .args(["self-update", "--yes", "--json"])
+        .env("XDG_CONFIG_HOME", &config)
+        .env("HOME", root.path())
+        .env("USERPROFILE", root.path())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["command"], "self-update");
+    assert!(report["error"]
+        .as_str()
+        .unwrap()
+        .contains("Package-managed"));
+    assert!(!config.exists());
+}

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -61,6 +62,7 @@ class DesktopPackageTests(unittest.TestCase):
                 self.assertEqual(archive.extractfile(icon).read(), (PACKAGER.ICON_DIR / filename).read_bytes())
             self.assertIn("StartupWMClass=io.github.snout.desktop\n", entry)
             self.assertNotIn(f"{prefix}/bin/snout", archive.getnames())
+            self.assertEqual(json.load(archive.extractfile(f"{prefix}/nsh/app.json")), {"id": PACKAGER.APP_ID, "version": self.version})
 
     def test_macos_archives_have_app_bundle_and_versioned_plist(self):
         for architecture in ["x86_64", "aarch64"]:
@@ -86,13 +88,16 @@ class DesktopPackageTests(unittest.TestCase):
                     self.assertEqual(plist["CFBundlePackageType"], "APPL")
                     self.assertEqual(plist["CFBundleVersion"], "0.3.0")
                     self.assertEqual(plist["CFBundleShortVersionString"], "0.3.0")
+                    self.assertEqual(json.load(archive.extractfile("snout.app/Contents/Resources/nsh/app.json")), {"id": PACKAGER.APP_ID, "version": self.version})
 
-    def test_windows_zip_contains_only_desktop_executable(self):
+    def test_windows_zip_contains_portable_directory_and_identity(self):
         artifact = self.package("x86_64-pc-windows-msvc")
         self.assertEqual(artifact.name, "snout-desktop-v0.3.0-windows-x86_64.zip")
         with zipfile.ZipFile(artifact) as archive:
-            self.assertEqual(archive.namelist(), ["snout-desktop.exe"])
-            self.assertEqual(archive.read("snout-desktop.exe"), self.binary_content)
+            prefix = "snout-desktop-v0.3.0-windows-x86_64"
+            self.assertEqual(archive.namelist(), [f"{prefix}/snout-desktop.exe", f"{prefix}/nsh/app.json"])
+            self.assertEqual(archive.read(f"{prefix}/snout-desktop.exe"), self.binary_content)
+            self.assertEqual(json.loads(archive.read(f"{prefix}/nsh/app.json")), {"id": PACKAGER.APP_ID, "version": self.version})
 
     def test_missing_binary_does_not_create_release_asset(self):
         with self.assertRaises(FileNotFoundError):

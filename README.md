@@ -84,6 +84,20 @@ yay -S snout-desktop-bin
 
 ## 使用
 
+### 程序自更新
+
+```bash
+snout self-update --check        # 仅检查 snout 程序新版（默认行为）
+snout self-update --yes          # 明确确认后下载、校验并替换程序
+snout self-update --check --json # 机器可读结果
+```
+
+TUI 启动时后台检查，按 `U` 打开「程序更新」，查看后再次确认才会安装；安装完成后退出并重新运行。
+桌面便携版在「设置 → 程序更新」确认后安装并重启。更新验证官方来源、SemVer、大小和 SHA-256，不会改动 Rime 数据。
+**AUR 的 `snout-bin` / `snout-desktop-bin` 及其他系统包管理安装禁止程序自更新，即使以 root 运行也不例外。** 请通过 AUR 助手或包管理器升级。
+`--update` 和输入方案、词库、模型自动更新仍只更新输入法数据，与程序自更新相互独立。
+自行下载的终端程序请保留官方文件名 `snout` / `snout.exe`；开发构建不进行程序自更新。
+
 ### TUI 模式 (默认)
 
 ```bash
@@ -333,6 +347,7 @@ snout --fcitx5-theme-light <light-key> --fcitx5-theme-dark <dark-key>
   6. 皮肤 Patch
   7. 切换方案
   8. 配置
+  U. 程序更新
   Q. 退出
 ```
 
@@ -537,6 +552,22 @@ GTK 4.14+). It installs `snout-desktop` and an application-menu entry, and can c
 with the CLI/TUI `snout-bin` package. Future releases update both AUR packages automatically.
 
 ## Usage
+
+### Program self-updates
+
+`snout self-update` or `snout self-update --check` checks only; add `--yes` to confirm
+downloading, verifying and replacing the executable. `--json` is supported on this
+subcommand. The TUI checks in the background and provides a separate `U` update page
+with explicit confirmation and cancellable downloads. After installing, exit and
+run snout again. Portable desktop builds confirm updates in Settings and restart.
+
+**Both AUR packages (`snout-bin`, `snout-desktop-bin`) disable program self-updates.**
+Use your AUR helper/package manager instead. System package paths are blocked even
+when writable or running as root. Input-method updates (`--update`, schemes,
+dictionaries and models) are separate and retain their original behavior.
+Standalone terminal binaries must retain their official `snout` / `snout.exe` name;
+development builds do not self-update. Stable releases publish a shared update
+manifest covering all five terminal binaries and four desktop packages.
 
 ```bash
 snout                  # Launch TUI

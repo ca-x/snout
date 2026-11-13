@@ -164,7 +164,10 @@ jobs:
         with:
           python-version: "3.13"
       - name: Generate release checksums
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          python scripts/desktop/update_manifest.py release-artifacts --tag "$RELEASE_TAG" --notes "docs/releases/$RELEASE_TAG.md"
           python scripts/desktop/checksums.py release-artifacts
           cd release-artifacts
           sha256sum --check SHA256SUMS
@@ -185,9 +188,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          find release-artifacts -type f -print0 | while IFS= read -r -d '' file; do
+          find release-artifacts -type f ! -name latest.json -print0 | while IFS= read -r -d '' file; do
             gh release upload "${{ github.ref_name }}" "$file" --clobber
           done
+          gh release upload "${{ github.ref_name }}" release-artifacts/latest.json --clobber
 
   publish-aur-snout-desktop-bin:
     name: Publish snout-desktop-bin to AUR

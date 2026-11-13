@@ -54,6 +54,7 @@ pub struct ThemeDownload {
 
 #[derive(Clone)]
 pub struct Snapshot {
+    pub app_update: crate::app_update::State,
     pub config: Option<Config>,
     pub settings_saved: Option<bool>,
     pub appearance_task: Option<AppearanceTask>,
@@ -92,6 +93,7 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
+            app_update: Default::default(),
             config: None,
             settings_saved: None,
             appearance_task: None,
@@ -130,6 +132,8 @@ impl Default for Snapshot {
 }
 
 pub enum Command {
+    CheckAppUpdate,
+    InstallAppUpdate,
     Refresh,
     CheckUpdates,
     Save(Box<Config>),
@@ -366,7 +370,7 @@ impl Controller {
     }
 
     pub fn submit(&mut self, command: Command) -> Result<()> {
-        if self.closed {
+        if self.closed || self.snapshot.app_update.installed {
             bail!("The workbench is closing / 工作台正在关闭");
         }
         if self.snapshot.busy {
@@ -540,6 +544,7 @@ impl Drop for Controller {
 }
 
 struct WorkerEnvironment {
+    app_update: crate::app_update::Updater,
     live: bool,
     engines: Vec<String>,
     appearance: Option<AppearanceTarget>,
@@ -564,6 +569,7 @@ impl WorkerEnvironment {
         };
         Self {
             live,
+            app_update: crate::app_update::Updater::new(live),
             engines,
             appearance,
             remote_status: None,
@@ -709,6 +715,7 @@ fn snapshot(manager: &Manager, environment: &WorkerEnvironment, revision: u64) -
         _ => (HashSet::new(), None),
     };
     Snapshot {
+        app_update: environment.app_update.state.clone(),
         config: Some(config.clone()),
         settings_saved: environment.settings_saved,
         revision,
@@ -834,6 +841,33 @@ async fn execute(
         matches!(request.command, Command::InstallScheme { .. }).then_some(false);
     request.cancel.checkpoint()?;
     match request.command {
+        Command::CheckAppUpdate => {
+            environment
+                .app_update
+                .check(&manager.config, &request.cancel)
+                .await?;
+        }
+        Command::InstallAppUpdate => {
+            let install = environment.app_update.install(
+                &manager.config,
+                &request.cancel,
+                |received, total| {
+                    let _ = events.send(Event::Progress(UpdateEvent {
+                        component: snout::updater::UpdateComponent::Update,
+                        phase: snout::updater::UpdatePhase::Downloading,
+                        progress: received as f64 / total.max(1) as f64,
+                        detail: format!("Desktop update / 程序更新: {received} / {total}"),
+                    }));
+                },
+            );
+            tokio::pin!(install);
+            loop {
+                tokio::select! {
+                    result = &mut install => { result?; break; },
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => request.cancel.checkpoint()?,
+                }
+            }
+        }
         Command::Refresh => {
             let selected_schema = manager.config.schema;
             *manager = manager.reload()?;
@@ -1116,6 +1150,27 @@ mod tests {
     fn run(controller: &mut Controller, command: Command) {
         controller.submit(command).expect("submit command");
         ready(controller);
+    }
+
+    #[test]
+    fn preview_rejects_direct_app_update_commands_before_network_or_installation() {
+        let root = TempDir::new().unwrap();
+        let mut controller = Controller::start(Some(paths(&root))).unwrap();
+        ready(&mut controller);
+        assert!(controller.snapshot.app_update.disabled.is_some());
+        for command in [Command::CheckAppUpdate, Command::InstallAppUpdate] {
+            run(&mut controller, command);
+            assert_eq!(controller.snapshot.status, Status::Error);
+            assert!(controller
+                .snapshot
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("preview"));
+            assert!(!controller.snapshot.app_update.installed);
+            assert!(controller.snapshot.app_update.available.is_none());
+        }
+        controller.shutdown().unwrap();
     }
 
     fn install_fixture(root: &TempDir) -> (Manager, WorkerEnvironment) {

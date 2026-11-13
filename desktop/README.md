@@ -134,6 +134,34 @@ it; fixed-rounding themes do not pretend to offer a toggle.
   Export replaces files atomically through the shared helper and preserves
   existing symlinks. Native file dialogs determine the destination.
 
+## Application Updates
+
+- Official portable desktop packages check the stable GitHub Release's `latest.json`
+  once on launch. Settings → Application updates also offers a manual check.
+  A newer release shows its notes; **Update & restart** requires confirmation.
+  This is separate from input-method/scheme auto-updates and never changes Rime data.
+- The dedicated worker downloads over HTTPS, checks app identity, SemVer, archive
+  size and SHA-256 with the standalone `nsh-updater` crate, then replaces the portable
+  directory. Installation is serialized with other operations; cancellation interrupts
+  checks/downloads, not the final atomic replacement. Restart waits for the native
+  event loop and existing worker shutdown. Failed verification leaves the app intact.
+- **AUR/pacman packages never check, download, install or restart themselves.**
+  The PKGBUILD installs `/usr/share/snout-desktop/package-managed`, omits portable
+  metadata, and installs under `/usr`, which is blocked even when running as root.
+  Update `snout-desktop-bin` with your AUR helper instead. Other protected package
+  locations, unknown/unpackaged binaries, read-only installs and previews are disabled too.
+- Portable packages retain `nsh/app.json` alongside their executable directory
+  (`Contents/Resources/nsh/app.json` on macOS). Keep the entire extracted directory;
+  copying just the executable intentionally disables self-updates. Windows ZIPs now
+  contain a single portable directory, not a loose executable.
+- Future stable tag releases generate `latest.json` from all four desktop and five terminal payloads
+  before `SHA256SUMS`; CI uploads the update manifest last. No manual manifest editing
+  is needed. GitHub HTTPS is the trust root; these manifests are not independently signed.
+  macOS packaging applies ad-hoc signing so installer validation can run; Developer ID
+  signing/notarization is still needed for trusted distribution to other Macs.
+- The UI/engine remains on NSH 0.4.0. The independent `nsh-updater` 0.5.0 has no
+  UI/engine dependency and requires Rust 1.97 or newer to build the desktop.
+
 ## Verification
 
 ```sh

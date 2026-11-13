@@ -63,6 +63,7 @@ enum ButtonStyle {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
+    AppUpdate,
     Update(UpdateAction),
     Save,
     ResetExclusions,
@@ -122,7 +123,7 @@ impl Ui {
 
     fn locked(self) -> bool {
         self.state
-            .with(|state| state.busy || state.config.is_none())
+            .with(|state| state.busy || state.config.is_none() || state.app_update.installed)
             || self.pending.get().is_some()
     }
 
@@ -207,6 +208,7 @@ impl Ui {
         };
         self.pending.set(None);
         let command = match pending {
+            Pending::AppUpdate => Command::InstallAppUpdate,
             Pending::Update(action) => {
                 self.page.set(Page::Activity);
                 Command::Update { action, preserve }
@@ -698,6 +700,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
         Err(error) => return view().p_6().child(text(error.to_string())).into_element(),
     };
     let ui = new_ui(controller);
+    let app_check_started = signal(false);
     ui.commit_ref
         .on_focus_in(move || ui.commit_focused.set(true));
     ui.commit_ref
@@ -714,6 +717,20 @@ pub fn App(props: AppProps) -> impl IntoElement {
         });
     }
     set_interval(Duration::from_millis(60), move || {
+        if ui.state.with(|state| state.app_update.installed) {
+            nsh_core::element::desktop::close_window();
+            return;
+        }
+        if !app_check_started.get()
+            && !ui.locked()
+            && !ui.dirty.get()
+            && ui
+                .state
+                .with(|state| state.app_update.disabled.is_none() && state.countdown.is_none())
+        {
+            app_check_started.set(true);
+            ui.send(Command::CheckAppUpdate);
+        }
         if !ui.controller.with(Controller::poll) {
             return;
         }
@@ -802,6 +819,11 @@ pub fn App(props: AppProps) -> impl IntoElement {
     view().test_id("snout-workbench").flex_1().flex_row().bg(canvas).text_color(ink)
         .child(sidebar(ui))
         .child(view().flex_1().min_w(px(0.0)).child(header(ui)).child(confirmation(ui))
+            .child(when(move || ui.state.with(|state| state.app_update.available.is_some()), move || {
+                view().mx_6().my_2().p_3().gap_2().rounded(px(6.0)).border_1().border_color(line)
+                    .child(text(move || ui.state.with(|state| format!("{} {}", ui.tr("New desktop version available:", "程序有新版本："), state.app_update.available.as_ref().map(|update| update.version.as_str()).unwrap_or_default()))).text_size(px(14.0)))
+                    .child(action(ui, "open-app-update", "View update", "查看更新", ButtonStyle::Quiet, move || ui.page.set(Page::Settings)))
+            }))
             .child(when(move || ui.state.with(|state| !state.warnings.is_empty()), move || {
                 view().mx_6().my_2().p_3().rounded(px(6.0)).border_1().border_color(line)
                     .child(caption(ui, "Some installation details could not be read. Settings remain available.", "部分安装信息无法读取，设置仍然可用。"))
@@ -1239,6 +1261,7 @@ fn confirmation(ui: Ui) -> AnyElement {
                                             text(move || {
                                                 let config = ui.draft.get();
                                                 let mut summary = match pending {
+                            Some(Pending::AppUpdate) => ui.tr("Download and verify the desktop update, replace this portable app, then restart. Your Rime data and settings are not changed.", "下载并校验程序更新，替换当前便携版并重启。不会更改 Rime 数据和设置。").into(),
                             Some(Pending::Update(action)) => format!(
                                 "{} · {}\n{}",
                                 action.command(),
@@ -1345,7 +1368,7 @@ fn confirmation(ui: Ui) -> AnyElement {
                                                                     "保留数据并执行",
                                                                 )
                                                             } else {
-                                                                ui.tr("Apply changes", "应用修改")
+                                                                if matches!(pending, Some(Pending::AppUpdate)) { ui.tr("Update & restart", "更新并重启") } else { ui.tr("Apply changes", "应用修改") }
                                                             }
                                                         })),
                                                 )
@@ -2628,6 +2651,22 @@ fn builtin_appearance(ui: Ui) -> AnyElement {
 
 fn settings(ui: Ui) -> AnyElement {
     view().flex_row().flex_wrap().items_start().gap_6()
+        .child(section(ui, "Application updates", "程序更新").min_w(px(300.0)).flex_1()
+            .child(text(format!("snout {}", env!("CARGO_PKG_VERSION"))).text_size(px(14.0)))
+            .child(text(move || ui.state.with(|state| {
+                if let Some(reason) = &state.app_update.disabled { reason.clone() }
+                else if let Some(update) = &state.app_update.available { format!("{} {}", ui.tr("Available:", "可用版本："), update.version) }
+                else if state.app_update.checked { ui.tr("You are up to date.", "当前已是最新版本。").into() }
+                else { ui.tr("Portable builds check on launch. Installation requires confirmation.", "便携版启动时检查更新，安装前需要确认。").into() }
+            })).test_id("app-update-status").text_size(px(14.0)).text_color(muted))
+            .child(action_enabled(ui, "check-app-update", "Check for app updates", "检查程序更新", ButtonStyle::Secondary,
+                move || !ui.locked() && !ui.dirty.get() && ui.state.with(|state| state.app_update.disabled.is_none()), move || ui.send(Command::CheckAppUpdate)))
+            .child(when(move || ui.state.with(|state| state.app_update.available.is_some()), move || {
+                view().gap_2()
+                    .child(text(move || ui.state.with(|state| state.app_update.available.as_ref().and_then(|update| update.notes.clone()).unwrap_or_default())).text_size(px(14.0)).text_color(muted))
+                    .child(action_enabled(ui, "install-app-update", "Update & restart", "更新并重启", ButtonStyle::Primary,
+                        move || !ui.locked() && !ui.dirty.get(), move || ui.request(Pending::AppUpdate)))
+            })))
         .child(section(ui, "General", "常规").min_w(px(300.0)).flex_1()
             .child(config_picker(ui, "language", "Language", "语言", &[("zh", "简体中文"), ("en", "English")], |config| config.language.clone(), |config, value| config.language = value))
             .child(config_picker(ui, "tui-theme", "Terminal appearance", "终端外观", &[("auto", "System / 跟随系统"), ("light", "Light / 亮色"), ("dark", "Dark / 暗色")], |config| config.tui_theme_mode.clone(), |config, value| config.tui_theme_mode = value))
@@ -2866,6 +2905,72 @@ fn activity(ui: Ui) -> AnyElement {
                 )),
         )
         .into_element()
+}
+
+#[cfg(test)]
+mod app_update_tests {
+    use super::*;
+    use nsh_core::{element::Root, Size};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    #[component]
+    fn UpdateFixture(props: AppProps) -> impl IntoElement {
+        crate::theme::install();
+        let controller = Controller::start(Some(Paths {
+            config: props.config_path.get().to_string().into(),
+            rime: props.rime_path.get().to_string().into(),
+            cache: props.cache_path.get().to_string().into(),
+        }))
+        .unwrap();
+        let ui = new_ui(controller);
+        ui.draft.update(|config| config.language = "en".into());
+        let mut available = nsh_updater::Available::default();
+        available.version = "99.0.0".into();
+        available.notes = Some("Update fixture notes".into());
+        ui.state.set(Snapshot {
+            config: Some(Config::default()),
+            busy: false,
+            app_update: crate::app_update::State {
+                available: Some(available),
+                ..Default::default()
+            },
+            ..Snapshot::default()
+        });
+        view().flex_1().child(confirmation(ui)).child(settings(ui))
+    }
+
+    #[test]
+    fn installing_an_available_update_requires_confirmation_and_escape_cancels() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_owned();
+        let root = Root::new::<UpdateFixture>(move || AppProps {
+            config_path: path
+                .join("config.json")
+                .to_string_lossy()
+                .to_string()
+                .into(),
+            rime_path: path.join("rime").to_string_lossy().to_string().into(),
+            cache_path: path.join("cache").to_string_lossy().to_string().into(),
+        });
+        let mut app = Headless::start(EngineConfig {
+            viewport: Size::new(px(1040.0), px(1000.0)),
+            ui_sets: vec![nsh_base::registry()],
+            ..EngineConfig::new(root)
+        })
+        .unwrap();
+        app.wait_for("Update fixture notes").unwrap();
+        assert!(!app.screen().matches("confirmation").unwrap());
+        app.press("install-app-update").unwrap();
+        app.wait_for("confirmation").unwrap();
+        assert!(app.shows("Download and verify the desktop update, replace this portable app, then restart. Your Rime data and settings are not changed."));
+        assert!(!app.screen().matches("confirm-discard").unwrap());
+        app.press_key("escape").unwrap();
+        app.wait_for_gone("confirmation", Duration::from_secs(5))
+            .unwrap();
+        assert!(app.screen().enabled("install-app-update").unwrap());
+        assert!(!directory.path().join("rime").exists());
+    }
 }
 
 #[cfg(test)]

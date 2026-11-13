@@ -53,6 +53,16 @@ fn persisted(paths: &Paths) -> Config {
         .expect("configuration JSON")
 }
 
+#[test]
+fn preview_shows_app_update_policy_and_disables_checks() {
+    let (_root, _paths, mut app) = workbench();
+    navigate(&mut app, "nav-settings", "Application updates");
+    app.wait_for("Self-update disabled in preview / 预览模式禁用程序自更新")
+        .expect("preview policy is visible");
+    assert!(!app.screen().enabled("check-app-update").unwrap());
+    assert!(!app.screen().shows("Update & restart"));
+}
+
 fn wait_for_navigation(app: &mut Headless, navigation: &str, heading: &str) {
     app.wait_until(
         &format!("{navigation} selected and {heading} mounted"),

@@ -1,6 +1,6 @@
 [package]
 name = "snout"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 description = "Rime input method init and update tool with Wanxiang, Ice, Frost, and Mint support"
 license = "MIT"
@@ -25,6 +25,7 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 regex = "1"
 tempfile = "3"
+semver = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fcitx5-dbus = "0.1.4"

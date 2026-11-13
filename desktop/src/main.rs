@@ -8,6 +8,7 @@ use nsh_platform_macos as platform;
 use nsh_platform_windows as platform;
 
 fn main() -> anyhow::Result<impl std::process::Termination> {
+    let executable = std::env::current_exe()?;
     #[cfg(target_os = "linux")]
     {
         platform::gtk4::init()?;
@@ -43,5 +44,6 @@ fn main() -> anyhow::Result<impl std::process::Termination> {
         },
     );
     shutdown.wait()?;
+    snout_desktop::app_update::restart_if_requested(&executable)?;
     Ok(exit)
 }

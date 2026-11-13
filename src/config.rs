@@ -397,6 +397,10 @@ fn get_config_path() -> Result<PathBuf> {
     Ok(dir.join("snout/config.json"))
 }
 
+pub(crate) fn read_existing_config() -> Result<Config> {
+    load_or_create_config(&get_config_path()?)
+}
+
 fn load_or_create_config(path: &Path) -> Result<Config> {
     let t = L10n::new(Lang::Zh);
     if path.exists() {

@@ -8,6 +8,18 @@ use std::process::ExitCode;
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// 检查程序新版；--yes 校验并安装 / Check program updates; --yes verifies and installs
+    SelfUpdate {
+        /// 仅检查（默认） / Check only (default)
+        #[arg(long, conflicts_with = "yes")]
+        check: bool,
+        /// 确认下载并替换程序 / Confirm downloading and replacing the program
+        #[arg(long)]
+        yes: bool,
+        /// 输出 JSON / Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// 生成 shell 自动补全 / Generate shell completions
     Completions {
         /// 目标 shell / Target shell
@@ -231,7 +243,7 @@ pub async fn run() -> ExitCode {
             return ExitCode::from(u8::try_from(exit_code).unwrap_or(1));
         }
     };
-    let json = cli.json;
+    let json = cli.json || matches!(cli.command, Some(Commands::SelfUpdate { json: true, .. }));
     let command = cli.action_name();
 
     match execute(cli).await {
@@ -257,11 +269,15 @@ pub async fn run() -> ExitCode {
 
 async fn execute(cli: Cli) -> anyhow::Result<bool> {
     if let Some(command) = &cli.command {
+        if let Commands::SelfUpdate { yes, json, .. } = command {
+            return execute_self_update(*yes, *json).await;
+        }
         if cli.json {
             anyhow::bail!("--json cannot be used with the completions command");
         }
         match command {
             Commands::Completions { shell } => print_completions(*shell),
+            Commands::SelfUpdate { .. } => unreachable!("self-update handled above"),
         }
         return Ok(true);
     }
@@ -480,9 +496,70 @@ async fn execute(cli: Cli) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+async fn execute_self_update(install: bool, json: bool) -> anyhow::Result<bool> {
+    let updater = crate::self_update::TerminalUpdater::current()?;
+    let config = config::read_existing_config()?;
+    let cancel = types::CancelSignal::new();
+    let operation = async {
+        let release = updater.check(&config, &cancel).await?;
+        if install {
+            if let Some(release) = &release {
+                updater
+                    .install(release, &config, &cancel, |_, _| {})
+                    .await?;
+            }
+        }
+        anyhow::Ok(release)
+    };
+    tokio::pin!(operation);
+    let release = tokio::select! {
+        result = &mut operation => result?,
+        signal = tokio::signal::ctrl_c() => {
+            signal?;
+            cancel.cancel();
+            operation.await?
+        }
+    };
+    let version = release
+        .as_ref()
+        .map(|release| release.version.as_str())
+        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let message = match (&release, install) {
+        (Some(_), true) => "Program updated. Run snout again to use the new version. / 程序已更新，重新运行 snout 即可使用新版。",
+        (Some(_), false) => "New program version available. Run snout self-update --yes to install. / 程序有新版，运行 snout self-update --yes 确认安装。",
+        (None, _) => "You are up to date. / 当前已是最新版本。",
+    };
+    if json {
+        print_json_report(&CliReport {
+            schema_version: 1,
+            ok: true,
+            command: "self-update",
+            schema: None,
+            results: vec![crate::report::ComponentResult {
+                component: "application",
+                display_name: "snout".into(),
+                old_version: env!("CARGO_PKG_VERSION").into(),
+                new_version: version.into(),
+                success: true,
+                message: message.into(),
+            }],
+            error: None,
+        });
+    } else {
+        println!("snout {version}\n{message}");
+        if let Some(release) = release {
+            if !release.notes.is_empty() {
+                println!("\n{}", release.notes);
+            }
+        }
+    }
+    Ok(true)
+}
+
 impl Cli {
     fn action_name(&self) -> &'static str {
         match self.command {
+            Some(Commands::SelfUpdate { .. }) => "self-update",
             Some(Commands::Completions { .. }) => "completions",
             None if self.list_fcitx5_themes => "fcitx5-themes",
             None if self.fetch_fcitx5_theme.is_some() => "fcitx5-theme-fetch",

@@ -10,6 +10,7 @@ pub mod feedback;
 pub mod fileutil;
 pub mod i18n;
 pub mod report;
+pub mod self_update;
 pub mod skin;
 pub mod types;
 pub mod updater;
