@@ -193,15 +193,13 @@ impl TerminalUpdater {
         verify_payload(release, received, &hex::encode(hasher.finalize()))?;
         staged.flush()?;
         staged.as_file().sync_all()?;
-        let mut permissions = std::fs::metadata(&self.executable)?.permissions();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let mut permissions = std::fs::metadata(&self.executable)?.permissions();
             permissions.set_mode(permissions.mode() & 0o777);
+            staged.as_file().set_permissions(permissions)?;
         }
-        #[cfg(not(unix))]
-        permissions.set_readonly(false);
-        staged.as_file().set_permissions(permissions)?;
         cancel.checkpoint()?;
         self.allowed()?;
         replace(staged, &self.executable)
