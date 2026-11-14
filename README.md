@@ -84,6 +84,18 @@ yay -S snout-desktop-bin
 
 ## 使用
 
+### 组件状态与更新进度
+
+桌面概览和 TUI 主菜单明确标注各组件「已是最新 / 需要更新 / 未安装 / 检查失败」，无需自己对比版本。
+桌面会后台检查组件版本；已是最新的组件禁用更新按钮。离线、尚未检查和不适用的组件不会误报为最新。
+安装与更新以「检查 → 下载 → 校验 → 安装与应用」时间线展示真实步骤，活动步骤带 loading 动画，跳过、失败和取消分别保留状态。
+桌面原始日志收纳在「操作记录 → 诊断日志」，程序自更新也使用同一套步骤反馈。
+
+```bash
+snout status        # 只读检查方案、词库与模型的新旧状态，不安装或修改配置
+snout status --json # 结构化组件状态；检查失败返回非零退出码
+```
+
 ### 程序自更新
 
 ```bash
@@ -541,6 +553,11 @@ cargo run --manifest-path desktop/Cargo.toml --release
 Desktop packages are separate `snout-desktop-*` release assets. Linux packages use GNU
 dynamic linking and require GTK 4.14+; macOS archives contain an unsigned `.app`; Windows
 archives contain the native executable. Verify `SHA256SUMS` before opening unsigned builds.
+The desktop overview and TUI menu explicitly distinguish up-to-date, update available,
+not installed, unchecked, failed and unsupported components. Installation progress uses
+an event-driven step timeline with loading feedback; desktop diagnostic logs are collapsed.
+Use `snout status` or `snout status --json` for read-only component checks without installing anything.
+
 The `snout-bin` AUR package continues to install only CLI/TUI. Both frontends share the
 existing configuration, so avoid running updates concurrently across them. The desktop
 exposes all CLI capabilities, background progress/cancellation, explicit data/hook confirmation,

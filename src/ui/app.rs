@@ -7,9 +7,9 @@ use crate::ui::config_logic::{
     update_detail_text, update_notice_text, ConfigAction, ConfigStatusSnapshot,
 };
 use crate::ui::style::{
-    accent_text, color_accent, color_border, color_selection_bg, color_warning, contrast_color,
-    panel_block, primary_text, secondary_text, section_title_text, selection_style,
-    selector_highlight_symbol, tertiary_text,
+    accent_text, color_accent, color_border, color_secondary, color_selection_bg, color_success,
+    color_warning, contrast_color, panel_block, primary_text, secondary_text, section_title_text,
+    selection_style, selector_highlight_symbol, tertiary_text,
 };
 use crate::ui::update_view::UpdateOutcome;
 use crate::updater;
@@ -84,6 +84,8 @@ pub struct App {
     pub update_done: bool,
     pub update_results: Vec<String>,
     pub update_stage_lines: Vec<String>,
+    operation: crate::application::progress::OperationProgress,
+    animation_frame: usize,
     update_outcome: Option<UpdateOutcome>,
     update_in_progress: bool,
     offer_rime_setup: bool,
@@ -188,6 +190,8 @@ impl App {
             update_done: false,
             update_results: Vec::new(),
             update_stage_lines: Vec::new(),
+            operation: Default::default(),
+            animation_frame: 0,
             update_outcome: None,
             update_in_progress: false,
             offer_rime_setup: false,
@@ -465,6 +469,10 @@ async fn run_app(
             }
         }
 
+        if app.update_in_progress || app.program_update.busy {
+            app.animation_frame = app.animation_frame.wrapping_add(1);
+            dirty = true;
+        }
         if dirty {
             terminal.draw(|f| ui(f, app))?;
             dirty = false;
@@ -1556,6 +1564,8 @@ async fn start_update(app: &mut App, mode: UpdateMode) -> Result<()> {
     } else {
         Some(effective_user_data_policy_label(&context.config, app.t.lang()).to_string())
     };
+    app.operation =
+        crate::application::progress::OperationProgress::for_action(mode, &context.config);
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let (result_tx, result_rx) = mpsc::channel();
@@ -1588,6 +1598,16 @@ async fn run_update_task(
 }
 
 fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, UpdateTaskError>) {
+    let (completed, cancelled, failed) = match &results {
+        Ok(results) => (results.as_slice(), false, false),
+        Err(UpdateTaskError::Cancelled(results)) => (results.as_slice(), true, false),
+        Err(UpdateTaskError::Failed(_)) => (&[][..], false, true),
+    };
+    app.operation.finish(
+        completed.iter().map(|result| (result.kind, result.success)),
+        cancelled,
+        failed,
+    );
     match results {
         Ok(rs) => {
             let all_success = rs.iter().all(|r| r.success);
@@ -1657,6 +1677,7 @@ fn finish_update(app: &mut App, results: Result<Vec<updater::UpdateResult>, Upda
 }
 
 fn upsert_stage_line(app: &mut App, event: &UpdateEvent) {
+    app.operation.observe(event);
     let label = format!(
         "{}: {}",
         component_label(app, event.component),
@@ -1768,6 +1789,13 @@ fn ui(f: &mut Frame, app: &App) {
                     "Program updates do not change Rime data. / 程序更新不会更改 Rime 数据。",
                 ),
             ];
+            if !app.program_update.operation.components.is_empty() {
+                lines.extend(crate::ui::update_view::timeline_lines(
+                    &app.t,
+                    &app.program_update.operation,
+                    app.animation_frame,
+                ));
+            }
             if app.program_update.confirm {
                 lines.push(Line::styled(
                     "Enter: download, verify and replace snout / 下载、校验并替换 snout",
@@ -1802,7 +1830,8 @@ fn ui(f: &mut Frame, app: &App) {
             crate::ui::update_view::UpdatingViewData {
                 update_msg: &app.update_msg,
                 update_pct: app.update_pct,
-                update_stage_lines: &app.update_stage_lines,
+                operation: &app.operation,
+                animation_frame: app.animation_frame,
             },
         ),
         AppScreen::Result | AppScreen::RimeSetupPrompt => crate::ui::update_view::render_result(
@@ -2271,20 +2300,36 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
                 section_title_text(),
             )]),
         ];
-        lines.extend(table_lines(vec![
-            (
-                app.t.t("config.scheme_status_label"),
-                app.config_status.installed_scheme_version.as_str(),
-            ),
-            (
-                app.t.t("config.dict_status_label"),
-                app.config_status.installed_dict_version.as_str(),
-            ),
-            (
-                app.t.t("config.model_status_label"),
-                app.config_status.installed_model_version.as_str(),
-            ),
-        ]));
+        for (label, status) in [
+            ("config.scheme_status_label", &app.config_status.scheme),
+            ("config.dict_status_label", &app.config_status.dict),
+            ("config.model_status_label", &app.config_status.model),
+        ] {
+            use crate::application::component_status::ComponentState;
+            let color = if app.config_status_loading {
+                color_secondary()
+            } else {
+                match status.state {
+                    ComponentState::Latest => color_success(),
+                    ComponentState::UpdateAvailable | ComponentState::NotInstalled => {
+                        color_accent()
+                    }
+                    ComponentState::CheckFailed => color_warning(),
+                    _ => color_secondary(),
+                }
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{}: ", app.t.t(label)), secondary_text()),
+                Span::styled(
+                    if app.config_status_loading {
+                        app.t.t("config.loading").to_string()
+                    } else {
+                        status.summary(app.t.lang())
+                    },
+                    Style::default().fg(color),
+                ),
+            ]));
+        }
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             app.t.t("menu.current_settings"),
@@ -3274,6 +3319,26 @@ mod tests {
 
         let context = resolve_update_context(&app, &UpdateMode::All).expect("update context");
         assert_eq!(context.config.model_patch_enabled, !original);
+    }
+
+    #[test]
+    fn menu_displays_freshness_without_requiring_version_comparison() {
+        use crate::application::component_status::ComponentState;
+        let (_root, manager) = isolated_manager();
+        let mut app = App::new(&manager);
+        app.t = L10n::new(Lang::En);
+        app.config_status.scheme.state = ComponentState::Latest;
+        app.config_status.dict.state = ComponentState::UpdateAvailable;
+        app.config_status.model.state = ComponentState::CheckFailed;
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| ui(frame, &app)).unwrap();
+        let text = buffer_to_string(terminal.backend());
+        assert!(text.contains("Up to date"));
+        assert!(text.contains("Update available"));
+        assert!(text.contains("Check failed"));
+        app.config_status_loading = true;
+        terminal.draw(|frame| ui(frame, &app)).unwrap();
+        assert!(!buffer_to_string(terminal.backend()).contains("Up to date"));
     }
 
     fn buffer_to_string(backend: &TestBackend) -> String {

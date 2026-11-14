@@ -8,6 +8,12 @@ use std::process::ExitCode;
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// 检查方案、词库和模型状态 / Check scheme, dictionary and model freshness
+    Status {
+        /// 输出 JSON / Emit JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// 检查程序新版；--yes 校验并安装 / Check program updates; --yes verifies and installs
     SelfUpdate {
         /// 仅检查（默认） / Check only (default)
@@ -243,7 +249,11 @@ pub async fn run() -> ExitCode {
             return ExitCode::from(u8::try_from(exit_code).unwrap_or(1));
         }
     };
-    let json = cli.json || matches!(cli.command, Some(Commands::SelfUpdate { json: true, .. }));
+    let json = cli.json
+        || matches!(
+            cli.command,
+            Some(Commands::SelfUpdate { json: true, .. } | Commands::Status { json: true })
+        );
     let command = cli.action_name();
 
     match execute(cli).await {
@@ -269,6 +279,9 @@ pub async fn run() -> ExitCode {
 
 async fn execute(cli: Cli) -> anyhow::Result<bool> {
     if let Some(command) = &cli.command {
+        if let Commands::Status { json } = command {
+            return execute_status(cli.json || *json).await;
+        }
         if let Commands::SelfUpdate { yes, json, .. } = command {
             return execute_self_update(*yes, *json).await;
         }
@@ -278,6 +291,7 @@ async fn execute(cli: Cli) -> anyhow::Result<bool> {
         match command {
             Commands::Completions { shell } => print_completions(*shell),
             Commands::SelfUpdate { .. } => unreachable!("self-update handled above"),
+            Commands::Status { .. } => unreachable!("status handled above"),
         }
         return Ok(true);
     }
@@ -496,6 +510,43 @@ async fn execute(cli: Cli) -> anyhow::Result<bool> {
     Ok(true)
 }
 
+async fn execute_status(json: bool) -> anyhow::Result<bool> {
+    let manager = config::Manager::read_only()?;
+    let schema = manager.config.schema;
+    let lang = Lang::from_str(&manager.config.language);
+    let rime = manager.rime_dir.clone();
+    let snapshot =
+        crate::application::status::build_config_status_snapshot(Ok(manager), schema, lang, rime)
+            .await;
+    use crate::application::component_status::ComponentState;
+    let ok = [&snapshot.scheme, &snapshot.dict, &snapshot.model]
+        .iter()
+        .all(|status| status.state != ComponentState::CheckFailed);
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1, "command": "status", "ok": ok, "schema": schema,
+                "components": { "scheme": snapshot.scheme, "dict": snapshot.dict, "model": snapshot.model },
+                "results": [], "error": if ok { None } else { Some("Component checks failed / 组件检查失败") }
+            }))?
+        );
+    } else {
+        for (component, status) in [
+            (updater::UpdateComponent::Scheme, &snapshot.scheme),
+            (updater::UpdateComponent::Dict, &snapshot.dict),
+            (updater::UpdateComponent::Model, &snapshot.model),
+        ] {
+            println!(
+                "{}: {}",
+                crate::application::progress::component_label(component, lang),
+                status.summary(lang)
+            );
+        }
+    }
+    Ok(ok)
+}
+
 async fn execute_self_update(install: bool, json: bool) -> anyhow::Result<bool> {
     let updater = crate::self_update::TerminalUpdater::current()?;
     let config = config::read_existing_config()?;
@@ -504,9 +555,7 @@ async fn execute_self_update(install: bool, json: bool) -> anyhow::Result<bool> 
         let release = updater.check(&config, &cancel).await?;
         if install {
             if let Some(release) = &release {
-                updater
-                    .install(release, &config, &cancel, |_, _| {})
-                    .await?;
+                updater.install(release, &config, &cancel, |_| {}).await?;
             }
         }
         anyhow::Ok(release)
@@ -559,6 +608,7 @@ async fn execute_self_update(install: bool, json: bool) -> anyhow::Result<bool> 
 impl Cli {
     fn action_name(&self) -> &'static str {
         match self.command {
+            Some(Commands::Status { .. }) => "status",
             Some(Commands::SelfUpdate { .. }) => "self-update",
             Some(Commands::Completions { .. }) => "completions",
             None if self.list_fcitx5_themes => "fcitx5-themes",

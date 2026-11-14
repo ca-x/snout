@@ -6,6 +6,8 @@ use crate::types::{CancelSignal, Config, Schema};
 use crate::updater::{self, BaseUpdater, UpdateComponent, UpdateEvent, UpdatePhase, UpdateResult};
 use anyhow::Result;
 
+pub mod component_status;
+pub mod progress;
 pub mod status;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,10 +1,15 @@
+use super::component_status::ComponentStatus;
 use crate::config::Manager;
 use crate::i18n::{L10n, Lang};
 use crate::types::Schema;
 use crate::updater;
+use serde::Serialize;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ConfigStatusSnapshot {
+    pub scheme: ComponentStatus,
+    pub dict: ComponentStatus,
+    pub model: ComponentStatus,
     pub scheme_status: String,
     pub dict_status: String,
     pub model_status: String,
@@ -34,6 +39,17 @@ pub async fn build_config_status_snapshot(
                 installed_scheme_version: t.t("config.unknown").into(),
                 installed_dict_version: t.t("config.unknown").into(),
                 installed_model_version: t.t("config.unknown").into(),
+                scheme: ComponentStatus::checked(None, None, false, false),
+                dict: if schema.dict_zip().is_some() {
+                    ComponentStatus::checked(None, None, false, false)
+                } else {
+                    ComponentStatus::unsupported()
+                },
+                model: if schema.supports_model_patch() {
+                    ComponentStatus::checked(None, None, false, false)
+                } else {
+                    ComponentStatus::unsupported()
+                },
             };
         }
     };
@@ -67,6 +83,27 @@ pub async fn build_config_status_snapshot(
                     dict_local.as_ref(),
                 ),
                 installed_model_version: installed_version_text(&t, model_local.as_ref()),
+                scheme: ComponentStatus::checked(
+                    scheme_local.as_ref(),
+                    None,
+                    scheme_local.is_some(),
+                    false,
+                ),
+                dict: if schema.dict_zip().is_some() {
+                    ComponentStatus::checked(dict_local.as_ref(), None, dict_local.is_some(), false)
+                } else {
+                    ComponentStatus::unsupported()
+                },
+                model: if schema.supports_model_patch() {
+                    ComponentStatus::checked(
+                        model_local.as_ref(),
+                        None,
+                        model_local.is_some(),
+                        false,
+                    )
+                } else {
+                    ComponentStatus::unsupported()
+                },
             };
         }
     };
@@ -128,7 +165,7 @@ pub async fn build_config_status_snapshot(
         manager.rime_dir.clone(),
     )
     .ok();
-    let model_remote = if let Some(base) = base {
+    let model_remote = if let Some(base) = base.filter(|_| schema.supports_model_patch()) {
         updater::wanxiang::WanxiangUpdater { base }
             .check_model_update(None)
             .await
@@ -137,14 +174,54 @@ pub async fn build_config_status_snapshot(
         None
     };
 
+    let scheme_installed = crate::config::schema_record_matches_files(schema, &rime_dir);
+    let scheme = ComponentStatus::checked(
+        scheme_local.as_ref(),
+        scheme_remote.as_ref(),
+        scheme_installed,
+        scheme_installed
+            && scheme_remote.as_ref().is_some_and(|remote| {
+                !updater::BaseUpdater::needs_update(scheme_local.as_ref(), remote)
+            }),
+    );
+    let dict = if schema.dict_zip().is_some() {
+        let current = dict_remote.as_ref().is_some_and(|remote| {
+            if schema.is_wanxiang() {
+                updater::wanxiang::dict_is_current(&rime_dir, &schema, dict_local.as_ref(), remote)
+            } else {
+                updater::ice::dict_is_current(&rime_dir, dict_local.as_ref(), remote)
+            }
+        });
+        ComponentStatus::checked(
+            dict_local.as_ref(),
+            dict_remote.as_ref(),
+            dict_local.is_some() && rime_dir.join("dicts").is_dir(),
+            current,
+        )
+    } else {
+        ComponentStatus::unsupported()
+    };
+    let model = if schema.supports_model_patch() {
+        let target = rime_dir.join(crate::types::MODEL_FILE);
+        let current = model_remote.as_ref().is_some_and(|remote| {
+            updater::wanxiang::model_is_current(&target, model_local.as_ref(), remote)
+        });
+        ComponentStatus::checked(
+            model_local.as_ref(),
+            model_remote.as_ref(),
+            target.is_file(),
+            current,
+        )
+    } else {
+        ComponentStatus::unsupported()
+    };
     ConfigStatusSnapshot {
-        scheme_status: local_status_text(&t, scheme_local.as_ref(), scheme_remote.as_ref()),
-        dict_status: if schema.dict_zip().is_none() {
-            t.t("config.na").into()
-        } else {
-            local_status_text(&t, dict_local.as_ref(), dict_remote.as_ref())
-        },
-        model_status: local_status_text(&t, model_local.as_ref(), model_remote.as_ref()),
+        scheme_status: scheme.summary(lang),
+        dict_status: dict.summary(lang),
+        model_status: model.summary(lang),
+        scheme,
+        dict,
+        model,
         model_patch_status: model_patch_status_text(
             &t,
             manager.config.model_patch_enabled,
@@ -172,7 +249,7 @@ fn local_status_text(
             local.tag,
             remote.tag
         ),
-        (Some(local), None) => format!("{} ({})", t.t("config.installed"), local.tag),
+        (Some(local), None) => format!("{} ({})", t.t("config.unknown"), local.tag),
         (None, Some(remote)) => format!("{} ({})", t.t("config.not_installed"), remote.tag),
         (None, None) => t.t("config.unknown").into(),
     }

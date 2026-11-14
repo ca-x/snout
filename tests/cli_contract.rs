@@ -61,6 +61,55 @@ fn completions_and_help_remain_available_without_initialization() {
 }
 
 #[test]
+fn component_status_failure_is_explicit_and_read_only() {
+    let home = tempfile::tempdir().unwrap();
+    let config_root = if cfg!(windows) {
+        home.path().join("appdata")
+    } else if cfg!(target_os = "macos") {
+        home.path().join("Library/Application Support")
+    } else {
+        home.path().join("config")
+    };
+    let config_path = config_root.join("snout/config.json");
+    std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+    let config = snout::types::Config {
+        schema: snout::types::Schema::Wubi86Jidian,
+        proxy_enabled: true,
+        proxy_type: "invalid-fixture-proxy".into(),
+        ..Default::default()
+    };
+    let original = serde_json::to_vec(&config).unwrap();
+    std::fs::write(&config_path, &original).unwrap();
+    for arguments in [vec!["status", "--json"], vec!["status"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_snout"))
+            .args(&arguments)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("APPDATA", &config_root)
+            .env("LOCALAPPDATA", home.path().join("localappdata"))
+            .env("XDG_CONFIG_HOME", &config_root)
+            .env("XDG_CACHE_HOME", home.path().join("cache"))
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        if arguments.contains(&"--json") {
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["command"], "status");
+            assert_eq!(report["ok"], false);
+            assert_eq!(report["components"]["scheme"]["state"], "check_failed");
+            assert_eq!(report["components"]["dict"]["state"], "unsupported");
+            assert_eq!(report["components"]["model"]["state"], "unsupported");
+        } else {
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains("检查失败") || text.contains("Check failed"));
+            assert!(!text.contains("已是最新") && !text.contains("Up to date"));
+        }
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
+        assert!(!home.path().join("cache").exists());
+    }
+}
+
+#[test]
 fn program_update_is_distinct_from_data_updates_and_keeps_json_errors() {
     let help = run(&["self-update", "--help"]);
     assert!(help.status.success());

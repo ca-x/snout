@@ -244,7 +244,7 @@ fn scheme_is_current(
         .all(|file| rime_dir.join(file).is_file())
 }
 
-fn dict_is_current(
+pub(crate) fn dict_is_current(
     rime_dir: &std::path::Path,
     local: Option<&UpdateRecord>,
     info: &UpdateInfo,

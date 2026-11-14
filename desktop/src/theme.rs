@@ -1,9 +1,14 @@
 use nsh_base::theme;
 use nsh_core::prelude::*;
+use std::sync::LazyLock;
+
+static APP_THEME: LazyLock<nsh_base::Theme> = LazyLock::new(|| {
+    nsh_base::Theme::from_json(include_str!("theme.json"))
+        .expect("the bundled desktop theme is valid")
+});
 
 pub fn install() {
-    let theme = nsh_base::Theme::from_json(include_str!("theme.json"))
-        .expect("the bundled desktop theme is valid");
+    let theme = APP_THEME.clone();
     nsh_core::element::set_tokens(theme.into_tokens());
 }
 
@@ -38,8 +43,23 @@ pub fn danger() -> AdaptiveColor {
     theme().destructive
 }
 
+pub fn success() -> AdaptiveColor {
+    theme()
+        .color("success")
+        .or_else(|| APP_THEME.color("success"))
+        .expect("the desktop theme defines success")
+}
+
+pub fn warning() -> AdaptiveColor {
+    theme()
+        .color("warning")
+        .or_else(|| APP_THEME.color("warning"))
+        .expect("the desktop theme defines warning")
+}
+
 pub fn overlay() -> AdaptiveColor {
     theme()
         .color("overlay")
+        .or_else(|| APP_THEME.color("overlay"))
         .expect("the desktop theme defines overlay")
 }

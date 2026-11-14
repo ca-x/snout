@@ -494,7 +494,7 @@ impl WanxiangUpdater {
     }
 }
 
-fn dict_is_current(
+pub(crate) fn dict_is_current(
     rime_dir: &Path,
     schema: &Schema,
     local: Option<&UpdateRecord>,
@@ -548,7 +548,11 @@ fn save_model_record(record_path: &Path, info: &UpdateInfo) -> Result<()> {
     BaseUpdater::save_record(record_path, &record)
 }
 
-fn model_is_current(target: &Path, local: Option<&UpdateRecord>, info: &UpdateInfo) -> bool {
+pub(crate) fn model_is_current(
+    target: &Path,
+    local: Option<&UpdateRecord>,
+    info: &UpdateInfo,
+) -> bool {
     if !target.is_file() {
         return false;
     }

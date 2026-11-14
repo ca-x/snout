@@ -35,6 +35,16 @@ pub struct WanxiangDiagnosis {
 }
 
 impl Manager {
+    pub(crate) fn read_only() -> Result<Self> {
+        let config_path = get_config_path()?;
+        Ok(Self {
+            config: load_or_create_config(&config_path)?,
+            config_path,
+            rime_dir: detect_rime_dir(),
+            cache_dir: get_cache_dir(),
+        })
+    }
+
     pub fn new() -> Result<Self> {
         Self::with_paths(get_config_path()?, detect_rime_dir(), get_cache_dir())
     }
@@ -540,7 +550,7 @@ fn parse_wanxiang_pro_variant_from_text(content: &str) -> Option<Schema> {
     None
 }
 
-fn schema_record_matches_files(schema: Schema, rime_dir: &Path) -> bool {
+pub(crate) fn schema_record_matches_files(schema: Schema, rime_dir: &Path) -> bool {
     match schema {
         Schema::WanxiangBase => rime_dir.join("wanxiang.schema.yaml").exists(),
         Schema::WanxiangMoqi

@@ -5,7 +5,23 @@
 Snout is a native Rime maintenance workbench for Linux, macOS and Windows. The
 main task is understanding the installed scheme and updating its components.
 Keep the NSH 0.4.0 Rust backend, system window chrome, fonts, scrolling, text
-input and file dialogs. Desktop work does not change the CLI/TUI presentation.
+input and file dialogs. Desktop and CLI/TUI share freshness and operation state,
+with presentation adapted to native controls and terminal cells respectively.
+
+## Update decisions and progress
+
+- Component rows lead with explicit freshness labels, not version comparisons.
+  Use success for current, accent for actionable updates, warning for failed checks,
+  and muted text for unchecked or unsupported components. Always keep a text label.
+- Check component versions in the background on live startup and invalidate checks
+  after configuration or data mutations. Failed and offline checks never mean current.
+  Known-current component actions are disabled; failed checks offer a retry.
+- Installation feedback uses stable, keyed component timelines, driven by actual
+  updater phases. Unobserved stages are skipped, never animated as invented work.
+  Only active work animates; NSH motion respects reduced-motion preferences.
+- Completed, failed and cancelled states remain distinguishable. Raw logs and JSON
+  are secondary disclosures. Package-managed self-update and preview restrictions
+  apply before any installation side effects, regardless of what the UI displays.
 
 ## Visual language
 

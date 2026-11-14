@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use snout::application::progress::{component_from_id, OperationProgress};
 use snout::application::{self, AppearanceTarget, UpdateAction};
 use snout::cli::{completion_script, CompletionShell};
 use snout::config::{self, Manager};
@@ -54,6 +55,8 @@ pub struct ThemeDownload {
 
 #[derive(Clone)]
 pub struct Snapshot {
+    pub operation: OperationProgress,
+    pub checking_updates: bool,
     pub app_update: crate::app_update::State,
     pub config: Option<Config>,
     pub settings_saved: Option<bool>,
@@ -93,6 +96,8 @@ pub struct Snapshot {
 impl Default for Snapshot {
     fn default() -> Self {
         Self {
+            operation: OperationProgress::default(),
+            checking_updates: false,
             app_update: Default::default(),
             config: None,
             settings_saved: None,
@@ -378,6 +383,27 @@ impl Controller {
         }
         self.stop_countdown();
         let reporting = command.report_command().is_some();
+        let operation = match &command {
+            Command::InstallScheme { config, .. } => {
+                OperationProgress::for_action(UpdateAction::All, config)
+            }
+            Command::Update { action, .. } => OperationProgress::for_action(
+                *action,
+                self.snapshot.config.as_ref().unwrap_or(&Config::default()),
+            ),
+            Command::InstallAppUpdate => {
+                OperationProgress::new([snout::updater::UpdateComponent::Update])
+            }
+            _ => self.snapshot.operation.clone(),
+        };
+        let checking_updates = matches!(command, Command::CheckUpdates);
+        let invalidates_status = matches!(
+            command,
+            Command::Save(_)
+                | Command::InstallScheme { .. }
+                | Command::Update { .. }
+                | Command::Refresh
+        );
         let theme_task = command.theme_task();
         let appearance_task = match command {
             Command::CandidateSize(_) => Some(AppearanceTask::Candidate),
@@ -385,6 +411,11 @@ impl Controller {
             _ => None,
         };
         self.worker.submit(command)?;
+        if invalidates_status {
+            self.snapshot.remote_status = None;
+        }
+        self.snapshot.operation = operation;
+        self.snapshot.checking_updates = checking_updates;
         self.snapshot.theme_task = theme_task;
         self.snapshot.appearance_task = appearance_task;
         if reporting {
@@ -434,6 +465,7 @@ impl Controller {
                     changed = true;
                 }
                 Ok(Event::Progress(event)) => {
+                    self.snapshot.operation.observe(&event);
                     self.snapshot.progress = event.progress.clamp(0.0, 1.0);
                     self.snapshot.detail = event.detail;
                     self.snapshot.activity.push(format!(
@@ -448,11 +480,37 @@ impl Controller {
                     status,
                     error,
                 }) => {
+                    let mut operation = std::mem::take(&mut self.snapshot.operation);
                     let activity = std::mem::take(&mut self.snapshot.activity);
                     let previous_report = self.snapshot.report.take();
                     let theme_task = self.snapshot.theme_task.take();
                     let appearance_task = self.snapshot.appearance_task.take();
                     self.snapshot = *snapshot;
+                    let results = report
+                        .as_ref()
+                        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                        .and_then(|value| value["results"].as_array().cloned())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter_map(|value| {
+                            Some((
+                                component_from_id(value["component"].as_str()?)?,
+                                value["success"].as_bool()?,
+                            ))
+                        });
+                    operation.finish(
+                        results,
+                        status == Status::Cancelled,
+                        matches!(status, Status::Error | Status::PartialFailure),
+                    );
+                    if self.snapshot.app_update.installed {
+                        operation.finish(
+                            [(snout::updater::UpdateComponent::Update, true)],
+                            false,
+                            false,
+                        );
+                    }
+                    self.snapshot.operation = operation;
                     self.snapshot.theme_task = theme_task;
                     self.snapshot.appearance_task = appearance_task;
                     self.snapshot.status = status;
@@ -482,6 +540,8 @@ impl Controller {
                     changed = true;
                 }
                 Ok(Event::Failed(error)) => {
+                    self.snapshot.operation.finish([], false, true);
+                    self.snapshot.checking_updates = false;
                     self.snapshot.error = Some(error);
                     self.snapshot.status = Status::Error;
                     self.snapshot.busy = false;
@@ -780,6 +840,15 @@ fn worker_loop(
             break;
         }
         let report_command = request.command.report_command();
+        if matches!(
+            request.command,
+            Command::Save(_)
+                | Command::InstallScheme { .. }
+                | Command::Update { .. }
+                | Command::Refresh
+        ) {
+            environment.remote_status = None;
+        }
         let result = runtime.block_on(execute(&mut manager, &mut environment, request, events));
         revision += 1;
         let (report, status, error) =
@@ -848,18 +917,12 @@ async fn execute(
                 .await?;
         }
         Command::InstallAppUpdate => {
-            let install = environment.app_update.install(
-                &manager.config,
-                &request.cancel,
-                |received, total| {
-                    let _ = events.send(Event::Progress(UpdateEvent {
-                        component: snout::updater::UpdateComponent::Update,
-                        phase: snout::updater::UpdatePhase::Downloading,
-                        progress: received as f64 / total.max(1) as f64,
-                        detail: format!("Desktop update / 程序更新: {received} / {total}"),
-                    }));
-                },
-            );
+            let install =
+                environment
+                    .app_update
+                    .install(&manager.config, &request.cancel, |event| {
+                        let _ = events.send(Event::Progress(event));
+                    });
             tokio::pin!(install);
             loop {
                 tokio::select! {
@@ -1734,6 +1797,44 @@ mod tests {
             .expect("worker handle")
             .is_none());
         assert!(controller.closed);
+    }
+
+    #[test]
+    fn update_failure_is_retained_when_background_state_is_refreshed() {
+        use snout::application::{
+            component_status::{ComponentState, ComponentStatus},
+            progress::StepState,
+        };
+        let root = TempDir::new().unwrap();
+        let mut controller = Controller::start(Some(paths(&root))).unwrap();
+        ready(&mut controller);
+        controller.snapshot.remote_status = Some(application::status::ConfigStatusSnapshot {
+            scheme: ComponentStatus {
+                state: ComponentState::Latest,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        controller
+            .submit(Command::Update {
+                action: UpdateAction::Scheme,
+                preserve: true,
+            })
+            .unwrap();
+        assert!(controller.snapshot.remote_status.is_none());
+        ready(&mut controller);
+        assert_eq!(
+            controller.snapshot.operation.components[0].state,
+            StepState::Failed
+        );
+        run(&mut controller, Command::Refresh);
+        assert!(controller.snapshot.operation.finished);
+        assert_eq!(
+            controller.snapshot.operation.components[0].state,
+            StepState::Failed
+        );
+        assert!(!root.path().join("rime").exists());
+        controller.shutdown().unwrap();
     }
 
     #[test]

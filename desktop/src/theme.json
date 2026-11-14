@@ -15,7 +15,8 @@
       "sidebar-accent": "#dde6f8", "sidebar-accent-foreground": "#234fae",
       "sidebar-border": "#dce1e9", "sidebar-primary": "#2859c5",
       "sidebar-primary-foreground": "#ffffff", "sidebar-ring": "#2859c5",
-      "overlay": "#0b122080", "switch-track": "#8994a6", "switch-thumb": "#ffffff"
+      "overlay": "#0b122080", "switch-track": "#8994a6", "switch-thumb": "#ffffff",
+      "success": "#23704a", "warning": "#895411"
     },
     "dark": {
       "background": "#171b22", "foreground": "#edf0f6",
@@ -31,7 +32,8 @@
       "sidebar-accent": "#2a3b5a", "sidebar-accent-foreground": "#b6ccff",
       "sidebar-border": "#374150", "sidebar-primary": "#9ab9ff",
       "sidebar-primary-foreground": "#16284e", "sidebar-ring": "#9ab9ff",
-      "overlay": "#00000080", "switch-track": "#65758d", "switch-thumb": "#ffffff"
+      "overlay": "#00000080", "switch-track": "#65758d", "switch-thumb": "#ffffff",
+      "success": "#8ed8af", "warning": "#efc583"
     }
   }
 }

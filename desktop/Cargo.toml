@@ -1,6 +1,6 @@
 [package]
 name = "snout-desktop"
-version = "0.5.3"
+version = "0.5.4"
 rust-version = "1.97"
 edition = "2021"
 description = "Native snout input-method workbench"

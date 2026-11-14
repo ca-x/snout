@@ -20,6 +20,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
+mod update_experience;
+
 #[derive(Clone, PartialEq, Props)]
 pub struct AppProps {
     #[prop(default)]
@@ -110,6 +112,7 @@ struct Ui {
     install_ref: ElementRef,
     status_ref: ElementRef,
     json_open: Signal<bool>,
+    activity_logs_open: Signal<bool>,
 }
 
 impl Ui {
@@ -684,6 +687,7 @@ fn new_ui(controller: Controller) -> Ui {
         install_ref: element_ref(),
         status_ref: element_ref(),
         json_open: signal(false),
+        activity_logs_open: signal(false),
     }
 }
 
@@ -695,12 +699,14 @@ pub fn App(props: AppProps) -> impl IntoElement {
         rime: props.rime_path.get().to_string().into(),
         cache: props.cache_path.get().to_string().into(),
     });
+    let live = paths.is_none();
     let controller = match Controller::start(paths) {
         Ok(controller) => controller,
         Err(error) => return view().p_6().child(text(error.to_string())).into_element(),
     };
     let ui = new_ui(controller);
     let app_check_started = signal(false);
+    let component_check_started = signal(false);
     ui.commit_ref
         .on_focus_in(move || ui.commit_focused.set(true));
     ui.commit_ref
@@ -721,6 +727,15 @@ pub fn App(props: AppProps) -> impl IntoElement {
             nsh_core::element::desktop::close_window();
             return;
         }
+        if live
+            && !component_check_started.get()
+            && !ui.locked()
+            && !ui.dirty.get()
+            && ui.state.with(|state| state.countdown.is_none())
+        {
+            component_check_started.set(true);
+            ui.send(Command::CheckUpdates);
+        }
         if !app_check_started.get()
             && !ui.locked()
             && !ui.dirty.get()
@@ -735,6 +750,12 @@ pub fn App(props: AppProps) -> impl IntoElement {
             return;
         }
         let next = ui.controller.with(|controller| controller.snapshot.clone());
+        if ui
+            .state
+            .with(|previous| previous.remote_status.is_some() && next.remote_status.is_none())
+        {
+            component_check_started.set(false);
+        }
         if next.revision != ui.state.with(|state| state.revision) {
             if ui.saving_exclusion.get() && !next.busy {
                 if next.status == Status::Success {
@@ -834,6 +855,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
                     .child(text(move || ui.error.get().or_else(|| ui.state.with(|state| state.error.clone())).unwrap_or_default()).test_id("operation-error").text_size(px(14.0)))
             }))
             .child(scroll().test_id("content-scroll").element_ref(&ui.content_ref).flex_1().child(view().p_6().gap_6().w_full().max_w(px(1120.0))
+                .child(when(move || ui.page.get() != Page::Activity, move || update_experience::operation_timeline(ui)))
                 .child(dynamic(move || match ui.page.get() {
                     Page::Overview => overview(ui), Page::Schemes => schemes(ui), Page::Appearance => appearance(ui),
                     Page::Settings => settings(ui), Page::Activity => activity(ui),
@@ -1175,7 +1197,27 @@ fn status_bar(ui: Ui) -> AnyElement {
                             Status::Cancelled => ui.tr("Cancelled", "已取消"),
                             Status::Error => ui.tr("Needs attention", "需要处理"),
                         };
-                        if state.detail.is_empty() {
+                        if !state.operation.components.is_empty() {
+                            let lang = Lang::from_str(&ui.draft.get().language);
+                            state
+                                .operation
+                                .components
+                                .iter()
+                                .find(|entry| {
+                                    entry.state == snout::application::progress::StepState::Active
+                                })
+                                .map(|entry| {
+                                    format!(
+                                        "{label} · {} · {}",
+                                        snout::application::progress::component_label(
+                                            entry.component,
+                                            lang
+                                        ),
+                                        entry.label(lang)
+                                    )
+                                })
+                                .unwrap_or_else(|| label.to_string())
+                        } else if state.detail.is_empty() {
                             label.to_string()
                         } else {
                             format!(
@@ -1413,18 +1455,6 @@ fn confirmation(ui: Ui) -> AnyElement {
     .into_element()
 }
 
-fn localized_component(ui: Ui, value: &str) -> String {
-    match value {
-        "Scheme / 方案" => ui.tr("Scheme", "方案"),
-        "Dictionary / 词库" => ui.tr("Dictionary", "词库"),
-        "Model / 模型" => ui.tr("Language model", "语言模型"),
-        "Not installed / 未安装" => ui.tr("Not installed", "未安装"),
-        "Unavailable / 无法读取" => ui.tr("Unavailable", "无法读取"),
-        _ => value,
-    }
-    .to_string()
-}
-
 fn overview(ui: Ui) -> AnyElement {
     view()
         .gap_5()
@@ -1488,7 +1518,7 @@ fn overview(ui: Ui) -> AnyElement {
                             "Update all…",
                             "更新全部…",
                             ButtonStyle::Primary,
-                            move || !ui.dirty.get(),
+                            move || !ui.dirty.get() && !update_experience::all_current(ui),
                             move || ui.request(Pending::Update(UpdateAction::All)),
                         ))
                         .child(action_enabled(
@@ -1528,108 +1558,7 @@ fn overview(ui: Ui) -> AnyElement {
             },
         ))
         .child(heading(ui, "Components", "组件状态"))
-        .child(dynamic(move || {
-            let mut rows = view().test_id("component-cards").gap_2();
-            let schema = ui
-                .state
-                .with(|state| state.config.as_ref().map(|config| config.schema))
-                .unwrap_or(Schema::WanxiangBase);
-            for ((name, version), (id, en, zh, action, supported)) in ui
-                .state
-                .with(|state| state.versions.clone())
-                .into_iter()
-                .zip([
-                    (
-                        "update-scheme",
-                        "Update scheme…",
-                        "更新方案…",
-                        UpdateAction::Scheme,
-                        true,
-                    ),
-                    (
-                        "update-dict",
-                        "Update dictionary…",
-                        "更新词库…",
-                        UpdateAction::Dict,
-                        schema.dict_zip().is_some(),
-                    ),
-                    (
-                        "update-model",
-                        "Update model…",
-                        "更新模型…",
-                        UpdateAction::Model,
-                        schema.supports_model_patch(),
-                    ),
-                ])
-            {
-                rows = rows.child(
-                    view()
-                        .flex_row()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_3()
-                        .p_4()
-                        .rounded(px(8.0))
-                        .bg(surface)
-                        .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(180.0))
-                                .gap_1()
-                                .child(
-                                    text(localized_component(ui, &name))
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM),
-                                )
-                                .child(
-                                    text(localized_component(ui, &version))
-                                        .text_size(px(12.0))
-                                        .text_color(muted),
-                                ),
-                        )
-                        .child(when(
-                            move || supported,
-                            move || {
-                                action_enabled(
-                                    ui,
-                                    id,
-                                    en,
-                                    zh,
-                                    ButtonStyle::Quiet,
-                                    move || !ui.dirty.get(),
-                                    move || ui.request(Pending::Update(action)),
-                                )
-                            },
-                        )),
-                );
-            }
-            rows
-        }))
-        .child(when(
-            move || ui.state.with(|state| state.remote_status.is_some()),
-            move || {
-                section(ui, "Remote versions", "远端版本").child(
-                    text(move || {
-                        ui.state.with(|state| {
-                            state
-                                .remote_status
-                                .as_ref()
-                                .map(|status| {
-                                    format!(
-                                        "{}\n{}\n{}\n{}",
-                                        status.scheme_status,
-                                        status.dict_status,
-                                        status.model_status,
-                                        status.model_patch_status
-                                    )
-                                })
-                                .unwrap_or_default()
-                        })
-                    })
-                    .text_size(px(14.0)),
-                )
-            },
-        ))
+        .child(update_experience::component_cards(ui))
         .child(
             section(ui, "Engine & Rime setup", "输入引擎与 Rime 设置")
                 .child(
@@ -2843,16 +2772,29 @@ fn completion_tools(ui: Ui) -> AnyElement {
 fn activity(ui: Ui) -> AnyElement {
     view()
         .gap_6()
+        .child(update_experience::operation_timeline(ui))
         .child(
             section(ui, "Activity", "操作记录")
+                .child(action(
+                    ui,
+                    "toggle-operation-log",
+                    "Diagnostic log",
+                    "诊断日志",
+                    ButtonStyle::Quiet,
+                    move || ui.activity_logs_open.update(|open| *open = !*open),
+                ))
                 .child(when(
                     move || ui.state.with(|state| state.activity.is_empty()),
                     move || caption(ui, "Nothing has run in this session.", "本次会话尚无操作。"),
                 ))
-                .child(
-                    text(move || ui.state.with(|state| state.activity.join("\n")))
-                        .text_size(px(14.0)),
-                ),
+                .child(when(
+                    move || ui.activity_logs_open.get(),
+                    move || {
+                        text(move || ui.state.with(|state| state.activity.join("\n")))
+                            .text_size(px(12.0))
+                            .text_color(muted)
+                    },
+                )),
         )
         .child(
             section(ui, "Result details", "结果详情")

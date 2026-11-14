@@ -1,11 +1,13 @@
+use crate::application::progress::OperationProgress;
 use crate::self_update::{Release, TerminalUpdater};
 use crate::types::{CancelSignal, Config};
+use crate::updater::{UpdateComponent, UpdateEvent};
 use std::sync::mpsc;
 use tokio::task::JoinHandle;
 
 enum Event {
     Checked(Result<Option<Release>, String>),
-    Progress(u64, u64),
+    Progress(UpdateEvent),
     Installed(Result<(), String>),
 }
 
@@ -17,6 +19,7 @@ pub(super) struct ProgramUpdate {
     pub installing: bool,
     pub installed: bool,
     pub confirm: bool,
+    pub operation: OperationProgress,
     receiver: Option<mpsc::Receiver<Event>>,
     task: Option<JoinHandle<()>>,
     cancel: CancelSignal,
@@ -37,6 +40,7 @@ impl ProgramUpdate {
             installing: false,
             installed: false,
             confirm: false,
+            operation: OperationProgress::default(),
             receiver: None,
             task: None,
             cancel: CancelSignal::new(),
@@ -80,8 +84,8 @@ impl ProgramUpdate {
         self.task = Some(tokio::spawn(async move {
             let result = async {
                 TerminalUpdater::current()?
-                    .install(&release, &config, &task_cancel, |received, total| {
-                        let _ = sender.send(Event::Progress(received, total));
+                    .install(&release, &config, &task_cancel, |event| {
+                        let _ = sender.send(Event::Progress(event));
                     })
                     .await
             }
@@ -93,6 +97,7 @@ impl ProgramUpdate {
         self.cancel = cancel;
         self.busy = true;
         self.installing = true;
+        self.operation = OperationProgress::new([UpdateComponent::Update]);
         self.confirm = false;
         self.message = "Downloading and verifying… / 正在下载并校验…".into();
     }
@@ -117,10 +122,21 @@ impl ProgramUpdate {
                             Err(error) => self.message = error,
                         }
                     }
-                    Event::Progress(received, total) => {
-                        self.message = format!("Downloading / 下载: {received} / {total}")
+                    Event::Progress(event) => {
+                        self.operation.observe(&event);
+                        self.message = event.detail;
                     }
                     Event::Installed(result) => {
+                        let cancelled = self.cancel.is_cancelled();
+                        self.operation.finish(
+                            if cancelled && result.is_err() {
+                                Vec::new()
+                            } else {
+                                vec![(UpdateComponent::Update, result.is_ok())]
+                            },
+                            cancelled,
+                            result.is_err(),
+                        );
                         self.busy = false;
                         self.installing = false;
                         match result {

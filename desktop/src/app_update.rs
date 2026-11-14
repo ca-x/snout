@@ -3,6 +3,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use nsh_updater::{install::Installation, Available, Download};
 use snout::types::{CancelSignal, Config};
+use snout::updater::{UpdateComponent, UpdateEvent, UpdatePhase};
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -173,9 +174,22 @@ impl Updater {
         &mut self,
         settings: &Config,
         cancel: &CancelSignal,
-        progress: impl Fn(u64, u64),
+        progress: impl Fn(UpdateEvent),
     ) -> Result<()> {
         self.allowed()?;
+        let emit = |phase, progress_value, detail: String| {
+            progress(UpdateEvent {
+                component: UpdateComponent::Update,
+                phase,
+                progress: progress_value,
+                detail,
+            })
+        };
+        emit(
+            UpdatePhase::Checking,
+            0.0,
+            "Checking release / 检查新版".into(),
+        );
         self.check(settings, cancel).await?;
         let update = self
             .state
@@ -208,13 +222,28 @@ impl Updater {
             };
             let received = download.update(&chunk)?;
             archive.write_all(&chunk)?;
-            progress(received, size);
+            emit(
+                UpdatePhase::Downloading,
+                received as f64 / size as f64 * 0.85,
+                format!("{received} / {size}"),
+            );
         }
+        emit(
+            UpdatePhase::Verifying,
+            0.9,
+            "Verifying SHA-256 / 校验 SHA-256".into(),
+        );
         download.finish()?;
         archive.flush()?;
         cancel.checkpoint()?;
+        emit(
+            UpdatePhase::Applying,
+            0.95,
+            "Installing program / 安装程序".into(),
+        );
         self.allowed()?.install(archive.path())?;
         self.state.installed = true;
+        emit(UpdatePhase::Finished, 1.0, "Installed / 已安装".into());
         RESTART.store(true, Ordering::Release);
         Ok(())
     }

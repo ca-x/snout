@@ -162,9 +162,23 @@ impl TerminalUpdater {
         release: &Release,
         config: &Config,
         cancel: &CancelSignal,
-        progress: impl Fn(u64, u64),
+        progress: impl Fn(crate::updater::UpdateEvent),
     ) -> Result<()> {
         self.allowed()?;
+        use crate::updater::{UpdateComponent, UpdateEvent, UpdatePhase};
+        let emit = |phase, progress_value, detail: String| {
+            progress(UpdateEvent {
+                component: UpdateComponent::Update,
+                phase,
+                progress: progress_value,
+                detail,
+            })
+        };
+        emit(
+            UpdatePhase::Checking,
+            0.0,
+            "Checking installation / 检查安装环境".into(),
+        );
         let client = client(config)?;
         let mut response = cancellable(client.get(&release.url).send(), cancel)
             .await?
@@ -188,8 +202,17 @@ impl TerminalUpdater {
             );
             hasher.update(&chunk);
             staged.write_all(&chunk)?;
-            progress(received, release.size);
+            emit(
+                UpdatePhase::Downloading,
+                received as f64 / release.size as f64 * 0.85,
+                format!("Downloading / 下载: {received} / {}", release.size),
+            );
         }
+        emit(
+            UpdatePhase::Verifying,
+            0.9,
+            "Verifying SHA-256 / 校验 SHA-256".into(),
+        );
         verify_payload(release, received, &hex::encode(hasher.finalize()))?;
         staged.flush()?;
         staged.as_file().sync_all()?;
@@ -202,7 +225,18 @@ impl TerminalUpdater {
         }
         cancel.checkpoint()?;
         self.allowed()?;
-        replace(staged, &self.executable)
+        emit(
+            UpdatePhase::Applying,
+            0.95,
+            "Replacing program / 替换程序".into(),
+        );
+        replace(staged, &self.executable)?;
+        emit(
+            UpdatePhase::Finished,
+            1.0,
+            "Program updated / 程序已更新".into(),
+        );
+        Ok(())
     }
 
     #[cfg(windows)]

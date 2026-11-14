@@ -1,3 +1,4 @@
+use crate::application::progress::{component_label, OperationProgress, Stage, StepState};
 use crate::i18n::L10n;
 use crate::ui::style::{
     color_accent, color_border, color_danger, color_secondary, color_selection_bg, color_success,
@@ -22,7 +23,8 @@ use ratatui::{
 pub(crate) struct UpdatingViewData<'a> {
     pub(crate) update_msg: &'a str,
     pub(crate) update_pct: f64,
-    pub(crate) update_stage_lines: &'a [String],
+    pub(crate) operation: &'a OperationProgress,
+    pub(crate) animation_frame: usize,
 }
 
 pub(crate) struct ResultViewData<'a> {
@@ -57,26 +59,77 @@ pub(crate) fn render_updating(f: &mut Frame, area: Rect, t: &L10n, data: Updatin
         .label(format!("{:.0}%", data.update_pct * 100.0));
     f.render_widget(gauge, chunks[1]);
 
-    let stage_lines = if data.update_stage_lines.is_empty() {
+    let stage_panel = Paragraph::new(timeline_lines(t, data.operation, data.animation_frame))
+        .wrap(Wrap { trim: true })
+        .block(panel_block(t.t("update.status_section")));
+    f.render_widget(stage_panel, chunks[2]);
+}
+
+pub(crate) fn timeline_lines(
+    t: &L10n,
+    operation: &OperationProgress,
+    animation_frame: usize,
+) -> Vec<Line<'static>> {
+    if operation.components.is_empty() {
         vec![Line::from(vec![Span::styled(
             format!("  {}", t.t("hint.wait")),
             tertiary_text(),
         )])]
     } else {
-        data.update_stage_lines
+        operation
+            .components
             .iter()
-            .map(|stage| {
-                Line::from(vec![
-                    Span::styled("  >>> ", tertiary_text()),
-                    Span::styled(stage, primary_text()),
-                ])
+            .enumerate()
+            .flat_map(|(index, entry)| {
+                let marker = match entry.state {
+                    StepState::Active => {
+                        ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"][animation_frame % 8]
+                    }
+                    StepState::Complete => "✓",
+                    StepState::Failed => "×",
+                    StepState::Cancelled | StepState::Skipped => "–",
+                    StepState::Pending => "·",
+                };
+                let color = match entry.state {
+                    StepState::Active => color_accent(),
+                    StepState::Complete => color_success(),
+                    StepState::Failed => color_danger(),
+                    StepState::Cancelled => color_warning(),
+                    _ => color_secondary(),
+                };
+                vec![
+                    Line::from(Span::styled(
+                        format!(
+                            "  {}. {marker} {} — {}",
+                            index + 1,
+                            component_label(entry.component, t.lang()),
+                            entry.label(t.lang())
+                        ),
+                        Style::default().fg(color),
+                    )),
+                    Line::from(
+                        Stage::ALL
+                            .into_iter()
+                            .map(|stage| {
+                                let marker = match entry.step_state(stage) {
+                                    StepState::Complete => "✓",
+                                    StepState::Active => "›",
+                                    StepState::Failed => "×",
+                                    StepState::Skipped | StepState::Cancelled => "–",
+                                    StepState::Pending => "·",
+                                };
+                                Span::styled(
+                                    format!("   {marker} {}", stage.label(t.lang())),
+                                    secondary_text(),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Line::from(""),
+                ]
             })
             .collect()
-    };
-    let stage_panel = Paragraph::new(stage_lines)
-        .wrap(Wrap { trim: true })
-        .block(panel_block(t.t("update.status_section")));
-    f.render_widget(stage_panel, chunks[2]);
+    }
 }
 
 pub(crate) fn render_result(f: &mut Frame, area: Rect, t: &L10n, data: ResultViewData<'_>) {
