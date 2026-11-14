@@ -2275,9 +2275,7 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
     let selected_idx = app.menu_selected + 1;
     let install_message =
         config::rime_installation_message_with_engines(app.t.lang(), &app.engines);
-    let detail = if !install_message.is_empty() {
-        detail_lines(&install_message)
-    } else if let Some(reason) = menu_unavailable_reason(app, selected_idx) {
+    let detail = if let Some(reason) = menu_unavailable_reason(app, selected_idx) {
         vec![
             Line::from(vec![Span::styled(
                 app.t.t("hint.unavailable"),
@@ -2329,6 +2327,10 @@ fn render_menu(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(color),
                 ),
             ]));
+        }
+        if !install_message.is_empty() {
+            lines.push(Line::from(""));
+            lines.extend(detail_lines(&install_message));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
@@ -3327,6 +3329,7 @@ mod tests {
         let (_root, manager) = isolated_manager();
         let mut app = App::new(&manager);
         app.t = L10n::new(Lang::En);
+        app.engines.clear();
         app.config_status.scheme.state = ComponentState::Latest;
         app.config_status.dict.state = ComponentState::UpdateAvailable;
         app.config_status.model.state = ComponentState::CheckFailed;
