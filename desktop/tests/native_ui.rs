@@ -437,6 +437,38 @@ fn candidate_read_failure_can_recover_a_quoted_override_and_restore_the_default(
 }
 
 #[test]
+fn candidate_shortcuts_respect_the_current_page_and_explicit_apply() {
+    let (_root, paths, mut app) = workbench();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    app.press_key("alt+7").unwrap();
+    app.wait_for("Not applied").unwrap();
+    assert!(app.screen().selected("candidate-count-7").unwrap());
+    assert!(!paths.rime.exists());
+
+    navigate(&mut app, "nav-settings", "General");
+    app.press("mirror").unwrap();
+    app.press_key("alt+2").unwrap();
+    app.press_key("alt+enter").unwrap();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    assert!(app.screen().selected("candidate-count-7").unwrap());
+    app.press_key("alt+enter").unwrap();
+    assert!(!paths.rime.exists());
+    app.press("discard-draft").unwrap();
+    app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+        .unwrap();
+    app.press_key("alt+enter").unwrap();
+    app.wait_for("Wanxiang (Base) · Saved count: 7").unwrap();
+    app.press_key("alt+0").unwrap();
+    app.wait_for("Not applied").unwrap();
+    app.press_key("alt+enter").unwrap();
+    app.wait_for("Wanxiang (Base) · Scheme default").unwrap();
+    assert_eq!(
+        snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn candidate_radio_keys_preview_and_restore_without_writing() {
     let (_root, paths, mut app) = workbench();
     app.set_environment("full keyboard navigation", |env| {

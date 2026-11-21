@@ -71,6 +71,8 @@ with presentation adapted to native controls and terminal cells respectively.
   the installed input engine's skin or deploy changes before Apply.
 - Keyboard: Tab/Shift+Tab and Enter/Space through native controls, Mod+1…5 for
   destinations, Mod+S to review/save. Mod is Command on macOS and Control elsewhere.
+  In Appearance, Alt+1…9 previews a count, Alt+0 selects the scheme default, and
+  Alt+Enter applies the selection. macOS uses Option. Text fields keep their keys.
 
 ## Motion
 
@@ -94,8 +96,7 @@ real platform visual or input-method testing.
 - Hide engine skin panels and the patch-key setting when the current environment
   has no corresponding appearance target.
 - Fcitx5 separates Local themes from Theme market using keyboard-accessible tabs.
-  Each collection has its own filter and virtual list. The theme panel precedes
-  candidate settings when Fcitx5 is available.
+  Each collection has its own filter and virtual list.
 - A market repository is a bundle, not a single theme. Downloads show progress,
   failure/retry, and the exact number of imported variants. View themes opens
   that repository's local variants; All themes restores the complete library.

@@ -1,5 +1,7 @@
 use super::*;
 use nsh_base::{radio, radio_group, RadioElement};
+use nsh_core::element::{apple_keys, on_key_with, KeyOptions};
+use nsh_core::keymap::When;
 use snout::i18n::L10n;
 
 fn choice(
@@ -207,6 +209,11 @@ fn candidate_preview(ui: Ui) -> AnyElement {
         .into_element()
 }
 
+fn preview_count(ui: Ui, size: Option<u8>) {
+    ui.stop_countdown();
+    ui.candidate.set(size);
+}
+
 fn candidate_choice(ui: Ui, size: Option<u8>) -> AnyElement {
     let id = size.map_or_else(|| "default".into(), |n| n.to_string());
     let label = move || {
@@ -219,10 +226,7 @@ fn candidate_choice(ui: Ui, size: Option<u8>) -> AnyElement {
         ui,
         &format!("candidate-count-{id}"),
         move || ui.candidate.get() == size,
-        move || {
-            ui.stop_countdown();
-            ui.candidate.set(size);
-        },
+        move || preview_count(ui, size),
     )
     .accessibility_label(move || {
         Some(
@@ -275,6 +279,33 @@ pub(super) fn candidate_window(ui: Ui) -> AnyElement {
 }
 
 fn candidate_controls(ui: Ui) -> AnyElement {
+    let can_apply = move || {
+        !ui.dirty.get()
+            && (appearance_changed(ui, AppearanceTask::Candidate)
+                || appearance_failed(ui, AppearanceTask::Candidate))
+    };
+    let apply = move || ui.send(Command::CandidateSize(ui.candidate.get()));
+    let options = KeyOptions {
+        when: When::NotEditing,
+        repeat: false,
+    };
+    for number in 0..=9 {
+        on_key_with(&format!("alt+{number}"), options, move |_| {
+            if !ui.locked() {
+                preview_count(ui, (number != 0).then_some(number));
+            }
+        });
+    }
+    on_key_with("alt+enter", options, move |_| {
+        if !ui.locked() && can_apply() {
+            apply();
+        }
+    });
+    let (modifier, enter) = if apple_keys() {
+        ("⌥", "↩")
+    } else {
+        ("Alt+", "Enter")
+    };
     section(ui, "Candidate window", "候选窗口")
         .child(
             text(move || {
@@ -302,7 +333,26 @@ fn candidate_controls(ui: Ui) -> AnyElement {
         .child(
             view()
                 .gap_2()
-                .child(caption(ui, "Candidates per page", "每页候选数"))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(caption(ui, "Candidates per page", "每页候选数"))
+                        .child(
+                            text(move || {
+                                format!(
+                                    "{modifier}1–9 · {modifier}0 {} · {modifier}{enter} {}",
+                                    ui.tr("default", "跟随方案"),
+                                    ui.tr("apply", "应用")
+                                )
+                            })
+                            .text_size(px(12.0))
+                            .text_color(muted),
+                        ),
+                )
                 .child(
                     radio_group().flex_row().flex_wrap().gap_1().children(
                         std::iter::once(None)
@@ -337,12 +387,8 @@ fn candidate_controls(ui: Ui) -> AnyElement {
                     "Apply candidate count",
                     "应用候选数",
                     ButtonStyle::Primary,
-                    move || {
-                        !ui.dirty.get()
-                            && (appearance_changed(ui, AppearanceTask::Candidate)
-                                || appearance_failed(ui, AppearanceTask::Candidate))
-                    },
-                    move || ui.send(Command::CandidateSize(ui.candidate.get())),
+                    can_apply,
+                    apply,
                 ))
                 .child(appearance_feedback(ui, AppearanceTask::Candidate)),
         )
