@@ -1,5 +1,5 @@
 use crate::types::Schema;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,10 +14,11 @@ fn custom_patch_path(rime_dir: &Path, schema: Schema) -> PathBuf {
 }
 
 fn load_patch_doc(path: &Path) -> Result<PatchDoc> {
-    if !path.exists() {
-        return Ok(HashMap::new());
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(serde_yaml::from_str(&content)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PatchDoc::new()),
+        Err(error) => Err(error.into()),
     }
-    Ok(serde_yaml::from_str(&std::fs::read_to_string(path)?)?)
 }
 
 fn write_patch_doc(path: &Path, doc: &PatchDoc) -> Result<()> {
@@ -25,28 +26,34 @@ fn write_patch_doc(path: &Path, doc: &PatchDoc) -> Result<()> {
 }
 
 fn patch_mapping_mut(doc: &mut PatchDoc) -> Result<&mut Mapping> {
-    let patch = doc
-        .entry(PATCH_KEY.into())
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    match patch {
-        Value::Mapping(mapping) => Ok(mapping),
-        _ => anyhow::bail!("patch section is not a mapping"),
+    let patch = doc.entry(PATCH_KEY.into()).or_default();
+    if patch.is_null() {
+        *patch = Value::Mapping(Mapping::new());
     }
+    patch
+        .as_mapping_mut()
+        .context("patch section is not a mapping")
 }
 
 pub fn candidate_page_size(rime_dir: &Path, schema: Schema) -> Result<Option<u8>> {
     let path = custom_patch_path(rime_dir, schema);
-    let doc = load_patch_doc(&path)?;
-    let Some(Value::Mapping(mapping)) = doc.get(PATCH_KEY) else {
+    let doc = load_patch_doc(&path).with_context(|| path.display().to_string())?;
+    let Some(patch) = doc.get(PATCH_KEY).filter(|value| !value.is_null()) else {
         return Ok(None);
     };
+    let mapping = patch
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("{}: patch section is not a mapping", path.display()))?;
     let Some(value) = mapping.get(Value::String(MENU_PAGE_SIZE_KEY.into())) else {
         return Ok(None);
     };
-    match value {
-        Value::Number(number) => Ok(number.as_u64().and_then(|value| u8::try_from(value).ok())),
-        _ => Ok(None),
-    }
+    let size = match value {
+        Value::Number(number) => number.as_u64().and_then(|n| u8::try_from(n).ok()),
+        Value::String(text) => text.trim().parse().ok(),
+        _ => None,
+    };
+    size.map(Some)
+        .ok_or_else(|| anyhow::anyhow!("{}: invalid {MENU_PAGE_SIZE_KEY}", path.display()))
 }
 
 pub fn set_candidate_page_size(
@@ -140,6 +147,19 @@ mod tests {
         assert_eq!(candidate_page_size(&dir, Schema::Ice).expect("read"), None);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_comment_only_patch_can_receive_a_candidate_count() {
+        let root = tempfile::tempdir().unwrap();
+        let path = custom_patch_path(root.path(), Schema::Ice);
+        std::fs::write(&path, "name: personal\npatch:\n  # No overrides yet\n").unwrap();
+
+        assert_eq!(candidate_page_size(root.path(), Schema::Ice).unwrap(), None);
+        set_candidate_page_size(root.path(), Schema::Ice, Some(7)).unwrap();
+        let doc = load_patch_doc(&path).unwrap();
+        assert_eq!(doc["name"].as_str(), Some("personal"));
+        assert_eq!(doc["patch"]["menu/page_size"].as_u64(), Some(7));
     }
 
     #[test]

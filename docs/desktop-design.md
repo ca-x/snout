@@ -54,10 +54,17 @@ with presentation adapted to native controls and terminal cells respectively.
 - Confirm consequential actions in a modal layer, with Escape/cancel dismissal.
   Reversible theme downloads and explicit Apply use one direct action and inline feedback.
   Preserve data policy, hook warnings and the explicit destructive alternative.
-- Candidate size includes Scheme default and one Apply action. Appearance drafts
+- Group schemes by family. Show the upstream repository, preserve the Wanxiang
+  edition while comparing families, and name the exact install target in the
+  action strip and confirmation.
+- Place the candidate count before the theme catalogs. Show the saved scheme and
+  count, offer Scheme default and 1–9 as a native radio group, and label the
+  five-item default preview as an example. Use one Apply action. Appearance drafts
   survive unrelated operations; Apply waits for configuration to be saved or
   reverted. Each appearance section reports its own progress and result.
-- Activity prioritizes readable results; JSON is a disclosure. Completion exports
+- Open each destination at the top. Keep finished timelines in Activity. Reveal
+  progress during work and cancellation during work or a countdown.
+- Activity prioritizes readable results. JSON is a disclosure. Completion exports
   belong to Settings tools. Restore focus before removing the configuration strip,
   and never move it back after the user has focused somewhere else.
 - Candidate preview illustrates only count/layout. It does not claim to reproduce

@@ -20,6 +20,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
+mod personalization;
 mod update_experience;
 
 #[derive(Clone, PartialEq, Props)]
@@ -92,6 +93,7 @@ struct Ui {
     pending: Signal<Option<Pending>>,
     exclusion: Signal<String>,
     editing_exclusion: Signal<Option<usize>>,
+    last_wanxiang: Signal<Schema>,
     candidate: Signal<Option<u8>>,
     selected_skins: Signal<HashSet<String>>,
     default_skin: Signal<String>,
@@ -124,15 +126,43 @@ impl Ui {
         }
     }
 
+    fn lang(self) -> Lang {
+        self.draft.with(|config| Lang::from_str(&config.language))
+    }
+
+    fn scheme_name(self, schema: Schema) -> String {
+        schema.display_name_lang(self.lang())
+    }
+
+    fn navigate(self, page: Page) {
+        if self.page.get() != page {
+            self.save_focus.set(false);
+            self.page.set(page);
+            self.content_ref.scroll_to(point(px(0.0), px(0.0)), false);
+        }
+    }
+
     fn locked(self) -> bool {
         self.state
             .with(|state| state.busy || state.config.is_none() || state.app_update.installed)
             || self.pending.get().is_some()
     }
 
-    fn edit(self, update: impl FnOnce(&mut Config)) {
+    fn stop_countdown(self) {
         self.controller.with(Controller::stop_countdown);
-        self.state.update(|state| state.countdown = None);
+        if self
+            .state
+            .with(|state| state.countdown.is_some() || state.auto_update_due)
+        {
+            self.state.update(|state| {
+                state.countdown = None;
+                state.auto_update_due = false;
+            });
+        }
+    }
+
+    fn edit(self, update: impl FnOnce(&mut Config)) {
+        self.stop_countdown();
         self.draft.update(update);
         self.dirty.set(self.state.with(|state| {
             state
@@ -213,7 +243,7 @@ impl Ui {
         let command = match pending {
             Pending::AppUpdate => Command::InstallAppUpdate,
             Pending::Update(action) => {
-                self.page.set(Page::Activity);
+                self.navigate(Page::Activity);
                 Command::Update { action, preserve }
             }
             Pending::Save => {
@@ -223,7 +253,7 @@ impl Ui {
             Pending::ResetExclusions => Command::ResetExclusions,
             Pending::Install => {
                 self.saving.set(true);
-                self.page.set(Page::Activity);
+                self.navigate(Page::Activity);
                 self.status_ref.focus();
                 Command::InstallScheme {
                     config: Box::new(self.draft.get()),
@@ -241,9 +271,8 @@ impl Ui {
     fn patch_will_change(self) -> bool {
         self.state.with(|state| {
             state.config.as_ref().is_some_and(|saved| {
-                let draft = self.draft.get();
-                saved.model_patch_enabled != draft.model_patch_enabled
-                    || (saved.schema != draft.schema && draft.model_patch_enabled)
+                self.draft
+                    .with(|draft| application::model_patch_change(saved, draft).is_some())
             })
         })
     }
@@ -281,6 +310,11 @@ impl Ui {
     fn revert(self) {
         if let Some(config) = self.state.with(|state| state.config.clone()) {
             self.restore_commit_focus();
+            self.last_wanxiang.set(if config.schema.is_wanxiang() {
+                config.schema
+            } else {
+                Schema::WanxiangBase
+            });
             self.draft.set(config);
             self.dirty.set(false);
             self.error.set(None);
@@ -568,6 +602,14 @@ fn picker(
                 .value(move || SelectValue::from(current()))
                 .disabled(move || ui.locked())
                 .searchable(true)
+                .search_placeholder(move || Some(ui.tr("Search options", "搜索选项").into()))
+                .empty(
+                    text(move || ui.tr("No matching options", "没有匹配的选项"))
+                        .px_3()
+                        .py_2()
+                        .text_color(muted)
+                        .text_size(px(13.0)),
+                )
                 .search_accessibility_label(move || {
                     Some(format!("{} {}", ui.tr("Search", "搜索"), ui.tr(en, zh)).into())
                 })
@@ -661,6 +703,7 @@ fn new_ui(controller: Controller) -> Ui {
         pending: signal(None),
         exclusion: signal(String::new()),
         editing_exclusion: signal(None),
+        last_wanxiang: signal(Schema::WanxiangBase),
         candidate: signal(None),
         selected_skins: signal(HashSet::new()),
         default_skin: signal(String::new()),
@@ -785,7 +828,8 @@ pub fn App(props: AppProps) -> impl IntoElement {
                 || (next.appearance_task == Some(AppearanceTask::Candidate)
                     && next.status == Status::Success)
             {
-                ui.candidate.set(next.candidate_size);
+                ui.candidate
+                    .set(next.candidate_size.as_ref().copied().unwrap_or_default());
             }
             if next.skins != previous.skins
                 || next.default_skin != previous.default_skin
@@ -811,7 +855,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
                     action: UpdateAction::All,
                     preserve: true,
                 });
-                ui.page.set(Page::Activity);
+                ui.navigate(Page::Activity);
             } else {
                 ui.pending.set(Some(Pending::Update(UpdateAction::All)));
             }
@@ -827,8 +871,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
     ] {
         on_key(shortcut, move |_| {
             if ui.pending.get().is_none() {
-                ui.save_focus.set(false);
-                ui.page.set(page);
+                ui.navigate(page);
             }
         });
     }
@@ -843,7 +886,7 @@ pub fn App(props: AppProps) -> impl IntoElement {
             .child(when(move || ui.state.with(|state| state.app_update.available.is_some()), move || {
                 view().mx_6().my_2().p_3().gap_2().rounded(px(6.0)).border_1().border_color(line)
                     .child(text(move || ui.state.with(|state| format!("{} {}", ui.tr("New desktop version available:", "程序有新版本："), state.app_update.available.as_ref().map(|update| update.version.as_str()).unwrap_or_default()))).text_size(px(14.0)))
-                    .child(action(ui, "open-app-update", "View update", "查看更新", ButtonStyle::Quiet, move || ui.page.set(Page::Settings)))
+                    .child(action(ui, "open-app-update", "View update", "查看更新", ButtonStyle::Quiet, move || ui.navigate(Page::Settings)))
             }))
             .child(when(move || ui.state.with(|state| !state.warnings.is_empty()), move || {
                 view().mx_6().my_2().p_3().rounded(px(6.0)).border_1().border_color(line)
@@ -855,9 +898,9 @@ pub fn App(props: AppProps) -> impl IntoElement {
                     .child(text(move || ui.error.get().or_else(|| ui.state.with(|state| state.error.clone())).unwrap_or_default()).test_id("operation-error").text_size(px(14.0)))
             }))
             .child(scroll().test_id("content-scroll").element_ref(&ui.content_ref).flex_1().child(view().p_6().gap_6().w_full().max_w(px(1120.0))
-                .child(when(move || ui.page.get() != Page::Activity, move || update_experience::operation_timeline(ui)))
+                .child(when(move || ui.page.get() != Page::Activity && ui.state.with(|s| !s.operation.finished), move || update_experience::operation_timeline(ui)))
                 .child(dynamic(move || match ui.page.get() {
-                    Page::Overview => overview(ui), Page::Schemes => schemes(ui), Page::Appearance => appearance(ui),
+                    Page::Overview => overview(ui), Page::Schemes => personalization::schemes(ui), Page::Appearance => appearance(ui),
                     Page::Settings => settings(ui), Page::Activity => activity(ui),
                 }))))
             .child(draft_bar(ui)).child(status_bar(ui)))
@@ -916,14 +959,6 @@ fn sidebar(ui: Ui) -> AnyElement {
                         )
                         .child(caption(ui, "Rime workbench", "Rime 工作台")),
                 ),
-        )
-        .child(
-            text(move || ui.tr("WORKSPACE", "工作空间"))
-                .px_3()
-                .mb_2()
-                .text_size(px(11.0))
-                .text_color(muted)
-                .font_weight(FontWeight::SEMIBOLD),
         );
     for (page, id, en, zh) in [
         (Page::Overview, "nav-overview", "Overview", "概览"),
@@ -969,8 +1004,7 @@ fn sidebar(ui: Ui) -> AnyElement {
                 .duration(140.0)
                 .active(|style| style.opacity(0.7))
                 .on_press(move || {
-                    ui.save_focus.set(false);
-                    ui.page.set(page);
+                    ui.navigate(page);
                 })
                 .child(icon(page))
                 .child(
@@ -982,23 +1016,6 @@ fn sidebar(ui: Ui) -> AnyElement {
     }
     sidebar
         .child(view().flex_1())
-        .child(
-            view()
-                .p_3()
-                .gap_2()
-                .rounded(px(8.0))
-                .bg(surface)
-                .child(
-                    text(move || ui.tr("One place for your input.", "打理输入，从容一点。"))
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::MEDIUM),
-                )
-                .child(
-                    text(move || ui.tr("Schemes, dictionaries & models", "方案、词库与语言模型"))
-                        .text_size(px(12.0))
-                        .text_color(muted),
-                ),
-        )
         .child(
             text(format!("snout desktop  {}", env!("CARGO_PKG_VERSION")))
                 .px_3()
@@ -1012,55 +1029,20 @@ fn sidebar(ui: Ui) -> AnyElement {
 fn header(ui: Ui) -> AnyElement {
     view()
         .px_6()
-        .py_5()
-        .flex_row()
-        .justify_between()
-        .items_center()
-        .gap_4()
+        .py_4()
         .bg(surface)
         .border_b_1()
         .border_color(line)
         .child(
-            view()
-                .gap_1()
-                .flex_1()
-                .min_w(px(0.0))
-                .child(
-                    text(move || match ui.page.get() {
-                        Page::Overview => ui.tr("Overview", "概览"),
-                        Page::Schemes => ui.tr("Schemes", "输入方案"),
-                        Page::Appearance => ui.tr("Appearance", "外观"),
-                        Page::Settings => ui.tr("Settings", "设置"),
-                        Page::Activity => ui.tr("Activity", "活动"),
-                    })
-                    .text_size(px(22.0))
-                    .font_weight(FontWeight::SEMIBOLD),
-                )
-                .child(
-                    text(move || match ui.page.get() {
-                        Page::Overview => ui.tr(
-                            "Your input method, in good order.",
-                            "方案与组件，一目了然。",
-                        ),
-                        Page::Schemes => {
-                            ui.tr("Find the way you like to type.", "选择适合你的输入方式。")
-                        }
-                        Page::Appearance => ui.tr(
-                            "A familiar space for every word.",
-                            "让每一次输入，都合你心意。",
-                        ),
-                        Page::Settings => ui.tr(
-                            "Tune once. Keep your workflow.",
-                            "按你的习惯，安排每一处细节。",
-                        ),
-                        Page::Activity => ui.tr(
-                            "Follow updates and inspect results.",
-                            "查看更新进度，追溯每一步结果。",
-                        ),
-                    })
-                    .text_color(muted)
-                    .text_size(px(13.0)),
-                ),
+            text(move || match ui.page.get() {
+                Page::Overview => ui.tr("Overview", "概览"),
+                Page::Schemes => ui.tr("Schemes", "输入方案"),
+                Page::Appearance => ui.tr("Appearance", "外观"),
+                Page::Settings => ui.tr("Settings", "设置"),
+                Page::Activity => ui.tr("Activity", "活动"),
+            })
+            .text_size(px(22.0))
+            .font_weight(FontWeight::SEMIBOLD),
         )
         .into_element()
 }
@@ -1083,17 +1065,18 @@ fn draft_bar(ui: Ui) -> AnyElement {
                 .border_color(line)
                 .child(
                     text(move || {
-                        if ui.dirty.get() {
-                            ui.tr("Unsaved configuration changes", "有未保存的配置修改")
-                                .to_string()
+                        if ui.page.get() == Page::Schemes {
+                            let name = ui.scheme_name(ui.draft.with(|config| config.schema));
+                            format!(
+                                "{} · {name}",
+                                ui.tr("Selected for installation", "安装目标")
+                            )
                         } else {
-                            ui.draft.with(|config| {
-                                config
-                                    .schema
-                                    .display_name_lang(Lang::from_str(&config.language))
-                            })
+                            ui.tr("Unsaved configuration changes", "有未保存的配置修改")
+                                .into()
                         }
                     })
+                    .test_id("configuration-summary")
                     .flex_1()
                     .text_size(px(13.0)),
                 )
@@ -1168,13 +1151,18 @@ fn status_bar(ui: Ui) -> AnyElement {
         .gap_2()
         .border_t_1()
         .border_color(line)
-        .child(
-            progress()
-                .value(move || (ui.state.with(|state| state.progress) * 100.0) as f32)
-                .indeterminate(move || ui.state.with(|state| state.busy && state.progress == 0.0))
-                .track_class("h-1 rounded-full bg-muted")
-                .indicator_class("h-1 rounded-full bg-primary transition-transform duration-150"),
-        )
+        .child(when(
+            move || ui.state.with(|s| s.busy),
+            move || {
+                progress()
+                    .value(move || (ui.state.with(|state| state.progress) * 100.0) as f32)
+                    .indeterminate(move || ui.state.with(|state| state.progress == 0.0))
+                    .track_class("h-1 rounded-full bg-muted")
+                    .indicator_class(
+                        "h-1 rounded-full bg-primary transition-transform duration-150",
+                    )
+            },
+        ))
         .child(
             view()
                 .flex_row()
@@ -1233,30 +1221,37 @@ fn status_bar(ui: Ui) -> AnyElement {
                     .text_size(px(12.0))
                     .text_color(muted),
                 )
-                .child(
-                    button()
-                        .test_id("cancel-operation")
-                        .disabled_style(|style| style.opacity(0.4))
-                        .disabled(move || {
-                            !ui.state
-                                .with(|state| state.busy || state.countdown.is_some())
+                .child(when(
+                    move || {
+                        ui.state.with(|state| {
+                            (state.busy && state.config.is_some()) || state.countdown.is_some()
                         })
-                        .px_3()
-                        .py_1()
-                        .rounded(px(4.0))
-                        .focus(|style| {
-                            style
-                                .outline(px(2.0))
-                                .outline_color(accent)
-                                .outline_offset(px(2.0))
-                        })
-                        .on_press(move || {
-                            ui.controller.with(Controller::cancel);
-                            ui.state
-                                .set(ui.controller.with(|controller| controller.snapshot.clone()));
-                        })
-                        .child(text(move || ui.tr("Cancel", "取消")).text_size(px(12.0))),
-                ),
+                    },
+                    move || {
+                        button()
+                            .test_id("cancel-operation")
+                            .disabled_style(|style| style.opacity(0.4))
+                            .disabled(move || {
+                                ui.state.with(|state| state.status == Status::Cancelling)
+                            })
+                            .px_3()
+                            .py_1()
+                            .rounded(px(4.0))
+                            .focus(|style| {
+                                style
+                                    .outline(px(2.0))
+                                    .outline_color(accent)
+                                    .outline_offset(px(2.0))
+                            })
+                            .on_press(move || {
+                                ui.controller.with(Controller::cancel);
+                                ui.state.set(
+                                    ui.controller.with(|controller| controller.snapshot.clone()),
+                                );
+                            })
+                            .child(text(move || ui.tr("Cancel", "取消")).text_size(px(12.0)))
+                    },
+                )),
         )
         .into_element()
 }
@@ -1294,11 +1289,17 @@ fn confirmation(ui: Ui) -> AnyElement {
                                         .border_color(line)
                                         .bind_motion(&reveal())
                                         .role(AccessibilityRole::Alert)
-                                        .child(heading(
-                                            ui,
-                                            "Review action",
-                                            "确认操作",
-                                        ))
+                                        .child(text(move || {
+                                            if pending == Some(Pending::Install) {
+                                                let name = ui.scheme_name(ui.draft.with(|config| config.schema));
+                                                match ui.lang() {
+                                                    Lang::Zh => format!("安装「{name}」？"),
+                                                    Lang::En => format!("Install {name}?"),
+                                                }
+                                            } else {
+                                                ui.tr("Review action", "确认操作").into()
+                                            }
+                                        }).text_size(px(20.0)).font_weight(FontWeight::SEMIBOLD))
                                         .child(
                                             text(move || {
                                                 let config = ui.draft.get();
@@ -1328,7 +1329,15 @@ fn confirmation(ui: Ui) -> AnyElement {
                                     "使用内置默认值替换所有排除规则。",
                                 )
                                 .into(),
-                            Some(Pending::Install) => format!("{}\n{}\n{}\n{}", config.schema.display_name_lang(Lang::from_str(&config.language)), ui.state.with(|state| state.paths.as_ref().map(|paths| paths.rime.display().to_string()).unwrap_or_default()), ui.tr("Save configuration, then install the scheme and its supported components.", "保存配置，安装方案及其支持的组件。"), ui.tr("Other configuration changes are saved too.", "同时保存其他配置修改。")),
+                            Some(Pending::Install) => {
+                                let path = ui.state.with(|state| state.paths.as_ref().map(|paths| paths.rime.display().to_string()).unwrap_or_default());
+                                let mut summary = format!("{}\n{path}", ui.tr("Install the scheme and its components in", "方案与配套组件将安装到"));
+                                if ui.dirty.get() {
+                                    summary.push('\n');
+                                    summary.push_str(ui.tr("Unsaved settings will be saved first.", "安装前会保存本次设置修改。"));
+                                }
+                                summary
+                            }
                             Some(Pending::Skins) => ui
                                 .tr(
                                     "Write selected presets and the default skin, then redeploy.",
@@ -1341,7 +1350,12 @@ fn confirmation(ui: Ui) -> AnyElement {
                                                     summary.push_str(&format!(
                                                         "\n{}: {}",
                                                         ui.tr("User data policy", "用户数据策略"),
-                                                        config.user_data_policy
+                                                        match config.user_data_policy.as_str() {
+                                                            "preserve" => ui.tr("Keep user data", "保留用户数据"),
+                                                            "discard" => ui.tr("Discard user data", "丢弃用户数据"),
+                                                            "prompt" => ui.tr("Ask each time", "每次询问"),
+                                                            policy => policy,
+                                                        }
                                                     ));
                                                     if !config.pre_update_hook.is_empty()
                                                         || !config.post_update_hook.is_empty()
@@ -1401,10 +1415,9 @@ fn confirmation(ui: Ui) -> AnyElement {
                                                         })
                                                         .on_press(move || ui.confirm(true))
                                                         .child(text(move || {
-                                                            if matches!(
-                                                                pending,
-                                                                Some(Pending::Update(_) | Pending::Install)
-                                                            ) {
+                                                            if pending == Some(Pending::Install) {
+                                                                ui.tr("Keep data & install", "保留数据并安装")
+                                                            } else if matches!(pending, Some(Pending::Update(_))) {
                                                                 ui.tr(
                                                                     "Preserve data & run",
                                                                     "保留数据并执行",
@@ -1669,197 +1682,14 @@ fn overview(ui: Ui) -> AnyElement {
         .into_element()
 }
 
-fn schemes(ui: Ui) -> AnyElement {
-    let mut choices = view().flex_row().flex_wrap().gap_3();
-    for schema in Schema::all() {
-        let schema = *schema;
-        choices = choices.child(
-            button()
-                .test_id(&format!("schema-{schema:?}"))
-                .min_w(px(230.0))
-                .max_w(px(280.0))
-                .flex_1()
-                .min_h(px(64.0))
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .selected(move || ui.draft.with(|config| config.schema == schema))
-                .disabled(move || ui.locked())
-                .p_3()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(move || {
-                    if ui.draft.with(|config| config.schema == schema) {
-                        accent()
-                    } else {
-                        line()
-                    }
-                })
-                .bg(move || {
-                    if ui.draft.with(|config| config.schema == schema) {
-                        selection()
-                    } else {
-                        surface()
-                    }
-                })
-                .transition_colors()
-                .duration(140.0)
-                .active(|style| style.opacity(0.75))
-                .focus(|style| {
-                    style
-                        .outline(px(2.0))
-                        .outline_color(accent)
-                        .outline_offset(px(2.0))
-                })
-                .on_press(move || ui.edit(|config| config.schema = schema))
-                .child(
-                    text(move || {
-                        schema.display_name_lang(Lang::from_str(
-                            &ui.draft.with(|config| config.language.clone()),
-                        ))
-                    })
-                    .text_size(px(14.0)),
-                )
-                .child(
-                    text(move || {
-                        if ui.draft.with(|config| config.schema == schema) {
-                            "✓"
-                        } else {
-                            ""
-                        }
-                    })
-                    .accessible(false)
-                    .text_color(accent)
-                    .text_size(px(16.0)),
-                ),
-        );
-    }
-    view()
-        .gap_6()
-        .child(heading(ui, "Choose a scheme", "选择输入方案"))
-        .child(caption(
-            ui,
-            "Choose a scheme, then install it below.",
-            "选择方案后，在底部安装。",
-        ))
-        .child(choices)
-        .child(when(
-            move || ui.draft.with(|config| config.schema.supports_model_patch()),
-            move || {
-                toggle(
-                    ui,
-                    "model-patch",
-                    "Enable model patch",
-                    "启用模型补丁",
-                    |config| config.model_patch_enabled,
-                    |config, value| config.model_patch_enabled = value,
-                )
-            },
-        ))
-        .into_element()
-}
-
-fn candidate_preview(ui: Ui) -> AnyElement {
-    section(ui, "Layout preview", "布局预览")
-        .child(caption(
-            ui,
-            "Preview candidate count. Your input engine controls the actual colors and typography.",
-            "预览候选数量；实际颜色和字体由输入引擎的主题决定。",
-        ))
-        .child(
-            view()
-                .p_5()
-                .gap_3()
-                .rounded(px(8.0))
-                .bg(canvas)
-                .child(
-                    text("ni hao")
-                        .text_size(px(18.0))
-                        .font_weight(FontWeight::MEDIUM),
-                )
-                .child(dynamic(move || {
-                    let samples = [
-                        "你好", "您好", "你号", "拟好", "霓好", "呢好", "你", "呢", "拟",
-                    ];
-                    let count = usize::from(ui.candidate.get().unwrap_or(5)).clamp(1, 9);
-                    let mut candidates = view()
-                        .test_id("candidate-preview")
-                        .flex_row()
-                        .flex_wrap()
-                        .gap_2();
-                    for (index, sample) in samples.iter().take(count).enumerate() {
-                        candidates = candidates.child(
-                            view()
-                                .flex_row()
-                                .gap_2()
-                                .px_3()
-                                .py_2()
-                                .rounded(px(6.0))
-                                .bg(move || if index == 0 { accent() } else { surface() })
-                                .text_color(move || if index == 0 { on_accent() } else { ink() })
-                                .child(text(format!("{}", index + 1)).text_size(px(12.0)))
-                                .child(text(*sample).text_size(px(16.0))),
-                        );
-                    }
-                    candidates
-                })),
-        )
-        .into_element()
-}
-
 fn appearance(ui: Ui) -> AnyElement {
-    let mut candidates = vec![("default".into(), ui.tr("Scheme default", "方案默认").into())];
-    candidates.extend((1..=9).map(|size| (size.to_string(), size.to_string())));
     view()
         .gap_6()
+        .child(personalization::candidate_window(ui))
         .child(when(
             move || ui.state.with(|state| state.fcitx_supported),
             move || fcitx_appearance(ui),
         ))
-        .child(
-            section(ui, "Candidate window", "候选窗口")
-                .child(candidate_preview(ui))
-                .child(picker(
-                    ui,
-                    "candidate-size",
-                    "Candidates per page",
-                    "每页候选数",
-                    candidates,
-                    move || {
-                        ui.candidate
-                            .get()
-                            .map(|n| n.to_string())
-                            .unwrap_or_else(|| "default".into())
-                    },
-                    move |value| ui.candidate.set(value.parse().ok()),
-                ))
-                .child(when(
-                    move || ui.candidate.get().is_none(),
-                    move || {
-                        caption(
-                            ui,
-                            "Scheme default · layout preview only",
-                            "方案默认 · 仅展示布局",
-                        )
-                    },
-                ))
-                .child(appearance_guard(ui))
-                .child(action_enabled(
-                    ui,
-                    "apply-candidate",
-                    "Apply",
-                    "应用",
-                    ButtonStyle::Secondary,
-                    move || {
-                        !ui.dirty.get()
-                            && (ui.candidate.get() != ui.state.with(|state| state.candidate_size)
-                                || appearance_failed(ui, AppearanceTask::Candidate))
-                    },
-                    move || ui.send(Command::CandidateSize(ui.candidate.get())),
-                ))
-                .child(appearance_feedback(ui, AppearanceTask::Candidate)),
-        )
         .child(when(
             move || {
                 ui.state.with(|state| {
@@ -1894,7 +1724,10 @@ fn appearance_failed(ui: Ui, task: AppearanceTask) -> bool {
 
 fn appearance_changed(ui: Ui, task: AppearanceTask) -> bool {
     ui.state.with(|state| match task {
-        AppearanceTask::Candidate => ui.candidate.get() != state.candidate_size,
+        AppearanceTask::Candidate => state
+            .candidate_size
+            .as_ref()
+            .is_ok_and(|&saved| ui.candidate.get() != saved),
         AppearanceTask::Skins => {
             ui.selected_skins.get() != state.skins
                 || ui.default_skin.get() != state.default_skin.clone().unwrap_or_default()

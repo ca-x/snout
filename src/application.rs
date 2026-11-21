@@ -114,17 +114,24 @@ pub fn validate_settings(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// The on-disk model patch affected by saving a new configuration, if any.
+pub fn model_patch_change(saved: &Config, proposed: &Config) -> Option<PatchMode> {
+    if !proposed.schema.supports_model_patch() {
+        return None;
+    }
+    match (saved.model_patch_enabled, proposed.model_patch_enabled) {
+        (false, true) => Some(PatchMode::Enabled),
+        (true, true) if proposed.schema != saved.schema => Some(PatchMode::Enabled),
+        (true, false) => Some(PatchMode::Disabled),
+        _ => None,
+    }
+}
+
 pub fn save_settings(manager: &mut Manager, config: Config) -> Result<()> {
     validate_settings(&config)?;
-    let synchronize_patch = config.model_patch_enabled != manager.config.model_patch_enabled
-        || (config.schema != manager.config.schema && config.model_patch_enabled);
-    let mode = if config.model_patch_enabled {
-        PatchMode::Enabled
-    } else {
-        PatchMode::Disabled
-    };
+    let patch_change = model_patch_change(&manager.config, &config);
     let previous = std::mem::replace(&mut manager.config, config);
-    let result = if synchronize_patch {
+    let result = if let Some(mode) = patch_change {
         set_model_patch(manager, mode)
     } else {
         manager.save()

@@ -38,6 +38,15 @@ fn workbench_with(configure: impl FnOnce(&mut Config)) -> (TempDir, Paths, Headl
     });
     let config = EngineConfig {
         viewport: Size::new(px(1040.0), px(760.0)),
+        environment: nsh_engine::Environment {
+            os: match std::env::consts::OS {
+                "macos" => nsh_core::platform::Os::MacOs,
+                "windows" => nsh_core::platform::Os::Windows,
+                _ => nsh_core::platform::Os::Linux,
+            },
+            idiom: nsh_core::platform::Idiom::Desktop,
+            ..Default::default()
+        },
         ui_sets: vec![nsh_base::registry()],
         ..EngineConfig::new(app)
     };
@@ -82,12 +91,15 @@ fn actual_root_navigates_all_five_pages_and_lists_every_schema() {
     let (_root, paths, mut app) = workbench();
     assert!(app.shows("Selected scheme"));
     navigate(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("wanxiang-edition-trigger").unwrap();
+    app.wait_for("role:option[Wanxiang Pro (Flypy)]").unwrap();
     for schema in Schema::all() {
         assert!(
             app.shows(&schema.display_name_lang(Lang::En)),
             "missing schema {schema:?}"
         );
     }
+    app.press_key("escape").unwrap();
     for (navigation, expected) in [
         ("nav-appearance", "Candidate window"),
         ("nav-settings", "General"),
@@ -100,6 +112,68 @@ fn actual_root_navigates_all_five_pages_and_lists_every_schema() {
         !paths.rime.exists(),
         "navigation must not install or patch anything"
     );
+}
+
+#[test]
+fn browsing_scheme_families_restores_the_edition_and_names_the_install_target() {
+    let (_root, paths, mut app) = workbench_with(|config| config.schema = Schema::WanxiangMoqi);
+    navigate(&mut app, "nav-schemes", "Choose a scheme");
+    app.press("wanxiang-edition-trigger").unwrap();
+    app.wait_for("role:option[Wanxiang Pro (Flypy)]").unwrap();
+    let search = "label:Search Wanxiang edition";
+    app.type_text(search, "no-such-edition").unwrap();
+    app.wait_for("No matching options").unwrap();
+    app.clear(search).unwrap();
+    app.type_text(search, "flypy").unwrap();
+    app.wait_for("role:option[Wanxiang Pro (Flypy)]").unwrap();
+    app.press("role:option[Wanxiang Pro (Flypy)]").unwrap();
+    app.wait_for("Selected for installation · Wanxiang Pro (Flypy)")
+        .unwrap();
+    app.wait_for_gone("role:option[Wanxiang Pro (Flypy)]", Duration::from_secs(2))
+        .unwrap();
+    app.press("schema-Ice").unwrap();
+    app.wait_for_gone("wanxiang-edition-trigger", Duration::from_secs(2))
+        .unwrap();
+    app.press("schema-WanxiangBase").unwrap();
+    app.wait_for("Selected for installation · Wanxiang Pro (Flypy)")
+        .unwrap();
+    app.press("initialize-scheme").unwrap();
+    app.wait_for("Install Wanxiang Pro (Flypy)?").unwrap();
+    app.wait_for("confirmation").unwrap();
+    app.press_key("escape").unwrap();
+    app.wait_for_gone("confirmation", Duration::from_secs(2))
+        .unwrap();
+    app.press("discard-draft").unwrap();
+    app.wait_for("Selected for installation · Wanxiang Pro (Moqi)")
+        .unwrap();
+    assert_eq!(persisted(&paths).schema, Schema::WanxiangMoqi);
+    assert!(!paths.rime.exists());
+}
+
+#[test]
+fn saving_an_unsupported_scheme_keeps_the_model_preference_and_personal_patch() {
+    let (_root, paths, mut app) = workbench_with(|config| config.model_patch_enabled = true);
+    std::fs::create_dir_all(&paths.rime).unwrap();
+    let personal = b"# My settings\npatch:\n  menu/page_size: 6\n";
+    navigate(&mut app, "nav-schemes", "Choose a scheme");
+    for schema in [Schema::Wubi86Jidian, Schema::Abcm] {
+        let patch = paths
+            .rime
+            .join(format!("{}.custom.yaml", schema.schema_id()));
+        std::fs::write(&patch, personal).unwrap();
+        app.press(&format!("schema-{schema:?}")).unwrap();
+        app.wait_for("Save only").unwrap();
+        app.press("save-draft").unwrap();
+        app.wait_for_gone("unsaved-changes", Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(std::fs::read(patch).unwrap(), personal);
+        assert_eq!(persisted(&paths).schema, schema);
+        assert!(persisted(&paths).model_patch_enabled);
+    }
+    app.press("schema-Ice").unwrap();
+    app.wait_for("Save only").unwrap();
+    app.press("save-draft").unwrap();
+    app.wait_for("confirmation").unwrap();
 }
 
 #[test]
@@ -168,14 +242,10 @@ fn diagnostics_disclosure_and_preview_work_in_dark_reduced_motion_at_small_size(
     app.press("nav-appearance").expect("appearance navigation");
     wait_for_navigation(&mut app, "nav-appearance", "Candidate window");
     app.wait_for("candidate-preview").expect("layout preview");
-    assert!(app.shows("你好"));
-    assert!(!app.shows("呢好"));
-    app.press("candidate-size-trigger")
-        .expect("open count picker");
-    app.wait_for("role:option[9]")
-        .expect("count options rendered");
-    app.press("role:option[9]").expect("nine candidates");
-    app.wait_for("拟").expect("preview follows selection");
+    assert!(app.shows("是"));
+    assert!(!app.shows("使"));
+    app.press("candidate-count-9").expect("nine candidates");
+    app.wait_for("诗").expect("preview follows selection");
     assert!(!paths.rime.exists(), "preview must not apply settings");
 }
 
@@ -318,24 +388,72 @@ fn invalid_settings_keep_draft_and_do_not_open_save_confirmation() {
 fn candidate_override_and_scheme_default_use_one_apply_action() {
     let (_root, paths, mut app) = workbench();
     navigate(&mut app, "nav-appearance", "Candidate window");
-    app.press("candidate-size-trigger").unwrap();
-    app.wait_for("role:option[5]").unwrap();
-    app.press("role:option[5]").unwrap();
+    app.press("candidate-count-5").unwrap();
     app.press("apply-candidate").unwrap();
     app.wait_for("Applied").unwrap();
     assert_eq!(
         snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).unwrap(),
         Some(5)
     );
-    app.press("candidate-size-trigger").unwrap();
-    app.wait_for("role:option[Scheme default]").unwrap();
-    app.press("role:option[Scheme default]").unwrap();
+    app.press("candidate-count-default").unwrap();
     app.press("apply-candidate").unwrap();
     app.wait_until("default persisted", Duration::from_secs(5), |_| {
         snout::custom::candidate_page_size(&paths.rime, Schema::WanxiangBase).ok() == Some(None)
     })
     .unwrap();
     assert!(!app.shows("reset-candidate"));
+}
+
+#[test]
+fn candidate_read_failure_can_recover_a_quoted_override_and_restore_the_default() {
+    let (_root, paths, mut app) = workbench();
+    std::fs::create_dir_all(&paths.rime).unwrap();
+    let file = paths.rime.join("wanxiang.custom.yaml");
+    std::fs::write(&file, "patch: [broken").unwrap();
+    app.press("toggle-diagnostics").unwrap();
+    app.wait_for("refresh-status").unwrap();
+    app.press("refresh-status").unwrap();
+    app.wait_for("Completed").unwrap();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    app.wait_for("Could not read the saved candidate count.")
+        .unwrap();
+    assert!(!app.screen().matches("candidate-count-default").unwrap());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "patch: [broken");
+    std::fs::write(
+        &file,
+        "patch:\n  menu/page_size: '7'\n  personal/value: mine\n",
+    )
+    .unwrap();
+    app.press("retry-candidate-read").unwrap();
+    app.wait_for("Wanxiang (Base) · Saved count: 7").unwrap();
+    assert!(app.screen().selected("candidate-count-7").unwrap());
+    app.press("candidate-count-default").unwrap();
+    app.wait_for("Not applied").unwrap();
+    app.press("apply-candidate").unwrap();
+    app.wait_for("Applied").unwrap();
+    let updated = std::fs::read_to_string(file).unwrap();
+    assert!(updated.contains("personal/value: mine"));
+    assert!(!updated.contains("menu/page_size"));
+}
+
+#[test]
+fn candidate_radio_keys_preview_and_restore_without_writing() {
+    let (_root, paths, mut app) = workbench();
+    app.set_environment("full keyboard navigation", |env| {
+        env.os = nsh_core::platform::Os::MacOs
+    })
+    .unwrap();
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    app.press_key("shift+tab").unwrap(); // status
+    app.press_key("shift+tab").unwrap(); // selected candidate count
+    app.press_key("right").unwrap();
+    app.wait_for("Not applied").unwrap();
+    assert!(app.screen().selected("candidate-count-1").unwrap());
+    app.press_key("left").unwrap();
+    app.wait_for_gone("candidate-feedback", Duration::from_secs(2))
+        .unwrap();
+    assert!(app.screen().selected("candidate-count-default").unwrap());
+    assert!(!paths.rime.exists());
 }
 
 #[test]
@@ -370,6 +488,10 @@ fn json_export_matches_shared_report_for_real_failed_operation() {
     assert_eq!(report["ok"], false);
     assert_eq!(report["schema_version"], 1);
     assert!(!content.contains("never-export-this-token"));
+    navigate(&mut app, "nav-appearance", "Candidate window");
+    assert!(!app.screen().matches("operation-timeline").unwrap());
+    navigate(&mut app, "nav-activity", "Activity");
+    app.wait_for("operation-timeline").unwrap();
     assert!(
         !paths.rime.exists(),
         "unsupported component must not install anything"
@@ -478,9 +600,7 @@ fn unapplied_candidate_survives_save_and_global_draft_blocks_apply() {
     let (_root, paths, mut app) = workbench();
     navigate(&mut app, "nav-appearance", "Candidate window");
     assert!(!app.screen().enabled("apply-candidate").unwrap());
-    app.press("candidate-size-trigger").unwrap();
-    app.wait_for("role:option[7]").unwrap();
-    app.press("role:option[7]").unwrap();
+    app.press("candidate-count-7").unwrap();
     navigate(&mut app, "nav-settings", "General");
     app.press("mirror").unwrap();
     app.wait_for("save-draft").unwrap();
@@ -515,7 +635,7 @@ fn combined_install_has_one_confirmation_and_preview_keeps_unsaved_draft() {
         .screen()
         .texts()
         .iter()
-        .any(|text| text.contains("Other configuration changes are saved too.")));
+        .any(|text| text.contains("Unsaved settings will be saved first.")));
     assert!(app
         .screen()
         .texts()

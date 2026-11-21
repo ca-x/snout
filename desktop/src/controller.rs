@@ -67,7 +67,7 @@ pub struct Snapshot {
     pub versions: Vec<(String, String)>,
     pub diagnosis: String,
     pub proxy: String,
-    pub candidate_size: Option<u8>,
+    pub candidate_size: Result<Option<u8>, String>,
     pub skins: HashSet<String>,
     pub default_skin: Option<String>,
     pub appearance: Option<AppearanceTarget>,
@@ -108,7 +108,7 @@ impl Default for Snapshot {
             versions: Vec::new(),
             diagnosis: String::new(),
             proxy: String::new(),
-            candidate_size: None,
+            candidate_size: Ok(None),
             skins: HashSet::new(),
             default_skin: None,
             appearance: None,
@@ -757,10 +757,7 @@ fn snapshot(manager: &Manager, environment: &WorkerEnvironment, revision: u64) -
             .join("\n")
     );
     let candidate_size = snout::custom::candidate_page_size(&manager.rime_dir, config.schema)
-        .unwrap_or_else(|error| {
-            warnings.push(format!("Candidate settings / 候选设置: {error}"));
-            None
-        });
+        .map_err(|error| format!("{error:#}"));
     let (skins, default_skin) = match &environment.appearance {
         Some(AppearanceTarget::ThemePatch(path)) => (
             patch::read_skin_preset_selections(path).unwrap_or_else(|error| {
@@ -1732,12 +1729,12 @@ mod tests {
         let mut controller = Controller::start(Some(paths(&root))).expect("controller");
         ready(&mut controller);
         run(&mut controller, Command::CandidateSize(Some(9)));
-        assert_eq!(controller.snapshot.candidate_size, Some(9));
+        assert_eq!(controller.snapshot.candidate_size, Ok(Some(9)));
         run(&mut controller, Command::CandidateSize(Some(0)));
         assert_eq!(controller.snapshot.status, Status::Error);
-        assert_eq!(controller.snapshot.candidate_size, Some(9));
+        assert_eq!(controller.snapshot.candidate_size, Ok(Some(9)));
         run(&mut controller, Command::CandidateSize(None));
-        assert_eq!(controller.snapshot.candidate_size, None);
+        assert_eq!(controller.snapshot.candidate_size, Ok(None));
         controller.shutdown().expect("shutdown");
     }
 
@@ -1754,6 +1751,7 @@ mod tests {
         ready(&mut controller);
         assert!(controller.snapshot.config.is_some());
         assert!(!controller.snapshot.warnings.is_empty());
+        assert!(controller.snapshot.candidate_size.is_err());
         assert_eq!(controller.snapshot.status, Status::Ready);
         assert!(!controller.snapshot.fcitx_supported);
         controller.shutdown().expect("shutdown");
